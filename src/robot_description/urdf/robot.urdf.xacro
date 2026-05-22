@@ -1,0 +1,280 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://ros.org/wiki/xacro" name="robot">
+
+  <!-- ============================================================
+       INCLUDES
+  ============================================================ -->
+  <xacro:include filename="$(find robot_description)/urdf/livox_mid360.urdf.xacro"/>
+  <xacro:include filename="$(find realsense2_description)/urdf/_d435.urdf.xacro"/>
+
+  <!-- ============================================================
+       DIMENSIONS — all in metres
+
+       MEASURED (from real robot):
+         Chassis (aluminum extrusion frame): 700 mm(X) × 600 mm(Y) × 300 mm(Z)
+         Top plate height above floor: 300 mm
+         wheel_radius : 0.1125  (drive_motor.py: wheeles_size=0.1125)
+         wheel_right  : x=+0.2064, y=-0.2489  (picking_robot_matrix.hpp)
+         wheel_left   : x=+0.2064, y=+0.2489
+         wheel_back   : x=-0.3850, y= 0.0000
+
+         Chassis front face (in base_link frame):
+           chassis_cx + chassis_length/2 = -0.090 + 0.350 = +0.260 m
+
+         Vertical support column: 40×40 mm cross-section
+           Position: x = -0.240 m  (500 mm behind front face)
+                     z = chassis_top (0.040 m) to livox_z (0.6875 m)
+           col_height = livox_z - chassis_top = 0.6875 - 0.040 = 0.6475 m
+
+         Livox MID360: 800 mm above floor, 500 mm behind front face (+0.260 m)
+           → livox_x = +0.260 - 0.500 = -0.240 m  (in base_link frame)
+           → livox_z = 0.800 - 0.1125 = 0.6875 m   (in base_link frame)
+
+         RealSense D435 (measured 2026-05-20):
+           750 mm above floor, 60 mm forward of front face (x=0.260 m)
+           → camera_z = 0.750 - 0.1125 = 0.6375 m  (above base_link)
+           → camera_x = 0.260 + 0.060 = 0.320 m
+           → camera_y = 0.0 m  (centred on robot)
+           Tilt: bracket arm at 60° from vertical (= 30° nose-down) +
+                 swing motor at Nav pose 102° (= 12° extra) → 42° total nose-down
+           → camera_pitch = 42° = 0.7330 rad  (positive = nose-down about +Y)
+           NOTE: represents Nav pose (pan=267°, tilt=102°).
+                 Verify against RViz depth image before declaring final.
+
+       base_link origin is at wheel_radius (0.1125 m) above floor.
+       The visible chassis is a single 40 mm thick body:
+         chassis bottom  = 0.000 m in base_link
+         chassis centre  = 0.020 m in base_link
+         chassis top     = 0.040 m in base_link
+  ============================================================ -->
+
+  <!-- Wheel (measured / from code) -->
+  <xacro:property name="wheel_radius"  value="0.1125"/>
+  <xacro:property name="wheel_width"   value="0.060"/>
+
+  <!-- Wheel positions (from kinematics matrix) -->
+  <xacro:property name="w_r_x"  value=" 0.2064"/>
+  <xacro:property name="w_r_y"  value="-0.2489"/>
+  <xacro:property name="w_l_x"  value=" 0.2064"/>
+  <xacro:property name="w_l_y"  value=" 0.2489"/>
+  <xacro:property name="w_b_x"  value="-0.3850"/>
+  <xacro:property name="w_b_y"  value=" 0.0000"/>
+
+  <!-- Chassis/body box parameters (measured).
+       These properties only define the size and pose of the vehicle body.
+       The actual RViz box is created later inside:
+         <link name="base_link"> → first <visual> → <box .../>
+       Coordinate convention:
+         X = forward/back, Y = left/right, Z = up/down, all values in metres. -->
+  <xacro:property name="chassis_length"  value="0.670"/>   <!-- X -->
+  <xacro:property name="chassis_width"   value="0.600"/>   <!-- Y -->
+  <xacro:property name="chassis_height"  value="0.580"/>   <!-- Z -->
+  <!-- Chassis visual centre offset in X (wheel layout asymmetric):
+       front=+0.206, back=-0.385 → geometric centre = (0.206-0.385)/2 = -0.090 m -->
+  <xacro:property name="chassis_cx"  value="-0.090"/>
+  <!-- base_link is at wheel axle height. The floor is therefore -wheel_radius in base_link Z.
+       Keep the measured body box standing on the floor, then compute its centre and top.
+       URDF box origin is the centre of the box, not the bottom. -->
+  <xacro:property name="chassis_bottom" value="-0.0025"/>  <!-- from wheel center-->
+  <xacro:property name="chassis_cz"     value="${chassis_bottom + chassis_height/2}"/>
+  <xacro:property name="chassis_top"    value="${chassis_bottom + chassis_height}"/>
+
+  <!-- Livox MID360 position (measured):
+       - 800 mm above floor  → livox_z = 0.800 - wheel_radius = 0.6875 m above base_link
+       - 500 mm behind front face (+0.260 m) → livox_x = 0.260 - 0.500 = -0.240 m -->
+  <xacro:property name="livox_x"      value="0.240"/>
+  <xacro:property name="livox_y"      value=" 0.000"/>
+  <xacro:property name="livox_z"      value=" 1.38"/>
+  <xacro:property name="livox_pitch" value="0.5236"/>   <!-- 30 degrees, about base_link Y axis -->
+
+  <!-- LiDAR support column: 40×40 mm, from body top to LiDAR (at livox_x) -->
+  <xacro:property name="col_side"    value="0.040"/>
+  <xacro:property name="col_cx"      value="${livox_x}"/>  <!-- follow livox_x -->
+  <xacro:property name="col_height"  value="${livox_z - chassis_top}"/>
+  <!-- Column centre Z in base_link: chassis_top + col_height/2 -->
+  <xacro:property name="col_cz"  value="${chassis_top + col_height/2}"/>
+
+  <!-- Camera position (measured 2026-05-20): height=750mm, 60mm ahead of front face.
+       Tilt = 30° (bracket) + 12° (motor Nav pose) = 42° nose-down. -->
+  <xacro:property name="camera_x"     value=" 0.320"/>
+  <xacro:property name="camera_y"     value=" 0.000"/>
+  <xacro:property name="camera_z"     value=" 0.6375"/>
+  <xacro:property name="camera_pitch" value=" 0.7330"/>  <!-- 42° nose-down at Nav pose -->
+
+  <!-- Front camera support column parameters.
+       This is the vertical post under the RealSense camera.
+       The actual RViz box is created later inside:
+         <link name="base_link"> → "Vertical front column" visual.
+       For a URDF box, origin xyz is the centre of the box, not the bottom.
+       So height = camera_z - chassis_top, and centre_z = chassis_top + height/2. -->
+  <xacro:property name="front_col_side"   value="0.040"/>
+  <xacro:property name="front_col_x"      value="${camera_x}"/>  <!-- under camera, same X as camera -->
+  <xacro:property name="front_col_y"      value="${camera_y}"/>  <!-- under camera, same Y as camera -->
+  <xacro:property name="front_col_height" value="${camera_z - chassis_top}"/>
+  <xacro:property name="front_col_cz"     value="${chassis_top + front_col_height/2}"/>
+
+  <!-- ============================================================
+       base_footprint  — ground-plane projection (z = 0)
+  ============================================================ -->
+  <link name="base_footprint"/>
+
+  <joint name="base_footprint_joint" type="fixed">
+    <parent link="base_footprint"/>
+    <child  link="base_link"/>
+    <origin xyz="0 0 ${wheel_radius}" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ============================================================
+       base_link  — robot reference frame at wheel-axle height
+  ============================================================ -->
+  <link name="base_link">
+
+    <!-- ── VEHICLE BODY BOX SHOWN IN RVIZ ──
+         This is the visible chassis/body geometry.
+         It uses the chassis_* properties defined above. -->
+    <visual>
+      <origin xyz="${chassis_cx} 0 ${chassis_cz}" rpy="0 0 0"/>
+      <geometry>
+        <box size="${chassis_length} ${chassis_width} ${chassis_height}"/>
+      </geometry>
+      <material name="aluminium">
+        <color rgba="0.75 0.75 0.80 1.0"/>
+      </material>
+    </visual>
+
+    <!-- ── LiDAR support column shown in RViz (40×40 mm, height = livox_z - chassis_top)
+         X follows livox_x so the pole is always directly below the LiDAR ── -->
+    <visual>
+      <origin xyz="${col_cx} 0 ${col_cz}" rpy="0 0 0"/>
+      <geometry>
+        <box size="${col_side} ${col_side} ${col_height}"/>
+      </geometry>
+      <material name="column_black">
+        <color rgba="0.10 0.10 0.10 1.0"/>
+      </material>
+    </visual>
+
+    <!-- ── Front camera support column shown in RViz ── -->
+    <visual>
+      <origin xyz="${front_col_x} ${front_col_y} ${front_col_cz}" rpy="0 0 0"/>
+      <geometry>
+        <box size="${front_col_side} ${front_col_side} ${front_col_height}"/>
+      </geometry>
+      <material name="column_black"/>
+    </visual>
+
+    <!-- Collision: chassis only -->
+    <collision>
+      <origin xyz="${chassis_cx} 0 ${chassis_cz}" rpy="0 0 0"/>
+      <geometry>
+        <box size="${chassis_length} ${chassis_width} ${chassis_height}"/>
+      </geometry>
+    </collision>
+
+    <inertial>
+      <mass value="12.0"/>
+      <origin xyz="${chassis_cx} 0 ${chassis_cz}"/>
+      <inertia ixx="0.15" ixy="0" ixz="0"
+               iyy="0.20" iyz="0"
+               izz="0.30"/>
+    </inertial>
+  </link>
+
+  <!-- ============================================================
+       WHEELS  — visual only, fixed joints
+       rpy="1.5708 0 0" rotates cylinder axis from Z to Y
+  ============================================================ -->
+
+  <!-- Wheel RIGHT  (drive motor 1 / steer motor ID 11) -->
+  <joint name="wheel_right_joint" type="fixed">
+    <parent link="base_link"/>
+    <child  link="wheel_right"/>
+    <origin xyz="${w_r_x} ${w_r_y} 0" rpy="0 0 0"/>
+  </joint>
+  <link name="wheel_right">
+    <visual>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <geometry><cylinder radius="${wheel_radius}" length="${wheel_width}"/></geometry>
+      <material name="rubber_dark"><color rgba="0.10 0.10 0.10 1.0"/></material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <geometry><cylinder radius="${wheel_radius}" length="${wheel_width}"/></geometry>
+    </collision>
+    <inertial>
+      <mass value="1.0"/>
+      <inertia ixx="0.007" ixy="0" ixz="0" iyy="0.007" iyz="0" izz="0.013"/>
+    </inertial>
+  </link>
+
+  <!-- Wheel LEFT  (drive motor 2 / steer motor ID 12) -->
+  <joint name="wheel_left_joint" type="fixed">
+    <parent link="base_link"/>
+    <child  link="wheel_left"/>
+    <origin xyz="${w_l_x} ${w_l_y} 0" rpy="0 0 0"/>
+  </joint>
+  <link name="wheel_left">
+    <visual>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <geometry><cylinder radius="${wheel_radius}" length="${wheel_width}"/></geometry>
+      <material name="rubber_dark"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <geometry><cylinder radius="${wheel_radius}" length="${wheel_width}"/></geometry>
+    </collision>
+    <inertial>
+      <mass value="1.0"/>
+      <inertia ixx="0.007" ixy="0" ixz="0" iyy="0.007" iyz="0" izz="0.013"/>
+    </inertial>
+  </link>
+
+  <!-- Wheel BACK  (drive motor 3 / steer motor ID 13) -->
+  <joint name="wheel_back_joint" type="fixed">
+    <parent link="base_link"/>
+    <child  link="wheel_back"/>
+    <origin xyz="${w_b_x} ${w_b_y} 0" rpy="0 0 0"/>
+  </joint>
+  <link name="wheel_back">
+    <visual>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <geometry><cylinder radius="${wheel_radius}" length="${wheel_width}"/></geometry>
+      <material name="rubber_dark"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <geometry><cylinder radius="${wheel_radius}" length="${wheel_width}"/></geometry>
+    </collision>
+    <inertial>
+      <mass value="1.0"/>
+      <inertia ixx="0.007" ixy="0" ixz="0" iyy="0.007" iyz="0" izz="0.013"/>
+    </inertial>
+  </link>
+
+  <!-- ============================================================
+       LIVOX MID360  — LiDAR + built-in IMU
+       frame_id "livox_frame" matches the driver launch parameter.
+       IMU topic /livox/imu also uses this frame.
+       origin = bottom mounting-hole centre of the MID360 unit.
+  ============================================================ -->
+  <xacro:livox_mid360 parent="base_link" name="livox_frame">
+    <origin xyz="${livox_x} ${livox_y} ${livox_z}" rpy="0 ${livox_pitch} 0"/>
+  </xacro:livox_mid360>
+
+  <!-- ============================================================
+       INTEL REALSENSE D435  — RGB + Depth camera (obstacle detection only).
+       Mounted on pan/tilt arm.  URDF represents Nav pose: 42° nose-down.
+       Livox is used for localization only; camera handles all costmap obstacles.
+       The macro (from realsense2_description) creates:
+         camera_link, camera_color_frame, camera_color_optical_frame,
+         camera_depth_frame, camera_depth_optical_frame, etc.
+  ============================================================ -->
+  <xacro:sensor_d435 parent="base_link"
+                     name="camera"
+                     use_nominal_extrinsics="true"
+                     use_mesh="true">
+    <origin xyz="${camera_x} ${camera_y} ${camera_z}"
+            rpy="0 ${camera_pitch} 0"/>
+  </xacro:sensor_d435>
+
+</robot>

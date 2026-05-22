@@ -1,0 +1,28 @@
+{
+  /*** GlobalMapping ***
+  // See config_global_mapping_gpu.json for the full description of the parameters.
+  */
+  "global_mapping": {
+    "so_name": "libglobal_mapping.so",
+    "enable_imu": true,
+    "enable_optimization": true,
+    "init_pose_damping_scale": 1e6,
+    // Relative pose factors
+    "create_between_factors": true,
+    "between_registration_type": "GICP",
+    // Registration error factors
+    "registration_error_factor_type": "VGICP",
+    "randomsampling_rate": 0.4,
+    "submap_voxel_resolution": 0.5,
+    "submap_voxelmap_levels": 1,
+    "submap_voxelmap_scaling_factor": 2.0,
+    "max_implicit_loop_distance": 100.0,
+    // min_implicit_loop_overlap: 0.2 — 这是触发全局重定位（loop closure）的关键门槛
+    //当前的新 submap 与保存的 submap 之间必须有 20% 以上的重叠才会触发匹配。LiDAR 位置改变后，扫描角度/高度不同，重叠率可能达不到 20%。
+    "min_implicit_loop_overlap": 0.08,
+    // Optimizer settings
+    "use_isam2_dogleg": false,
+    "isam2_relinearize_skip": 1,
+    "isam2_relinearize_thresh": 0.1
+  }
+}

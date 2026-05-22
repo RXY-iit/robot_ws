@@ -1,0 +1,64 @@
+# FAST-LIO2 configuration for Livox MID360
+# Repository: https://github.com/hku-mars/FAST_LIO  (ROS2 branch)
+#
+# MID360 setup notes:
+#   xfer_format = 1 (CustomMsg) in msg_MID360_launch.py is required for FAST-LIO2.
+#   livox_ros_driver2 default is xfer_format=0 (PointCloud2) which is used
+#   by gicp_localizer_node.py. Switch to xfer_format=1 only when launching
+#   FAST-LIO2. A pointcloud_relay node can convert CustomMsg → PointCloud2
+#   for the rest of the stack.
+#
+# This FAST-LIO2 ROS2 port expects a normal ROS2 parameter YAML:
+# /** -> ros__parameters.  Keep this structure; otherwise rcl aborts before
+# the node can create /fast_lio/odometry.
+
+/**:
+    ros__parameters:
+        feature_extract_enable: false
+        point_filter_num: 3
+        max_iteration: 3
+        filter_size_surf: 0.5
+        filter_size_map: 0.5
+        cube_side_length: 1000.0
+        runtime_pos_log_enable: false
+        map_file_path: "./test.pcd"
+
+        common:
+            lid_topic: "/livox/lidar"
+            imu_topic: "/livox/imu"
+            time_sync_en: false
+            time_offset_lidar_to_imu: 0.0
+
+        preprocess:
+            lidar_type: 1          # 1 = Livox CustomMsg
+            scan_line: 4
+            timestamp_unit: 3      # FAST-LIO ROS2 MID360 default
+            scan_rate: 10
+            blind: 0.5
+
+        mapping:
+            acc_cov: 0.1
+            gyr_cov: 0.1
+            b_acc_cov: 0.0001
+            b_gyr_cov: 0.0001
+            fov_degree: 360.0
+            det_range: 100.0
+            extrinsic_est_en: false
+            # MID360 LiDAR/IMU package. Start with identity and tune only if
+            # FAST-LIO odometry shows systematic drift or tilted motion.
+            extrinsic_T: [0.0, 0.0, 0.0]
+            extrinsic_R: [1.0, 0.0, 0.0,
+                          0.0, 1.0, 0.0,
+                          0.0, 0.0, 1.0]
+
+        publish:
+            path_en: true
+            effect_map_en: false
+            map_en: false
+            scan_publish_en: true
+            dense_publish_en: false
+            scan_bodyframe_pub_en: false
+
+        pcd_save:
+            pcd_save_en: false
+            interval: -1

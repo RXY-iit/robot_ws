@@ -1,0 +1,7 @@
+image: l402_2d_map_clean_0509.pgm
+mode: trinary
+resolution: 0.050000
+origin: [-25.356092, -50.408150, 0.0]
+negate: 0
+occupied_thresh: 0.65
+free_thresh: 0.25

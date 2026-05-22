@@ -1,0 +1,31 @@
+# Personal / agent state
+.agents/
+.claude/
+.codex
+.codex/
+note-rxy.md
+
+# Local notes and task docs not for this repository
+todo-my/
+diary/
+
+# ROS generated outputs
+build/
+install/
+log/
+
+# Runtime debug / bags
+debug-output/
+debug-ouput/
+slam_bag/
+
+# Python / editor noise
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.vscode/
+.idea/
+
+# Large/local visualization state
+imgui.ini

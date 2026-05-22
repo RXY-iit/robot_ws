@@ -1,0 +1,35 @@
+# Joy-Con (or generic gamepad) → /cmd_vel mapping for omni-drive base
+# Axis / button numbers follow the Linux joystick driver (js0).
+#
+# Default layout (teleop_twist_joy "PS3/generic" style):
+#   axis 0 : left  stick L/R   → lateral  (y)
+#   axis 1 : left  stick U/D   → forward  (x)
+#   axis 3 : right stick L/R   → yaw
+#   button 4 : L1 / LB         → enable (dead-man switch)
+#   button 5 : R1 / RB         → turbo
+#
+# To find your device's mapping, run:
+#   ros2 run joy joy_node
+#   ros2 topic echo /joy
+# and move each stick / press each button while watching the output.
+
+teleop_twist_joy_node:
+  ros__parameters:
+    axis_linear:
+      x: 1          # left stick up/down  → forward / backward
+      y: 0          # left stick left/right → strafe (omni base)
+    axis_angular:
+      yaw: 3        # right stick left/right → rotation
+    scale_linear:
+      x: 0.3        # max forward speed  [m/s]
+      y: 0.3        # max lateral speed  [m/s]
+    scale_linear_turbo:
+      x: 0.6
+      y: 0.6
+    scale_angular:
+      yaw: 0.5      # max yaw rate [rad/s]
+    scale_angular_turbo:
+      yaw: 1.0
+    enable_button: 4        # L1 / LB  — hold to send cmd_vel (safety dead-man)
+    enable_turbo_button: 5  # R1 / RB  — hold together with enable for turbo speed
+    require_enable_button: true

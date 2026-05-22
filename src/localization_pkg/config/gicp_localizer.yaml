@@ -1,0 +1,60 @@
+gicp_localizer:
+  ros__parameters:
+
+    # ── Map ──────────────────────────────────────────────────────────────────
+    # Path to the 3D PLY map exported from GLIM.
+    # This map is fixed (prior map); the localizer does NOT modify it.
+    map_path: "/home/matsunaga-h/robot_ws/maps/saved-map/map-l402-0503/l402_points_0503"
+
+    # ── Downsampling ─────────────────────────────────────────────────────────
+    # map_voxel_size: voxel grid applied once at startup to reduce map size.
+    #   Smaller → denser map, slower match; larger → faster but less precise.
+    #   0.25 m is a good balance for an indoor 20 m×15 m corridor environment.
+    map_voxel_size: 0.25
+
+    # scan_voxel_size: applied to each incoming scan before matching.
+    #   Keep slightly smaller than map_voxel_size for good correspondence density.
+    scan_voxel_size: 0.20
+
+    # ── GICP parameters ───────────────────────────────────────────────────────
+    # max_correspondence_distance: reject point pairs farther than this (m).
+    #   Should be ≥ map_voxel_size. Larger helps convergence from poor initial
+    #   pose but increases outlier risk.
+    max_correspondence_distance: 1.5
+
+    # fitness_score_threshold: INLIER RMSE above this → localization rejected,
+    #   previous TF is rebroadcast unchanged.  Tune after first run.
+    fitness_score_threshold: 0.5
+
+    # normal_search_radius: KD-tree radius for normal estimation (m).
+    #   ~3-4× voxel_size is a good starting point.
+    normal_search_radius: 0.8
+
+    # ── Update rate ──────────────────────────────────────────────────────────
+    # Localization runs on this timer (seconds).  0.5 = 2 Hz.
+    # At 0.1–0.3 m/s robot speed, 0.5 s gives ≤15 cm of motion between updates.
+    localize_period: 0.5
+
+    # TF is cheap to rebroadcast and Nav2 needs fresh transforms at controller rate.
+    # Keep expensive GICP matching at localize_period, but publish the latest valid
+    # map->odom transform at 30 Hz.
+    tf_broadcast_period: 0.033333
+
+    # ── TF frames ────────────────────────────────────────────────────────────
+    map_frame:   "map"
+    odom_frame:  "odom"
+    lidar_frame: "livox_frame"
+
+    # ── Initial pose (map frame, 2-D) ─────────────────────────────────────────
+    # Robot starts at a fixed position each session (same charging station / door).
+    # Set these to the approximate starting position in the map.
+    # Override at launch time: ros2 launch ... initial_x:=1.5 initial_y:=0.5
+    initial_x:   0.0
+    initial_y:   0.0
+    initial_yaw: 0.0   # radians
+
+    # ── FAST-LIO2 hint (Phase 2) ─────────────────────────────────────────────
+    # When FAST-LIO2 is running, its odometry can improve the initial pose
+    # estimate for each GICP call.  Set true only after setup_fast_lio.sh.
+    use_fast_lio_hint:    false
+    fast_lio_odom_topic:  "/fast_lio/odometry"

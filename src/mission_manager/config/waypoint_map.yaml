@@ -1,0 +1,55 @@
+# waypoint_map.yaml — registered navigation waypoints for L402 lab.
+#
+# Each waypoint:
+#   x, y: map frame position (metres)
+#   yaw:  heading at arrival (radians, 0 = +x direction)
+#   description: human-readable label
+#   speed_profile: "normal" | "cautious"  (cautious = ~60% speed)
+#   clearance_mode: "normal" | "narrow"   (narrow = tighter inflation tolerance)
+#
+# Usage from Operation Lib:
+#   op.go_to("entrance")
+#   op.go_to_pose(x=1.0, y=2.0, yaw=0.0)
+#
+# Coordinates: FILL IN after measuring with RViz 2D Goal Pose tool.
+
+waypoints:
+  home:
+    x: 0.0
+    y: 0.0
+    yaw: 0.0
+    description: "Home / charging position"
+    speed_profile: normal
+    clearance_mode: normal
+
+  entrance:
+    x: 0.0       # TODO: measure
+    y: 0.0       # TODO: measure
+    yaw: 0.0
+    description: "Lab entrance (L402 door)"
+    speed_profile: cautious
+    clearance_mode: normal
+
+  desk_a:
+    x: 0.0       # TODO: measure
+    y: 0.0       # TODO: measure
+    yaw: 0.0
+    description: "Desk A wait position"
+    speed_profile: normal
+    clearance_mode: normal
+
+  shelf_a:
+    x: 0.0       # TODO: measure
+    y: 0.0       # TODO: measure
+    yaw: 1.5708
+    description: "Shelf A approach (face shelf)"
+    speed_profile: cautious
+    clearance_mode: narrow
+
+  corridor_mid:
+    x: 0.0       # TODO: measure
+    y: 0.0       # TODO: measure
+    yaw: 0.0
+    description: "Corridor midpoint"
+    speed_profile: normal
+    clearance_mode: normal

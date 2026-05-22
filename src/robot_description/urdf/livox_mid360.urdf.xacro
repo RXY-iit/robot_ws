@@ -1,0 +1,61 @@
+<?xml version="1.0"?>
+<!--
+  Livox MID360 — URDF macro  (hemisphere visual as requested)
+  Datasheet dimensions:  Φ70.4 mm × 65.0 mm (H),  265 g
+  Frame origin: centre of bottom mounting face (4× M3 holes)
+-->
+<robot xmlns:xacro="http://ros.org/wiki/xacro">
+
+  <xacro:macro name="livox_mid360" params="parent name:=livox_frame *origin">
+
+    <joint name="${name}_joint" type="fixed">
+      <xacro:insert_block name="origin"/>
+      <parent link="${parent}"/>
+      <child  link="${name}"/>
+    </joint>
+
+    <link name="${name}">
+
+      <!-- Flat cylindrical base / mounting body  (Φ70.4 × 25 mm) -->
+      <visual>
+        <origin xyz="0 0 0.0125" rpy="0 0 0"/>
+        <geometry>
+          <cylinder radius="0.0352" length="0.025"/>
+        </geometry>
+        <material name="livox_body">
+          <color rgba="0.15 0.15 0.15 1.0"/>
+        </material>
+      </visual>
+
+      <!-- Hemisphere dome  (radius 35.2 mm, centred at top of base cylinder)
+           A full sphere visually reads as a dome when the flat cylinder
+           sits below it — this is the half-sphere appearance requested.  -->
+      <visual>
+        <origin xyz="0 0 0.0352" rpy="0 0 0"/>
+        <geometry>
+          <sphere radius="0.0352"/>
+        </geometry>
+        <material name="livox_dome">
+          <color rgba="0.20 0.20 0.20 1.0"/>
+        </material>
+      </visual>
+
+      <!-- Collision: single cylinder covering full body -->
+      <collision>
+        <origin xyz="0 0 0.0325" rpy="0 0 0"/>
+        <geometry>
+          <cylinder radius="0.0352" length="0.065"/>
+        </geometry>
+      </collision>
+
+      <inertial>
+        <mass value="0.265"/>
+        <origin xyz="0 0 0.032"/>
+        <inertia ixx="0.0002" ixy="0" ixz="0"
+                 iyy="0.0002" iyz="0"
+                 izz="0.0001"/>
+      </inertial>
+    </link>
+
+  </xacro:macro>
+</robot>
