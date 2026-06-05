@@ -1,0 +1,61 @@
+{
+  /*** Sim sensor configuration ***
+  Isaac sim currently feeds GLIM with /livox/lidar_pc2_accumulated as plain
+  sensor_msgs/PointCloud2. This message does not carry Livox per-point time
+  fields, so use global-shutter LiDAR semantics and disable deskew checks that
+  require IMU coverage over the scan duration.
+  */
+  "sensors": {
+    "imu_acc_noise": 0.05,
+    "imu_gyro_noise": 0.02,
+    "imu_int_noise": 0.001,
+    "imu_bias_noise": 1e-5,
+
+    "global_shutter_lidar": true,
+    "T_lidar_imu": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ],
+    "intensity_field": "intensity",
+    "ring_field": "",
+
+    "autoconf_perpoint_times": false,
+    "autoconf_prefer_frame_time": true,
+    "perpoint_relative_time": true,
+    "perpoint_time_scale": 1.0,
+
+    "global_shutter_camera": true,
+    "image_size": [
+      848,
+      480
+    ],
+    "T_lidar_camera": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ],
+    "intrinsics": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "distortion_model": "plumb_bob",
+    "distortion_coeffs": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  }
+}

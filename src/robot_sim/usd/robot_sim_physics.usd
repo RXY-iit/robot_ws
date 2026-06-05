@@ -1,0 +1,330 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    doc = """Isaac Sim 5.0 physics and ROS2 bridge overlay for robot_sim.
+
+This layer references robot_sim_flattened.usda, fixes the imported mobile-base
+articulation root, adds a D455 visual asset, and authors the stable ROS2 clock
+and joint ActionGraph nodes. RTX LiDAR/camera render-product publishing is kept
+out of the default Play path because Isaac Sim 5.0 can segfault when hand-authored
+sensor render-product graphs are evaluated at Play.
+"""
+    metersPerUnit = 1
+    subLayers = [
+        @robot_sim_flattened.usda@
+    ]
+    timeCodesPerSecond = 60
+    upAxis = "Z"
+)
+
+def Material "RobotSim_Physics_Material" (
+    apiSchemas = ["PhysicsMaterialAPI"]
+)
+{
+    float physics:dynamicFriction = 1.1
+    float physics:restitution = 0
+    float physics:staticFriction = 1.3
+}
+
+over "World"
+{
+    over "robot_sim"
+    {
+        custom string sim:isaacVersion = "5.0.0"
+        custom string sim:clockTopic = "/clock"
+        custom string sim:jointCommandTopic = "/sim/target_joint_states"
+        custom string sim:jointStateTopic = "/joint_states"
+        custom string sim:lidarPointCloudTopic = "/livox/lidar_pc2_from_sim"
+        custom string sim:cameraDepthTopic = "/camera/camera/depth/image_rect_raw"
+        custom string sim:cameraInfoTopic = "/camera/camera/depth/camera_info"
+
+        over "base_footprint" (
+            prepend apiSchemas = ["PhysicsArticulationRootAPI", "PhysxArticulationAPI"]
+        )
+        {
+            bool physxArticulation:enabledSelfCollisions = 0
+            int physxArticulation:solverPositionIterationCount = 64
+            int physxArticulation:solverVelocityIterationCount = 8
+
+            # The imported URDF collapsed base_link into base_footprint. Keep it
+            # as the physical root, but lower COM so the three-wheel support
+            # polygon wins when Play starts.
+            float physics:mass = 22
+            point3f physics:centerOfMass = (-0.08, 0, 0.09)
+            float3 physics:diagonalInertia = (1.2, 1.35, 0.75)
+            quatf physics:principalAxes = (1, 0, 0, 0)
+            quatd xformOp:orient = (1, 0, 0, 0)
+            double3 xformOp:translate = (0, 0, 0)
+
+            over "collisions" (
+                active = false
+            )
+            {
+            }
+
+            def Cube "sim_chassis_collision" (
+                apiSchemas = ["PhysicsCollisionAPI"]
+            )
+            {
+                rel physics:material:binding = </RobotSim_Physics_Material>
+                uniform token purpose = "guide"
+                double size = 1
+                float3[] extent = [(-0.5, -0.5, -0.5), (0.5, 0.5, 0.5)]
+                double3 xformOp:scale = (0.64, 0.54, 0.34)
+                # bottom = 0.23m, above wheel ground contact; this prevents the
+                # body box from levering the robot onto an edge at startup.
+                double3 xformOp:translate = (-0.09, 0, 0.40)
+                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+            }
+
+            over "base_link"
+            {
+                over "camera_bottom_screw_frame"
+                {
+                    over "camera_link"
+                    {
+                        def Xform "d455_sensor" (
+                            references = @./assets/realsense_d455/rsd455.usd@
+                        )
+                        {
+                            quatd xformOp:orient = (1, 0, 0, 0)
+                            double3 xformOp:scale = (1, 1, 1)
+                            double3 xformOp:translate = (0, 0, 0)
+                            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                        }
+                    }
+                }
+
+                over "livox_frame"
+                {
+                    def Xform "mid360_mount"
+                    {
+                        custom string sim:note = "Create the runtime OmniLidar with scripts/setup_isaac_mid360_ros.py after this stage can Play without crashing."
+                        quatd xformOp:orient = (1, 0, 0, 0)
+                        double3 xformOp:scale = (1, 1, 1)
+                        double3 xformOp:translate = (0, 0, 0)
+                        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                    }
+                }
+            }
+        }
+
+        over "wheel_back"
+        {
+            rel physics:material:binding = </RobotSim_Physics_Material>
+        }
+
+        over "wheel_left"
+        {
+            rel physics:material:binding = </RobotSim_Physics_Material>
+        }
+
+        over "wheel_right"
+        {
+            rel physics:material:binding = </RobotSim_Physics_Material>
+        }
+
+        over "joints"
+        {
+            over "wheel_back_steer"
+            {
+                float drive:angular:physics:damping = 4
+                float drive:angular:physics:stiffness = 450
+                float drive:angular:physics:maxForce = 300
+            }
+
+            over "wheel_left_steer"
+            {
+                float drive:angular:physics:damping = 4
+                float drive:angular:physics:stiffness = 450
+                float drive:angular:physics:maxForce = 300
+            }
+
+            over "wheel_right_steer"
+            {
+                float drive:angular:physics:damping = 4
+                float drive:angular:physics:stiffness = 450
+                float drive:angular:physics:maxForce = 300
+            }
+
+            over "wheel_back_drive"
+            {
+                float drive:angular:physics:damping = 0.15
+                float drive:angular:physics:stiffness = 0
+                float drive:angular:physics:maxForce = 120
+            }
+
+            over "wheel_left_drive"
+            {
+                float drive:angular:physics:damping = 0.15
+                float drive:angular:physics:stiffness = 0
+                float drive:angular:physics:maxForce = 120
+            }
+
+            over "wheel_right_drive"
+            {
+                float drive:angular:physics:damping = 0.15
+                float drive:angular:physics:stiffness = 0
+                float drive:angular:physics:maxForce = 120
+            }
+        }
+
+        over "root_joint" (
+            active = false
+            delete apiSchemas = ["PhysicsArticulationRootAPI", "PhysxArticulationAPI"]
+        )
+        {
+            bool physics:jointEnabled = 0
+        }
+    }
+
+    def Cube "GroundPlane" (
+        apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        rel physics:material:binding = </RobotSim_Physics_Material>
+        double size = 1
+        float3[] extent = [(-0.5, -0.5, -0.5), (0.5, 0.5, 0.5)]
+        double3 xformOp:scale = (20, 20, 0.02)
+        double3 xformOp:translate = (0, 0, -0.01)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+    }
+
+    def OmniGraph "ROS2_ActionGraph"
+    {
+        token evaluationMode = "Automatic"
+        token evaluator:type = "execution"
+        token fabricCacheBacking = "Shared"
+        int2 fileFormatVersion = (1, 9)
+        token pipelineStage = "pipelineStageSimulation"
+
+        def OmniGraphNode "on_playback_tick" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            token node:type = "omni.graph.action.OnPlaybackTick"
+            int node:typeVersion = 2
+            custom uint outputs:tick (
+                customData = { bool isExecution = 1 }
+            )
+            uniform float2 ui:nodegraph:node:pos = (0, 0)
+        }
+
+        def OmniGraphNode "ros2_context" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            custom uchar inputs:domain_id = 0
+            custom bool inputs:useDomainIDEnvVar = 1
+            token node:type = "isaacsim.ros2.bridge.ROS2Context"
+            int node:typeVersion = 2
+            custom uint64 outputs:context
+            uniform float2 ui:nodegraph:node:pos = (0, 160)
+        }
+
+        def OmniGraphNode "read_sim_time" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            token node:type = "isaacsim.core.nodes.IsaacReadSimulationTime"
+            int node:typeVersion = 1
+            custom double outputs:simulationTime
+            uniform float2 ui:nodegraph:node:pos = (0, 320)
+        }
+
+        def OmniGraphNode "publish_clock" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            custom uint64 inputs:context
+            prepend uint64 inputs:context.connect = </World/ROS2_ActionGraph/ros2_context.outputs:context>
+            custom uint inputs:execIn (
+                customData = { bool isExecution = 1 }
+            )
+            prepend uint inputs:execIn.connect = </World/ROS2_ActionGraph/on_playback_tick.outputs:tick>
+            custom string inputs:topicName = "clock"
+            custom double inputs:timeStamp
+            prepend double inputs:timeStamp.connect = </World/ROS2_ActionGraph/read_sim_time.outputs:simulationTime>
+            token node:type = "isaacsim.ros2.bridge.ROS2PublishClock"
+            int node:typeVersion = 1
+            uniform float2 ui:nodegraph:node:pos = (360, 0)
+        }
+
+        def OmniGraphNode "publish_joint_state" (
+            active = false
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            custom uint64 inputs:context
+            prepend uint64 inputs:context.connect = </World/ROS2_ActionGraph/ros2_context.outputs:context>
+            custom uint inputs:execIn (
+                customData = { bool isExecution = 1 }
+            )
+            prepend uint inputs:execIn.connect = </World/ROS2_ActionGraph/on_playback_tick.outputs:tick>
+            rel inputs:targetPrim = </World/robot_sim/base_footprint>
+            custom string inputs:topicName = "joint_states"
+            custom double inputs:timeStamp
+            prepend double inputs:timeStamp.connect = </World/ROS2_ActionGraph/read_sim_time.outputs:simulationTime>
+            token node:type = "isaacsim.ros2.bridge.ROS2PublishJointState"
+            int node:typeVersion = 1
+            uniform float2 ui:nodegraph:node:pos = (360, 180)
+        }
+
+        def OmniGraphNode "subscribe_joint_state" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            custom uint64 inputs:context
+            prepend uint64 inputs:context.connect = </World/ROS2_ActionGraph/ros2_context.outputs:context>
+            custom uint inputs:execIn (
+                customData = { bool isExecution = 1 }
+            )
+            prepend uint inputs:execIn.connect = </World/ROS2_ActionGraph/on_playback_tick.outputs:tick>
+            custom string inputs:topicName = "sim/target_joint_states"
+            custom token[] outputs:jointNames
+            custom double[] outputs:positionCommand
+            custom double[] outputs:velocityCommand
+            custom double[] outputs:effortCommand
+            token node:type = "isaacsim.ros2.bridge.ROS2SubscribeJointState"
+            int node:typeVersion = 1
+            uniform float2 ui:nodegraph:node:pos = (360, 360)
+        }
+
+        def OmniGraphNode "articulation_controller" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            custom uint inputs:execIn (
+                customData = { bool isExecution = 1 }
+            )
+            prepend uint inputs:execIn.connect = </World/ROS2_ActionGraph/on_playback_tick.outputs:tick>
+            # Use targetPrim only. If robotPath is populated, Isaac ignores
+            # targetPrim; string paths do not remap when this USD is referenced
+            # under another prim.
+            rel inputs:targetPrim = </World/robot_sim/base_footprint>
+            custom string inputs:robotPath = ""
+            custom token[] inputs:jointNames
+            prepend token[] inputs:jointNames.connect = </World/ROS2_ActionGraph/subscribe_joint_state.outputs:jointNames>
+            custom double[] inputs:positionCommand
+            prepend double[] inputs:positionCommand.connect = </World/ROS2_ActionGraph/subscribe_joint_state.outputs:positionCommand>
+            custom double[] inputs:velocityCommand
+            prepend double[] inputs:velocityCommand.connect = </World/ROS2_ActionGraph/subscribe_joint_state.outputs:velocityCommand>
+            custom double[] inputs:effortCommand
+            prepend double[] inputs:effortCommand.connect = </World/ROS2_ActionGraph/subscribe_joint_state.outputs:effortCommand>
+            token node:type = "isaacsim.core.nodes.IsaacArticulationController"
+            int node:typeVersion = 1
+            uniform float2 ui:nodegraph:node:pos = (720, 360)
+        }
+
+    }
+}
+
+over "physicsScene"
+{
+    vector3f physics:gravityDirection = (0, 0, -1)
+    float physics:gravityMagnitude = 9.81
+    token physxScene:broadphaseType = "MBP"
+    bool physxScene:enableGPUDynamics = 0
+    int physxScene:solverType = 1
+    int physxScene:timeStepsPerSecond = 120
+}

@@ -1,0 +1,11 @@
+pointcloud2_to_livox_custom_msg_node:
+  ros__parameters:
+    input_topic: /point_cloud
+    output_topic: /livox/lidar
+    accumulated_pointcloud_topic: /livox/lidar_pc2_accumulated
+    frame_id: livox_frame
+    lidar_id: 0
+    publish_rate: 10.0
+    target_points_per_packet: 20000
+    max_buffer_points: 60000
+    accumulate_packets: true

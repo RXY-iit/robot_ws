@@ -216,6 +216,7 @@ else(ROS_EDITION STREQUAL "ROS2")
   # Add ROS Version MACRO
   #---------------------------------------------------------------------------------------
   add_definitions(-DBUILDING_ROS2)
+  option(LIVOX_MSG_ONLY "Build only livox_ros_driver2 message interfaces for simulation" OFF)
 
   # Detect ROS distro for version-specific build paths
   if(NOT DISTRO_ROS)
@@ -228,18 +229,23 @@ else(ROS_EDITION STREQUAL "ROS2")
   # find_package(<dependency> REQUIRED)
   find_package(ament_cmake_auto REQUIRED)
   ament_auto_find_build_dependencies()
-  find_package(PCL REQUIRED)
   find_package(std_msgs REQUIRED)
   find_package(builtin_interfaces REQUIRED)
   find_package(rosidl_default_generators REQUIRED)
 
+  if(NOT LIVOX_MSG_ONLY)
+    find_package(PCL REQUIRED)
+  endif()
+
   # check apr
-  find_package(PkgConfig)
-  pkg_check_modules(APR apr-1)
-  if (APR_FOUND)
-    message(${APR_INCLUDE_DIRS})
-    message(${APR_LIBRARIES})
-  endif (APR_FOUND)
+  if(NOT LIVOX_MSG_ONLY)
+    find_package(PkgConfig)
+    pkg_check_modules(APR apr-1)
+    if (APR_FOUND)
+      message(${APR_INCLUDE_DIRS})
+      message(${APR_LIBRARIES})
+    endif (APR_FOUND)
+  endif()
 
   # generate custom msg headers
   set(LIVOX_INTERFACES livox_interfaces2)
@@ -249,6 +255,15 @@ else(ROS_EDITION STREQUAL "ROS2")
     DEPENDENCIES builtin_interfaces std_msgs
     LIBRARY_NAME ${PROJECT_NAME}
   )
+
+  if(LIVOX_MSG_ONLY)
+    message(STATUS "LIVOX_MSG_ONLY=ON: building Livox CustomMsg interfaces only; hardware driver and Livox SDK are skipped.")
+    ament_auto_package(INSTALL_TO_SHARE
+      config
+      launch_ROS2
+    )
+    return()
+  endif()
 
   ## make sure the livox_lidar_sdk_shared library is installed
   find_library(LIVOX_LIDAR_SDK_LIBRARY liblivox_lidar_sdk_shared.so /usr/local/lib REQUIRED)

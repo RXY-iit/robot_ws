@@ -1,0 +1,178 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://ros.org/wiki/xacro" name="robot_sim">
+
+  <xacro:include filename="$(find robot_description)/urdf/livox_mid360.urdf.xacro"/>
+  <xacro:include filename="$(find realsense2_description)/urdf/_d435.urdf.xacro"/>
+
+  <!-- Real robot geometry from robot_description plus sim-controllable wheel joints. -->
+  <xacro:property name="wheel_radius" value="0.1125"/>
+  <xacro:property name="wheel_width" value="0.060"/>
+
+  <xacro:property name="w_r_x" value="0.2064"/>
+  <xacro:property name="w_r_y" value="-0.2489"/>
+  <xacro:property name="w_l_x" value="0.2064"/>
+  <xacro:property name="w_l_y" value="0.2489"/>
+  <xacro:property name="w_b_x" value="-0.3850"/>
+  <xacro:property name="w_b_y" value="0.0000"/>
+
+  <xacro:property name="chassis_length" value="0.670"/>
+  <xacro:property name="chassis_width" value="0.600"/>
+  <xacro:property name="chassis_height" value="0.580"/>
+  <xacro:property name="chassis_cx" value="-0.090"/>
+  <xacro:property name="chassis_bottom" value="-0.0025"/>
+  <xacro:property name="chassis_cz" value="${chassis_bottom + chassis_height/2}"/>
+  <xacro:property name="chassis_top" value="${chassis_bottom + chassis_height}"/>
+
+  <xacro:property name="livox_x" value="0.240"/>
+  <xacro:property name="livox_y" value="0.000"/>
+  <xacro:property name="livox_z" value="1.38"/>
+  <xacro:property name="livox_pitch" value="0.5236"/>
+
+  <xacro:property name="col_side" value="0.040"/>
+  <xacro:property name="col_cx" value="${livox_x}"/>
+  <xacro:property name="col_height" value="${livox_z - chassis_top}"/>
+  <xacro:property name="col_cz" value="${chassis_top + col_height/2}"/>
+
+  <xacro:property name="camera_x" value="0.320"/>
+  <xacro:property name="camera_y" value="0.000"/>
+  <xacro:property name="camera_z" value="0.6375"/>
+  <xacro:property name="camera_pitch" value="0.7330"/>
+
+  <xacro:property name="front_col_side" value="0.040"/>
+  <xacro:property name="front_col_x" value="${camera_x}"/>
+  <xacro:property name="front_col_y" value="${camera_y}"/>
+  <xacro:property name="front_col_height" value="${camera_z - chassis_top}"/>
+  <xacro:property name="front_col_cz" value="${chassis_top + front_col_height/2}"/>
+
+  <material name="aluminium">
+    <color rgba="0.75 0.75 0.80 1.0"/>
+  </material>
+  <material name="column_black">
+    <color rgba="0.10 0.10 0.10 1.0"/>
+  </material>
+  <material name="rubber_dark">
+    <color rgba="0.10 0.10 0.10 1.0"/>
+  </material>
+  <material name="steer_hub">
+    <color rgba="0.25 0.25 0.28 1.0"/>
+  </material>
+
+  <link name="base_footprint"/>
+
+  <joint name="base_footprint_joint" type="fixed">
+    <parent link="base_footprint"/>
+    <child link="base_link"/>
+    <origin xyz="0 0 ${wheel_radius}" rpy="0 0 0"/>
+  </joint>
+
+  <link name="base_link">
+    <visual>
+      <origin xyz="${chassis_cx} 0 ${chassis_cz}" rpy="0 0 0"/>
+      <geometry>
+        <box size="${chassis_length} ${chassis_width} ${chassis_height}"/>
+      </geometry>
+      <material name="aluminium"/>
+    </visual>
+    <visual>
+      <origin xyz="${col_cx} 0 ${col_cz}" rpy="0 0 0"/>
+      <geometry>
+        <box size="${col_side} ${col_side} ${col_height}"/>
+      </geometry>
+      <material name="column_black"/>
+    </visual>
+    <visual>
+      <origin xyz="${front_col_x} ${front_col_y} ${front_col_cz}" rpy="0 0 0"/>
+      <geometry>
+        <box size="${front_col_side} ${front_col_side} ${front_col_height}"/>
+      </geometry>
+      <material name="column_black"/>
+    </visual>
+    <collision>
+      <origin xyz="${chassis_cx} 0 ${chassis_cz}" rpy="0 0 0"/>
+      <geometry>
+        <box size="${chassis_length} ${chassis_width} ${chassis_height}"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <mass value="12.0"/>
+      <origin xyz="${chassis_cx} 0 ${chassis_cz}"/>
+      <inertia ixx="0.15" ixy="0" ixz="0" iyy="0.20" iyz="0" izz="0.30"/>
+    </inertial>
+  </link>
+
+  <xacro:macro name="sim_wheel" params="side x y">
+    <joint name="wheel_${side}_steer" type="continuous">
+      <parent link="base_link"/>
+      <child link="wheel_${side}_steer_link"/>
+      <origin xyz="${x} ${y} 0" rpy="0 0 0"/>
+      <axis xyz="0 0 1"/>
+      <dynamics damping="0.5" friction="0.1"/>
+    </joint>
+
+    <link name="wheel_${side}_steer_link">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <cylinder radius="0.045" length="0.030"/>
+        </geometry>
+        <material name="steer_hub"/>
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <cylinder radius="0.045" length="0.030"/>
+        </geometry>
+      </collision>
+      <inertial>
+        <mass value="0.3"/>
+        <origin xyz="0 0 0"/>
+        <inertia ixx="0.0004" ixy="0" ixz="0" iyy="0.0004" iyz="0" izz="0.0004"/>
+      </inertial>
+    </link>
+
+    <joint name="wheel_${side}_drive" type="continuous">
+      <parent link="wheel_${side}_steer_link"/>
+      <child link="wheel_${side}"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <axis xyz="0 1 0"/>
+      <dynamics damping="0.2" friction="0.05"/>
+    </joint>
+
+    <link name="wheel_${side}">
+      <visual>
+        <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+        <geometry>
+          <cylinder radius="${wheel_radius}" length="${wheel_width}"/>
+        </geometry>
+        <material name="rubber_dark"/>
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+        <geometry>
+          <cylinder radius="${wheel_radius}" length="${wheel_width}"/>
+        </geometry>
+      </collision>
+      <inertial>
+        <mass value="1.0"/>
+        <origin xyz="0 0 0"/>
+        <inertia ixx="0.007" ixy="0" ixz="0" iyy="0.007" iyz="0" izz="0.013"/>
+      </inertial>
+    </link>
+  </xacro:macro>
+
+  <xacro:sim_wheel side="right" x="${w_r_x}" y="${w_r_y}"/>
+  <xacro:sim_wheel side="left" x="${w_l_x}" y="${w_l_y}"/>
+  <xacro:sim_wheel side="back" x="${w_b_x}" y="${w_b_y}"/>
+
+  <xacro:livox_mid360 parent="base_link" name="livox_frame">
+    <origin xyz="${livox_x} ${livox_y} ${livox_z}" rpy="0 ${livox_pitch} 0"/>
+  </xacro:livox_mid360>
+
+  <xacro:sensor_d435 parent="base_link"
+                     name="camera"
+                     use_nominal_extrinsics="true"
+                     use_mesh="true">
+    <origin xyz="${camera_x} ${camera_y} ${camera_z}" rpy="0 ${camera_pitch} 0"/>
+  </xacro:sensor_d435>
+
+</robot>

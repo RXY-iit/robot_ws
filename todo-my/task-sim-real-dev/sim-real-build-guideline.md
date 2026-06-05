@@ -666,34 +666,107 @@ Phase 1 通過基準:
 ### Phase 2: Sim 環境 map 作成
 
 ```
-目標: Joy-Con で sim robot を走らせ、FAST-LIO2 + GICP / Nav2 用の sim map を作る。
+目標: Joy-Con で sim robot を走らせ、真機 README の GLIM map 作成フローに近い形で sim map を作る。
 ```
 
-- [ ] 手動走行で sim 環境を一周する
-- [ ] LiDAR / IMU / wheel odom / TF / camera を rosbag 記録する
-- [ ] 後続 task で 3D map と Nav2 2D map を生成する
+- [ ] Isaac Sim で factory mapping scene を開く
+- [ ] D455 + `mid360_like` LiDAR を Script Editor から起動する
+- [ ] Joy-Con で sim 環境を低速で一周する
+- [ ] GLIM mapping と rosbag record を同時に走らせる
+- [ ] GLIM dump を `maps/sim_*` に保存する
+- [ ] 必要なら GLIM dump / PLY から Nav2 2D map を生成する
 - [ ] real map と混ざらないように `maps/sim_*` に保存する
 
-記録 topic の目安:
+真機側の基準:
+
+- README の `Step 4: GLIM 建图` では `tools/create_glim_map_quickstart.sh` を使う。
+- GLIM 入力 topic は主に `/livox/lidar`、`/livox/imu`、TF、camera。
+- map dump は `/tmp/dump` から `maps/glim_dump_*` に保存する。
+
+sim 側ではこの流れに合わせて、専用 quickstart を使う:
 
 ```bash
-ros2 bag record \
-  /livox/lidar \
-  /livox/imu \
-  /wheel_odom \
-  /tf \
-  /tf_static \
-  /robot_description \
-  /camera/camera/color/image_raw \
-  /camera/camera/color/camera_info \
-  /camera/camera/depth/image_rect_raw \
-  /camera/camera/depth/camera_info \
-  -o sim_bag/sim_mapping_YYYYMMDD
+tools/sim/create_sim_glim_map_quickstart.sh \
+  --bag sim_factory_mid360_like_001 \
+  --cleanup
 ```
 
-注意:
+前提:
 
-- 具体的な map 作成手順はここでは固定しない。
+```bash
+ros2 pkg list | grep -E '^glim$|^glim_ros$'
+ros2 pkg executables glim_ros
+```
+
+如果 `glim_ros` 不存在，先安装/overlay 真机同一套 GLIM package。sim 不新建 GLIM config，继续使用:
+
+```text
+/home/ruan-x/robot_ws/glim_config
+```
+
+Isaac Sim 側:
+
+```text
+Open:
+  /home/ruan-x/robot_ws/src/robot_sim/usd/scenes/robot_sim_factory_mapping.usd
+
+Press Play, then run in Script Editor:
+```
+
+```python
+exec(open("/home/ruan-x/robot_ws/src/robot_sim/scripts/setup_isaac_sensors_ros.py").read())
+```
+
+記録 topic:
+
+```text
+/livox/lidar
+/livox/lidar_pc2_accumulated
+/point_cloud
+/livox/imu
+/tf
+/tf_static
+/robot_description
+/clock
+/joint_states
+/cmd_vel
+/sim/target_joint_states
+/camera/camera/color/image_raw
+/camera/camera/color/camera_info
+/camera/camera/depth/image_rect_raw
+/camera/camera/depth/camera_info
+```
+
+保存:
+
+```bash
+ls -lah /tmp/dump
+
+mkdir -p /home/ruan-x/robot_ws/maps
+cp -a /tmp/dump /home/ruan-x/robot_ws/maps/sim_glim_dump_$(date +%Y%m%d_%H%M%S)
+```
+
+如果 `ls -lah /tmp/dump` 失败，说明当前还没有 GLIM map dump。先检查 GLIM 是否真的在跑:
+
+```bash
+ros2 topic hz /glim_ros/aligned_points
+ros2 topic list | grep glim
+```
+
+Phase 2 通過基準:
+
+```text
+✅ /point_cloud が mid360_like で publish される
+✅ /livox/lidar が 10 Hz / 20000 points で publish される
+✅ RViz の /livox/lidar_pc2_accumulated で factory scene の壁・箱・柱が見える
+✅ /glim_ros/aligned_points が publish される
+✅ /tmp/dump が生成され、maps/sim_glim_dump_* に保存できる
+```
+
+注意 / limitation:
+
+- 現時点の主線 LiDAR は `mid360_like`。OS1 128ch は fallback / baseline とする。
+- 現時点の sim `/livox/imu` は `robot_sim sim_livox_imu_node` による bringup 用 fake IMU。最終 localization 精度判断前に Isaac 側の real simulated IMU へ置き換える。
 - real 開発時と同じく、TF 時間軸・初期姿勢・frame_id のずれが最大のトラブル源。
 - sim map 完成前に GICP の良否を判断しない。
 

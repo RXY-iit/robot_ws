@@ -1,0 +1,328 @@
+#usda 1.0
+(
+    customLayerData = {
+        dictionary cameraSettings = {
+            dictionary Front = {
+                double3 position = (5, 0, 0)
+                double radius = 5
+            }
+            dictionary Perspective = {
+                double3 position = (4.572088568445663, 5.3951331289045665, 4.242035631600004)
+                double3 target = (0.7784811507765887, -1.0086485987057374, -0.1851669101559743)
+            }
+            dictionary Right = {
+                double3 position = (0, -5, 0)
+                double radius = 5
+            }
+            dictionary Top = {
+                double3 position = (0, 0, 5)
+                double radius = 5
+            }
+            string boundCamera = "/OmniverseKit_Persp"
+        }
+        dictionary omni_layer = {
+            string authoring_layer = "./robot_sim_factory_mapping.usd"
+        }
+        dictionary renderSettings = {
+        }
+    }
+    defaultPrim = "World"
+    doc = """Factory-like mapping scene for robot_sim_physics.usd.
+
+This layer sublayers the runnable robot USD and adds local geometry obstacles
+for LiDAR localization and GLIM map creation. It avoids external asset
+dependencies so Isaac Sim can load the scene without waiting for online assets.
+"""
+    metersPerUnit = 1
+    subLayers = [
+        @../robot_sim_physics.usd@
+    ]
+    timeCodesPerSecond = 60
+    upAxis = "Z"
+)
+
+over "World"
+{
+    def Xform "FactoryMappingEnvironment"
+    {
+        custom string sim:purpose = "Factory-style LiDAR/camera mapping test scene."
+
+        def Cube "factory_floor" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            rel physics:material:binding = </RobotSim_Physics_Material>
+            color3f[] primvars:displayColor = [(0.52, 0.52, 0.5)]
+            double size = 1
+            double3 xformOp:scale = (9, 7, 0.04)
+            double3 xformOp:translate = (2, 0, -0.02)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+        }
+
+        def Cube "back_wall" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            color3f[] primvars:displayColor = [(0.62, 0.76, 0.78)]
+            double size = 1
+            double3 xformOp:scale = (8, 0.1, 1.8)
+            double3 xformOp:translate = (2, 3.2, 0.9)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+        }
+
+        def Cube "left_wall" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            color3f[] primvars:displayColor = [(0.62, 0.76, 0.78)]
+            double size = 1
+            double3 xformOp:scale = (0.1, 5.8, 1.8)
+            double3 xformOp:translate = (-2, 0.2, 0.9)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+        }
+
+        def Cube "right_low_wall" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            color3f[] primvars:displayColor = [(0.62, 0.76, 0.78)]
+            double size = 1
+            double3 xformOp:scale = (0.1, 3, 1.2)
+            double3 xformOp:translate = (5.4, -1.2, 0.6)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+        }
+
+        def Cube "ceiling_panel"
+        {
+            color3f[] primvars:displayColor = [(0.72, 0.7, 0.45)]
+            double size = 1
+            double3 xformOp:scale = (3.8, 2.6, 0.05)
+            double3 xformOp:translate = (1.7, 0.5, 2.2)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+        }
+
+        def Cube "front_tall_box" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            color3f[] primvars:displayColor = [(0.7, 0.9, 0.25)]
+            double size = 1
+            double3 xformOp:scale = (0.55, 0.55, 2)
+            double3 xformOp:translate = (2, -1.6, 1)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+        }
+
+        def Cube "pallet_stack_a" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            color3f[] primvars:displayColor = [(0.35, 0.56, 0.65)]
+            double size = 1
+            double3 xformOp:scale = (0.9, 0.7, 0.85)
+            double3 xformOp:translate = (3, 1.4, 0.425)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+        }
+
+        def Cube "pallet_stack_b" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            color3f[] primvars:displayColor = [(0.32, 0.52, 0.6)]
+            double size = 1
+            double3 xformOp:scale = (0.8, 0.9, 1.3)
+            double3 xformOp:translate = (4.3, 0.5, 0.65)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+        }
+
+        def Cube "machine_block" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            color3f[] primvars:displayColor = [(0.18, 0.32, 0.36)]
+            double size = 1
+            double3 xformOp:scale = (1.2, 0.75, 1)
+            double3 xformOp:translate = (0.6, 2, 0.5)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+        }
+
+        def Cube "angled_barrier" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            color3f[] primvars:displayColor = [(0.86, 0.5, 0.12)]
+            double size = 1
+            quatd xformOp:orient = (0.9238795325, 0, 0, 0.3826834324)
+            double3 xformOp:scale = (1.4, 0.2, 0.75)
+            double3 xformOp:translate = (1.3, -2.3, 0.375)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+        }
+
+        def Cube "shelf_left_upright" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            color3f[] primvars:displayColor = [(0.12, 0.12, 0.12)]
+            double size = 1
+            double3 xformOp:scale = (0.08, 0.08, 1.7)
+            double3 xformOp:translate = (-0.5, -2.2, 0.85)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+        }
+
+        def Cube "shelf_right_upright" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            color3f[] primvars:displayColor = [(0.12, 0.12, 0.12)]
+            double size = 1
+            double3 xformOp:scale = (0.08, 0.08, 1.7)
+            double3 xformOp:translate = (0.5, -2.2, 0.85)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+        }
+
+        def Cube "shelf_low_board" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            color3f[] primvars:displayColor = [(0.48, 0.42, 0.28)]
+            double size = 1
+            double3 xformOp:scale = (1.2, 0.38, 0.08)
+            double3 xformOp:translate = (0, -2.2, 0.75)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+        }
+
+        def Cube "shelf_high_board" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            color3f[] primvars:displayColor = [(0.48, 0.42, 0.28)]
+            double size = 1
+            double3 xformOp:scale = (1.2, 0.38, 0.08)
+            double3 xformOp:translate = (0, -2.2, 1.45)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+        }
+
+        def Cube "column_a" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            color3f[] primvars:displayColor = [(0.42, 0.42, 0.42)]
+            double size = 1
+            double3 xformOp:scale = (0.18, 0.18, 2)
+            double3 xformOp:translate = (-1, 1.4, 1)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+        }
+
+        def Cube "column_b" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            color3f[] primvars:displayColor = [(0.42, 0.42, 0.42)]
+            double size = 1
+            double3 xformOp:scale = (0.18, 0.18, 2)
+            double3 xformOp:translate = (4.7, 2.1, 1)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+        }
+    }
+
+    over "ROS2_ActionGraph"
+    {
+        over "subscribe_joint_state"
+        {
+            custom string inputs:nodeNamespace
+            custom string inputs:qosProfile
+            custom uint64 inputs:queueSize
+            int node:typeVersion = 2
+            custom uint outputs:execOut (
+                customData = {
+                    bool isExecution = 1
+                }
+            )
+            custom double outputs:timeStamp
+        }
+
+        over "publish_joint_state"
+        {
+            custom string inputs:nodeNamespace
+            custom string inputs:qosProfile
+            custom uint64 inputs:queueSize
+            rel inputs:targetPrim (
+                customData = {
+                    dictionary omni = {
+                        dictionary graph = {
+                            string relType = "target"
+                        }
+                    }
+                }
+            )
+        }
+
+        over "publish_clock"
+        {
+            custom string inputs:nodeNamespace
+            custom string inputs:qosProfile
+            custom uint64 inputs:queueSize
+        }
+
+        over "on_playback_tick"
+        {
+            custom double outputs:deltaSeconds
+            custom double outputs:frame
+            custom double outputs:time
+        }
+
+        over "read_sim_time"
+        {
+            custom uint64 inputs:referenceTimeDenominator
+            custom int64 inputs:referenceTimeNumerator
+            custom bool inputs:resetOnStop
+        }
+
+        over "articulation_controller"
+        {
+            custom int[] inputs:jointIndices
+            rel inputs:targetPrim (
+                customData = {
+                    dictionary omni = {
+                        dictionary graph = {
+                            string relType = "target"
+                        }
+                    }
+                }
+            )
+        }
+    }
+}
+
+over "Render" (
+    hide_in_stage_window = true
+    no_delete = true
+)
+{
+    over "OmniverseKit"
+    {
+        over "HydraTextures" (
+            hide_in_stage_window = true
+            no_delete = true
+        )
+        {
+            over "omni_kit_widget_viewport_ViewportTexture_0" (
+                hide_in_stage_window = true
+                no_delete = true
+            )
+            {
+                rel camera = </OmniverseKit_Persp>
+                string omni:rtx:material:db:rtSensorNameToIdMap = "DefaultMaterial:0;AsphaltStandardMaterial:1;AsphaltWeatheredMaterial:2;VegetationGrassMaterial:3;WaterStandardMaterial:4;GlassStandardMaterial:5;FiberGlassMaterial:6;MetalAlloyMaterial:7;MetalAluminumMaterial:8;MetalAluminumOxidizedMaterial:9;PlasticStandardMaterial:10;RetroMarkingsMaterial:11;RetroSignMaterial:12;RubberStandardMaterial:13;SoilClayMaterial:14;ConcreteRoughMaterial:15;ConcreteSmoothMaterial:16;OakTreeBarkMaterial:17;FabricStandardMaterial:18;PlexiGlassStandardMaterial:19;MetalSilverMaterial:20"
+                rel orderedVars = </Render/Vars/LdrColor>
+                custom bool overrideClipRange = 0
+                uniform int2 resolution = (1280, 720)
+            }
+        }
+    }
+}
+
+over "physicsScene" (
+    prepend apiSchemas = ["PhysxSceneAPI"]
+)
+{
+}
+

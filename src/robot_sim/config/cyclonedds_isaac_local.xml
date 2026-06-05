@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CycloneDDS xmlns="https://cdds.io/config"
+            xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+            xsi:schemaLocation="https://cdds.io/config https://raw.githubusercontent.com/eclipse-cyclonedds/cyclonedds/master/etc/cyclonedds.xsd">
+  <Domain Id="any">
+    <General>
+      <!--
+        Isaac Sim and ROS2 CLI are on the same PC. Use the real Ethernet
+        interface instead of lo, because loopback multicast discovery can fail
+        with rmw_cyclonedds_cpp.
+      -->
+      <Interfaces>
+        <NetworkInterface name="enp4s0" priority="default" multicast="default"/>
+      </Interfaces>
+      <AllowMulticast>default</AllowMulticast>
+      <MaxMessageSize>65500B</MaxMessageSize>
+    </General>
+  </Domain>
+</CycloneDDS>
