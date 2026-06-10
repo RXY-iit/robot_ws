@@ -1,0 +1,44 @@
+# Coarse real-robot calibration snapshot.
+# Purpose: get sim/real Test-F roughly aligned before final precision calibration.
+# Date: 2026-06-10
+
+source_bags:
+  clean_linear:
+    - calib_bags/calib_straight-forward_real_01_20260610_204430
+    - calib_bags/calib_straight-reverse_real_04_20260610_204715
+  lower_confidence_linear:
+    - calib_bags/calib_straight-forward_real_04_20260610_204812
+  clean_rotation:
+    - calib_bags/calib_spin-ccw_real_04_20260610_205327
+
+steer_home_raw_ticks:
+  wheel1_id11: 1671
+  wheel2_id12: 2951
+  wheel3_id13: 3213
+
+drive_wheel_effective_radius_m: 0.107
+
+observed_motion_scale:
+  # Script command was 0.15 m/s for 20 s = 3.0 m nominal.
+  # Real wheel odom measured about 2.10 m and 2.08 m on the clean forward/reverse runs.
+  linear_distance_scale_clean_mean: 0.70
+  linear_distance_scale_all_mean: 0.66
+  # Script command was 0.5 rad/s for 25.13 s = 720 deg nominal.
+  # Real wheel odom measured 521.35 deg.
+  yaw_scale_ccw: 0.724
+  # For rough sim-real matching, use one global scale before collecting cleaner lateral data.
+  recommended_initial_global_motion_scale: 0.71
+
+runtime_characteristics:
+  drive_odom_rate_hz: 12.6
+  max_drive_odom_gap_s: 0.15
+  steer_tracking: good
+  straight_lateral_bias_m: -0.01
+  straight_yaw_bias_deg: 0.5
+
+notes:
+  - Current command chain is continuous in the analyzed bags.
+  - /cmd_vel reaches the requested values, and /steer_odom follows /steer_angle.
+  - /drive_odom speed is lower than /drive_vel command, roughly 0.76 on vector magnitude.
+  - The main rough sim-real correction should therefore be a motion/drive response scale, not another steer sign change.
+  - This is not final calibration; it is good enough to make the sim environment approximately match current real behavior.
