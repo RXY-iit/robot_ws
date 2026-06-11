@@ -21,6 +21,8 @@ Joy-Con buttons:
 """
 import os
 from ament_index_python.packages import get_package_share_directory
+from launch.actions import DeclareLaunchArgument
+from launch.substitutions import LaunchConfiguration
 from launch import LaunchDescription
 from launch_ros.actions import Node
 from launch_ros.actions import ComposableNodeContainer
@@ -30,13 +32,14 @@ from launch_ros.descriptions import ComposableNode
 def generate_launch_description():
     nav2_params = os.path.join(
         get_package_share_directory('nav_pkg'), 'config', 'nav2_params.yaml')
+    use_sim_time = LaunchConfiguration('use_sim_time')
 
     controller_server = Node(
         package='nav2_controller',
         executable='controller_server',
         name='controller_server',
         output='screen',
-        parameters=[nav2_params, {'use_sim_time': False}],
+        parameters=[nav2_params, {'use_sim_time': use_sim_time}],
         remappings=[('cmd_vel', '/nav2/cmd_vel')],
     )
 
@@ -45,7 +48,7 @@ def generate_launch_description():
         executable='planner_server',
         name='planner_server',
         output='screen',
-        parameters=[nav2_params, {'use_sim_time': False}],
+        parameters=[nav2_params, {'use_sim_time': use_sim_time}],
     )
 
     behavior_server = Node(
@@ -53,7 +56,7 @@ def generate_launch_description():
         executable='behavior_server',
         name='behavior_server',
         output='screen',
-        parameters=[nav2_params, {'use_sim_time': False}],
+        parameters=[nav2_params, {'use_sim_time': use_sim_time}],
         remappings=[('cmd_vel', '/nav2/cmd_vel')],
     )
 
@@ -62,7 +65,7 @@ def generate_launch_description():
         executable='bt_navigator',
         name='bt_navigator',
         output='screen',
-        parameters=[nav2_params, {'use_sim_time': False}],
+        parameters=[nav2_params, {'use_sim_time': use_sim_time}],
     )
 
     lifecycle_manager = Node(
@@ -71,7 +74,7 @@ def generate_launch_description():
         name='lifecycle_manager_navigation',
         output='screen',
         parameters=[{
-            'use_sim_time': False,
+            'use_sim_time': use_sim_time,
             'autostart': True,
             'node_names': [
                 'controller_server',
@@ -127,6 +130,7 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
+        DeclareLaunchArgument('use_sim_time', default_value='false'),
         controller_server,
         planner_server,
         behavior_server,

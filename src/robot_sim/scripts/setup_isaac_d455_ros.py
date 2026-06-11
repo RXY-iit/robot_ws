@@ -1,9 +1,9 @@
 """Publish the robot D455 camera to ROS2 topics from Isaac Sim 5.0.
 
-Run this from Isaac Sim's Script Editor after opening robot_sim_physics.usd and
-pressing Play. The publishers are intentionally created by script instead of
-being hand-authored in the USD layer, because sensor render-product graphs are
-easier to debug and remove this way.
+Run prepare_d455_camera_only.py before Play, then run this script exactly once
+after Play. The D455 is a recording-only side channel and is not used by GLIM.
+The conservative default resolution/rate limits extra RTX load while validating
+that camera recording does not destabilize LiDAR mapping.
 """
 
 import omni
@@ -11,13 +11,15 @@ import omni.graph.core as og
 import omni.replicator.core as rep
 import omni.syntheticdata
 import omni.syntheticdata._syntheticdata as sd
-from pxr import Usd
+import omni.timeline
+from pxr import Usd, UsdPhysics
 
 
 D455_ROOT = (
     "/World/robot_sim/base_footprint/base_link/"
     "camera_bottom_screw_frame/camera_link/d455_sensor"
 )
+PHYSICS_SENSOR_HINTS = ("imu", "accelerometer", "gyroscope")
 
 COLOR_TOPIC = "camera/camera/color/image_raw"
 COLOR_INFO_TOPIC = "camera/camera/color/camera_info"
@@ -27,8 +29,8 @@ DEPTH_INFO_TOPIC = "camera/camera/depth/camera_info"
 COLOR_FRAME_ID = "camera_color_optical_frame"
 DEPTH_FRAME_ID = "camera_depth_optical_frame"
 
-RESOLUTION = (848, 480)
-PUBLISH_HZ = 30
+RESOLUTION = (640, 360)
+PUBLISH_HZ = 10
 QUEUE_SIZE = 1
 NODE_NAMESPACE = ""
 
@@ -102,6 +104,37 @@ def _find_d455_cameras():
     )
 
 
+def _rigid_bodies_under(root_path):
+    stage = omni.usd.get_context().get_stage()
+    root = stage.GetPrimAtPath(root_path)
+    if not root or not root.IsValid():
+        return []
+
+    rigid_bodies = []
+    for prim in Usd.PrimRange(root):
+        if prim.HasAPI(UsdPhysics.RigidBodyAPI):
+            rigid_bodies.append(prim.GetPath().pathString)
+    return rigid_bodies
+
+
+def _active_physics_sensors_under(root_path):
+    stage = omni.usd.get_context().get_stage()
+    root = stage.GetPrimAtPath(root_path)
+    if not root or not root.IsValid():
+        return []
+
+    sensors = []
+    for prim in Usd.PrimRange(root):
+        path = prim.GetPath().pathString
+        if (
+            prim.IsActive()
+            and prim.GetTypeName() != "Camera"
+            and any(hint in path.lower() for hint in PHYSICS_SENSOR_HINTS)
+        ):
+            sensors.append(path)
+    return sensors
+
+
 def _pick_camera(cameras, keywords, fallback_index=0):
     for path in cameras:
         name = path.lower()
@@ -171,6 +204,25 @@ def _publish_camera_info(render_product, topic_name, frame_id):
 
 
 def main():
+    if not omni.timeline.get_timeline_interface().is_playing():
+        raise RuntimeError("Press Play before creating D455 ROS publishers.")
+
+    rigid_bodies = _rigid_bodies_under(D455_ROOT)
+    if rigid_bodies:
+        raise RuntimeError(
+            "D455 still contains RigidBodyAPI. Restart Isaac Sim and "
+            "run prepare_d455_camera_only.py BEFORE Play:\n  "
+            + "\n  ".join(rigid_bodies)
+        )
+
+    physics_sensors = _active_physics_sensors_under(D455_ROOT)
+    if physics_sensors:
+        raise RuntimeError(
+            "D455 still contains active non-camera physics sensors. Restart "
+            "Isaac Sim and run prepare_d455_camera_only.py BEFORE Play:\n  "
+            + "\n  ".join(physics_sensors)
+        )
+
     cameras = _find_d455_cameras()
     print("D455 camera prim candidates:")
     for path in cameras:
@@ -199,6 +251,8 @@ def main():
     print(f"  /{COLOR_INFO_TOPIC}   frame_id={COLOR_FRAME_ID}")
     print(f"  /{DEPTH_TOPIC}        frame_id={DEPTH_FRAME_ID}")
     print(f"  /{DEPTH_INFO_TOPIC}   frame_id={DEPTH_FRAME_ID}")
+    print(f"  recording profile: {RESOLUTION[0]}x{RESOLUTION[1]} @ {PUBLISH_HZ} Hz")
+    print("Run this setup exactly once per Isaac Sim session.")
 
 
 main()

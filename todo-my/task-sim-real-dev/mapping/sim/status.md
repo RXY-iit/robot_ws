@@ -1,65 +1,91 @@
-# Mapping Status
+# Mapping 当前状态
 
-## Current
-- Sim mapping pipeline now targets `full_warehouse_r.usd`.
-- Warehouse scene and imported robot root joint must be cleaned so only `/World/robot_sim/base_footprint` remains as an articulation.
-- Isaac `ROS2PublishJointState` is disabled for mapping to avoid PhysX `getVelocities (2,6)`.
-- Sim mapping pipeline uses MID360-like LiDAR.
-- D455/RSD455 is removed before Play for LiDAR-only mapping because its nested
-  rigid body can trigger Isaac PhysX tensor errors.
-- GLIM starts with GPU config at `glim_config/sim`.
-- Bag recording works when topics are present.
-- `/point_cloud` must have exactly 1 publisher.
-- Corrected ROS fake IMU is the current stable mapping mainline.
-- Isaac true IMU is experimental only: it reads correct gravity, but still
-  triggers PhysX tensor `getVelocities (2,6)` in this scene.
-- PhysX GPU dynamics is disabled for the mapping USD to avoid Isaac CUDA error 700.
+## 当前结论
 
-## Working commands
-- Isaac Script Editor (BEFORE Play):
-  `exec(open("/home/ruan-x/robot_ws/src/robot_sim/scripts/sim/configure_mapping_physx_cpu.py").read())`
-  `exec(open("/home/ruan-x/robot_ws/src/robot_sim/scripts/sim/list_articulations.py").read())`
-  `exec(open("/home/ruan-x/robot_ws/src/robot_sim/scripts/sim/cleanup_foreign_articulations.py").read())`
-  `exec(open("/home/ruan-x/robot_ws/src/robot_sim/scripts/sim/disable_isaac_joint_state_publisher.py").read())`
-  `exec(open("/home/ruan-x/robot_ws/src/robot_sim/scripts/sim/cleanup_d455_for_mapping.py").read())`
-  `exec(open("/home/ruan-x/robot_ws/src/robot_sim/scripts/sim/cleanup_isaac_livox_imu_ros.py").read())`
-- Press Play
-- Isaac Script Editor (AFTER Play):
-  `exec(open("/home/ruan-x/robot_ws/src/robot_sim/scripts/sim/cleanup_isaac_mid360_ros.py").read())`
-  `exec(open("/home/ruan-x/robot_ws/src/robot_sim/scripts/setup_isaac_mid360_like_ros.py").read())`
-- Quickstart:
-  `tools/sim/create_sim_glim_map_quickstart.sh --bag NAME --gpu --direct-cmd-vel --cleanup`
-- Check:
-  `ros2 topic info -v /point_cloud`
-  `ros2 topic hz /livox/lidar_pc2_accumulated`
-  `ros2 topic hz /livox/imu`
+默认建图流程已经定义并验证为：
 
-## Map output
-- GLIM dump can be saved under `maps/sim_glim_dump_*`.
-- A valid viewer map needs non-empty `graph.txt`, `values.bin`, and `traj_lidar.txt`.
-- Use existing real-map tools after PLY export:
-  `tools/ply_to_nav2_map.py`
-  `tools/pointcloud_to_nav2_map.py`
-  `tools/publish_ply_pointcloud.py`
+```text
+D455 camera-only recording + Isaac true IMU + MID360-like RTX LiDAR + GLIM GPU
+```
 
-## Known limitation
-- Current drift is improved but not fully solved.
-- `full_warehouse_r.usd` may include non-robot articulations; clean before Play.
-- D455/RSD455 is disabled for mapping unless explicitly needed later.
-- If Isaac prints CUDA error 700, restart Isaac and confirm PhysX CPU config before Play.
+D455 只记录彩色图、深度图和 CameraInfo，不参与机器人 PhysX，也不作为 GLIM
+输入。LiDAR-only 仅用于性能对比和故障隔离；corrected fake IMU 仅作为备用诊断工具。
 
-## IMU implementation note
-- `setup_isaac_livox_imu_ros.py` no longer uses OmniGraph `IsaacReadIMU`.
-- Root cause: `IsaacReadIMU` creates 2 ArticulationView registrations internally in Isaac
-  Sim 5.x, causing `getVelocities (2,6)` even with `IsaacArticulationController` disabled.
-- Direct `ImuSensorInterface.get_sensor_reading()` produced correct readings:
-  `lin_acc ~= (-4.9, 0, 8.5)`, `orientation ~= pitch 30 deg`.
-- However, it still triggers PhysX tensor `getVelocities (2,6)`.
-- Therefore default mapping uses ROS-side corrected fake IMU and removes Isaac
-  IMU runtime prims before Play.
+最新默认流程成功运行：
 
-## Next
-- Rerun in `full_warehouse_r.usd` without Isaac true IMU.
-- Verify no (2,6) error appears after Play.
-- Verify corrected ROS fake IMU publishes `/livox/imu`.
-- Verify GLIM graph/traj are non-empty.
+```text
+bag: sim_bag/sim_factory_mid360_trueimu_d455_002
+map: maps/sim_glim_dump_sim_factory_mid360_trueimu_d455_002_20260607_230507
+log: log/sim_glim_mapping_sim_factory_mid360_trueimu_d455_002_20260607_230507
+```
+
+- 无 CUDA 700、PhysX `(2,6)`、RSD455 missing rigid body 或 nested rigid-body 错误
+- rosbag：`1.1 GiB`、`89.35 s`、`23,841` 条消息
+- D455 color/depth/CameraInfo 均成功记录，约 `6.3 Hz`
+- `/point_cloud` 和 `/livox/lidar` 约 `6.41 Hz`
+- GLIM 输出约 `6.29 Hz`
+- GLIM 自动保存成功：`38` 个 submap、`561` 帧轨迹
+
+## 当前系统
+
+- 场景：`full_warehouse_r.usd`
+- Robot articulation：仅 `/World/robot_sim/base_footprint`
+- D455：camera-only，Play 前停用内部 `Imu_Sensor`，再移除 RigidBody/Mass API
+- LiDAR：MID360-like RTX，`ROS2RtxLidarHelper + fullScan=True`，`1x1` render product
+- IMU：Isaac true IMU，Python `ImuSensorInterface` 读取，时间戳复用 `/clock`
+- GLIM：GPU config，路径 `glim_config/sim`
+- 控制：Joy-Con 或 `--direct-cmd-vel`
+
+默认数据链：
+
+```text
+Isaac /point_cloud
+  -> pointcloud2_to_livox_custom_msg_node
+  -> /livox/lidar
+  -> /livox/lidar_pc2_accumulated
+  -> GLIM
+
+Isaac true IMU -> /livox/imu -> GLIM
+D455 cameras -> color/depth/CameraInfo -> rosbag only
+```
+
+## 默认启动规则
+
+1. 使用指南中的统一 ROS2 Bridge 环境启动 Isaac。
+2. Play 前清理 foreign articulation 和旧 runtime prim。
+3. Play 前运行 `prepare_d455_camera_only.py`，必须先停用 D455 内部 IMU。
+4. Play 前创建 Isaac true IMU。
+5. Press Play 后只运行一次 MID360 setup，再运行一次 D455 ROS setup。
+6. 确认 `/point_cloud` Publisher count 为 1，且 D455、LiDAR、IMU 时间戳持续前进。
+7. 使用 quickstart 的 `--record-d455` 启动默认建图。
+8. GLIM pane 中按 `Ctrl-C`，等待 `saved` 和 `MAP SAVE OK` 后再关闭窗口。
+9. 出现 CUDA 700 或 `(2,6)` 后立即重启 Isaac，不继续复用当前 session。
+
+默认 quickstart：
+
+```bash
+tools/sim/create_sim_glim_map_quickstart.sh \
+  --bag sim_factory_mid360_trueimu_d455_XXX \
+  --gpu \
+  --direct-cmd-vel \
+  --record-d455 \
+  --cleanup
+```
+
+## 已知残余问题
+
+- D455 与 LiDAR 同时运行会使整体仿真实时速度下降约 `12%–13%`。
+- 当前 D455 设置目标为 `640x360 @ 10 Hz`，实际约 `6.3 Hz`。
+- LiDAR/GLIM 实际输出约 `6.3–6.4 Hz`，低于目标 10 Hz，但当前建图稳定。
+- CameraInfo distortion model 当前回退到默认 `plumb_bob`，不能直接视为精确标定值。
+- RTX pipeline 仍可能输出少量 DispatchSync/illegal-cycle 警告；没有 CUDA 700、
+  数据停止或时间戳停止时可记录并继续观察。
+- 仍需更长时间、多次重启后的重复稳定性测试。
+
+## 下一步
+
+1. 使用默认 D455 流程进行 5–10 分钟以上长时间建图。
+2. 检查 offline viewer 中地图闭环、重影、地面平整度和 Z 漂移。
+3. 优化 LiDAR 与 D455 吞吐，同时保持单 publisher 和统一 `/clock`。
+4. 补充可靠的 D455 相机内外参与 distortion 配置。
+5. 使用现有实机工具导出 PLY 和 Nav2 2D map。

@@ -17,6 +17,7 @@ def generate_launch_description():
     start_joy = LaunchConfiguration('start_joy')
     start_pc2_adapter = LaunchConfiguration('start_pc2_adapter')
     direct_cmd_vel = LaunchConfiguration('direct_cmd_vel')
+    use_sim_time = LaunchConfiguration('use_sim_time')
 
     robot_description_content = Command([
         'xacro ',
@@ -69,12 +70,18 @@ def generate_launch_description():
                 'mode/safety /cmd_vel chain. Use for isolated Isaac motion tests.'
             ),
         ),
+        DeclareLaunchArgument(
+            'use_sim_time',
+            default_value='false',
+            description='Use Isaac /clock for sim bringup helper nodes.',
+        ),
 
         Node(
             package='robot_state_publisher',
             executable='robot_state_publisher',
             name='robot_state_publisher',
             parameters=[{
+                'use_sim_time': use_sim_time,
                 'robot_description': ParameterValue(
                     robot_description_content,
                     value_type=str,
@@ -157,7 +164,7 @@ def generate_launch_description():
             package='robot_sim',
             executable='pointcloud2_to_livox_custom_msg_node',
             name='pointcloud2_to_livox_custom_msg_node',
-            parameters=[adapter_config],
+            parameters=[adapter_config, {'use_sim_time': use_sim_time}],
             condition=IfCondition(start_pc2_adapter),
             output='screen',
         ),

@@ -1,13 +1,15 @@
 """Start mapping Isaac Sim sensor ROS2 publishers for robot_sim.
 
-Run from Isaac Sim Script Editor after opening full_warehouse_r.usd. Run the
-pre-Play cleanup scripts first, press Play, then execute this file:
+Run from Isaac Sim Script Editor before Play. This performs only the safe
+pre-Play cleanup and true IMU setup. Press Play afterward, then run the MID360
+setup exactly once.
 
 exec(open("/home/ruan-x/robot_ws/src/robot_sim/scripts/setup_isaac_sensors_ros.py").read())
 """
 
 import os
 import runpy
+import omni.timeline
 
 
 SCRIPT_DIR = "/home/ruan-x/robot_ws/src/robot_sim/scripts"
@@ -59,22 +61,19 @@ def _run_sim_script(name, extra_globals=None):
 
 
 def main():
-    print("Starting robot_sim Isaac mapping ROS2 sensors...")
+    if omni.timeline.get_timeline_interface().is_playing():
+        raise RuntimeError(
+            "Run setup_isaac_sensors_ros.py BEFORE Play. Runtime RTX cleanup is "
+            "unsafe and can trigger CUDA error 700."
+        )
+
+    print("Starting robot_sim safe pre-Play mapping sensor setup...")
     _run_sim_script("cleanup_foreign_articulations.py")
     _run_sim_script("cleanup_isaac_livox_imu_ros.py")
     _run_sim_script("cleanup_isaac_mid360_ros.py")
     _run_sim_script("setup_isaac_livox_imu_ros.py")
-    if LIDAR_MODE == "mid360_like":
-        _run_script("setup_isaac_mid360_like_ros.py")
-    else:
-        _run_script("setup_isaac_mid360_ros.py", {"LIDAR_MODE": LIDAR_MODE})
-    print("robot_sim Isaac mapping ROS2 sensors ready.")
-    print(f"LiDAR mode: {LIDAR_MODE}")
-    print("Expected topics:")
-    print("  /livox/imu")
-    print("  /point_cloud")
-    print("  /livox/lidar_pc2_accumulated")
-    print("  /livox/lidar")
+    print("Pre-Play setup ready.")
+    print("Next: press Play, then run setup_isaac_mid360_like_ros.py exactly once.")
 
 
 main()

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Open terminals for Isaac Sim GLIM mapping and rosbag recording.
+# Open Terminator windows for Isaac Sim GLIM mapping and rosbag recording.
 #
 # Typical usage:
 #   tools/sim/create_sim_glim_map_quickstart.sh --bag sim_warehouse_mid360_trueimu_001 --gpu --direct-cmd-vel --cleanup
@@ -16,22 +16,25 @@ GLIM_GPU="${GLIM_GPU:-false}"
 ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-20}"
 SIM_RMW_IMPLEMENTATION="${SIM_RMW_IMPLEMENTATION:-}"
 SIM_CYCLONEDDS_URI="${SIM_CYCLONEDDS_URI:-}"
-ROS_LOG_DIR="${ROS_LOG_DIR:-/tmp/ros2_sim_glim_mapping_logs}"
+LOG_ROOT="${LOG_ROOT:-$WS/log}"
+SESSION_LOG_DIR="${SESSION_LOG_DIR:-}"
+ROS_LOG_DIR="${ROS_LOG_DIR:-}"
 BAG_NAME="${BAG_NAME:-}"
 BAG_DIR="${BAG_DIR:-$WS/sim_bag}"
 CLEANUP="${CLEANUP:-false}"
 RVIZ="${RVIZ:-true}"
 JOY="${JOY:-true}"
 DIRECT_CMD_VEL="${DIRECT_CMD_VEL:-false}"
-FAKE_IMU="${FAKE_IMU:-true}"
+FAKE_IMU="${FAKE_IMU:-false}"
 EXTRA_TOPICS="${EXTRA_TOPICS:-}"
 ALLOW_MULTI_POINT_CLOUD="${ALLOW_MULTI_POINT_CLOUD:-false}"
+RECORD_D455="${RECORD_D455:-false}"
 
 usage() {
   cat <<EOF
 Usage: $(basename "$0") --bag NAME [options]
 
-Open terminals for Isaac Sim GLIM mapping in full_warehouse_r.usd.
+Open one split-pane Terminator window for Isaac Sim GLIM mapping with Isaac true IMU.
 
 Options:
   --bag NAME       Bag output name under $BAG_DIR.
@@ -41,17 +44,19 @@ Options:
   --no-rviz        Do not open RViz from sim_sensor_check.launch.py
   --no-joy         Do not start Joy-Con teleop chain
   --direct-cmd-vel Bypass mode/safety chain and drive sim from /sim/cmd_vel
-  --no-fake-imu    Do not start robot_sim sim_livox_imu_node
-  --fake-imu       Start corrected ROS-side fake IMU fallback (default)
+  --no-fake-imu    Do not start robot_sim sim_livox_imu_node (default)
+  --fake-imu       Start corrected ROS-side fake IMU fallback
   --allow-multi-point-cloud
                   Do not fail when /point_cloud has multiple Isaac publishers
+  --record-d455    Wait for and record D455 color/depth topics (not used by GLIM)
   --cleanup        Kill old sim mapping/record/rviz processes first
   -h, --help       Show this help
 
 Environment overrides:
   WS, GLIM_CONFIG, GLIM_GPU, ROS_DOMAIN_ID, SIM_RMW_IMPLEMENTATION,
-  SIM_CYCLONEDDS_URI, ROS_LOG_DIR, BAG_NAME, BAG_DIR, CLEANUP, RVIZ, JOY,
-  DIRECT_CMD_VEL, FAKE_IMU, EXTRA_TOPICS, ALLOW_MULTI_POINT_CLOUD
+  SIM_CYCLONEDDS_URI, LOG_ROOT, SESSION_LOG_DIR, ROS_LOG_DIR, BAG_NAME,
+  BAG_DIR, CLEANUP, RVIZ, JOY, DIRECT_CMD_VEL, FAKE_IMU, EXTRA_TOPICS,
+  ALLOW_MULTI_POINT_CLOUD, RECORD_D455, SIM_GLIM_DRY_RUN
 
 Default DDS policy:
   unset RMW_IMPLEMENTATION CYCLONEDDS_URI
@@ -66,14 +71,19 @@ Isaac Script Editor commands for the current mainline:
   exec(open("$WS/src/robot_sim/scripts/sim/disable_isaac_joint_state_publisher.py").read())
   exec(open("$WS/src/robot_sim/scripts/sim/cleanup_d455_for_mapping.py").read())
   exec(open("$WS/src/robot_sim/scripts/sim/cleanup_isaac_livox_imu_ros.py").read())
+  exec(open("$WS/src/robot_sim/scripts/sim/setup_isaac_livox_imu_ros.py").read())
+  exec(open("$WS/src/robot_sim/scripts/sim/cleanup_isaac_mid360_ros.py").read())
 
   [Press Play]
 
   [AFTER Play]
-  exec(open("$WS/src/robot_sim/scripts/sim/cleanup_isaac_mid360_ros.py").read())
   exec(open("$WS/src/robot_sim/scripts/setup_isaac_mid360_like_ros.py").read())
-  # Optional later, after GLIM is stable:
-  # exec(open("$WS/src/robot_sim/scripts/setup_isaac_d455_ros.py").read())
+
+For --record-d455, replace cleanup_d455_for_mapping.py before Play with:
+  exec(open("$WS/src/robot_sim/scripts/sim/prepare_d455_camera_only.py").read())
+
+Then, after Play and MID360 setup, run once:
+  exec(open("$WS/src/robot_sim/scripts/setup_isaac_d455_ros.py").read())
 EOF
 }
 
@@ -118,6 +128,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --allow-multi-point-cloud)
       ALLOW_MULTI_POINT_CLOUD=true
+      shift
+      ;;
+    --record-d455)
+      RECORD_D455=true
       shift
       ;;
     --cleanup)
@@ -192,13 +206,28 @@ EOF
   fi
 fi
 
-if ! command -v gnome-terminal >/dev/null 2>&1; then
-  echo "gnome-terminal not found. Run with --help and start the listed commands manually." >&2
+if ! command -v terminator >/dev/null 2>&1; then
+  echo "terminator not found. Install Terminator or start the listed commands manually." >&2
   exit 1
 fi
 
+RUN_STAMP="$(date +%Y%m%d_%H%M%S)"
+if [[ -z "$SESSION_LOG_DIR" ]]; then
+  SESSION_LOG_DIR="$LOG_ROOT/sim_glim_mapping_${BAG_NAME}_${RUN_STAMP}"
+fi
+if [[ -z "$ROS_LOG_DIR" ]]; then
+  ROS_LOG_DIR="$SESSION_LOG_DIR/ros"
+fi
+
+mkdir -p "$SESSION_LOG_DIR"
 mkdir -p "$ROS_LOG_DIR"
 mkdir -p "$BAG_DIR"
+mkdir -p "$WS/maps"
+
+if [[ "${SIM_GLIM_DRY_RUN:-false}" != "true" && -e /tmp/dump ]]; then
+  echo "[sim_glim_mapping] Archiving pre-run /tmp/dump."
+  mv /tmp/dump "$SESSION_LOG_DIR/pre_run_dump"
+fi
 
 BAG_PATH="$BAG_DIR/$BAG_NAME"
 if [[ -e "$BAG_PATH" ]]; then
@@ -207,10 +236,31 @@ if [[ -e "$BAG_PATH" ]]; then
   exit 1
 fi
 
-if [[ "$CLEANUP" == "true" ]]; then
+graceful_stop_matching() {
+  local pattern="$1"
+  local label="$2"
+  local wait_sec="${3:-12}"
+
+  if ! pgrep -f "$pattern" >/dev/null 2>&1; then
+    return
+  fi
+
+  echo "[sim_glim_mapping] Requesting graceful stop: $label"
+  pkill -INT -f "$pattern" || true
+  local deadline=$((SECONDS + wait_sec))
+  while (( SECONDS < deadline )); do
+    pgrep -f "$pattern" >/dev/null 2>&1 || return
+    sleep 1
+  done
+
+  echo "[sim_glim_mapping] Graceful stop timed out; terminating: $label" >&2
+  pkill -TERM -f "$pattern" || true
+}
+
+if [[ "${SIM_GLIM_DRY_RUN:-false}" != "true" && "$CLEANUP" == "true" ]]; then
   echo "[sim_glim_mapping] Cleaning old processes."
-  pkill -f "glim_rosnode" || true
-  pkill -f "ros2 bag record" || true
+  graceful_stop_matching "glim_rosnode" "old GLIM (allow map save)" 15
+  graceful_stop_matching "ros2 bag record" "old rosbag recorder (flush metadata)" 8
   pkill -f "sim_sensor_check.launch.py" || true
   pkill -f "sim_livox_imu_node" || true
   pkill -f "rviz2" || true
@@ -224,8 +274,10 @@ if [[ "$CLEANUP" == "true" ]]; then
 fi
 
 echo "[sim_glim_mapping] Ensuring no stale GLIM/fake-IMU processes remain."
-pkill -f "glim_rosnode" || true
-pkill -f "sim_livox_imu_node" || true
+if [[ "${SIM_GLIM_DRY_RUN:-false}" != "true" ]]; then
+  graceful_stop_matching "glim_rosnode" "stale GLIM (allow map save)" 15
+  pkill -f "sim_livox_imu_node" || true
+fi
 
 common_setup='
 set +u
@@ -243,6 +295,7 @@ if [[ -n "'"$SIM_CYCLONEDDS_URI"'" ]]; then
 fi
 export ROS_LOG_DIR="'"$ROS_LOG_DIR"'"
 cd "'"$WS"'"
+set +u
 '
 
 if ! bash -lc "$common_setup
@@ -266,16 +319,183 @@ EOF
   exit 1
 fi
 
-open_terminal() {
+PANE_SCRIPTS=()
+
+add_pane() {
   local title="$1"
   local body="$2"
-  gnome-terminal --title="$title" -- bash -lc "$common_setup
+  local pane_number=$((${#PANE_SCRIPTS[@]} + 1))
+  local pane_script="$SESSION_LOG_DIR/pane_${pane_number}.sh"
+
+  cat > "$pane_script" <<EOF
+# This file is loaded as an interactive Bash rcfile by Terminator.
+$common_setup
 echo '===== $title ====='
+echo 'ROS/debug log directory: $ROS_LOG_DIR'
+echo "ROS_DOMAIN_ID=\${ROS_DOMAIN_ID:-unset}"
+echo "RMW_IMPLEMENTATION=\${RMW_IMPLEMENTATION:-unset/default}"
+echo "CYCLONEDDS_URI=\${CYCLONEDDS_URI:-unset/default}"
+echo "ROS_LOG_DIR=\${ROS_LOG_DIR:-unset}"
+echo "ros2=\$(command -v ros2)"
+echo "robot_sim prefix=\$(ros2 pkg prefix robot_sim 2>/dev/null || echo missing)"
+echo "glim_ros prefix=\$(ros2 pkg prefix glim_ros 2>/dev/null || echo missing)"
 $body
 echo
-echo '[window finished] press Enter to close'
-read -r
-"
+echo '[command finished] this interactive pane will remain open'
+EOF
+  chmod +x "$pane_script"
+  PANE_SCRIPTS+=("$pane_script")
+}
+
+launch_terminator_layout() {
+  local pane_count="${#PANE_SCRIPTS[@]}"
+  local config_path="$SESSION_LOG_DIR/terminator-config"
+  local layout_name="sim_glim_mapping"
+
+  if (( pane_count != 5 && pane_count != 6 )); then
+    echo "Unsupported Terminator pane count: $pane_count" >&2
+    exit 1
+  fi
+
+  local pane_script
+  for pane_script in "${PANE_SCRIPTS[@]}"; do
+    if ! bash -n "$pane_script"; then
+      echo "Generated pane script has invalid shell syntax: $pane_script" >&2
+      echo "Terminator was not started. Inspect the script above and rerun." >&2
+      exit 1
+    fi
+  done
+
+  if [[ "${SIM_GLIM_DRY_RUN:-false}" == "true" ]]; then
+    echo "[sim_glim_mapping] Dry run: all $pane_count generated pane scripts passed bash -n."
+    return
+  fi
+
+  cat > "$config_path" <<EOF
+[global_config]
+  suppress_multiple_term_dialog = True
+[keybindings]
+[profiles]
+  [[default]]
+    scrollback_infinite = True
+    exit_action = hold
+[layouts]
+  [[$layout_name]]
+    [[[window0]]]
+      type = Window
+      parent = ""
+      order = 0
+      size = 1800, 1000
+      maximised = True
+    [[[main_split]]]
+      type = HPaned
+      parent = window0
+      order = 0
+      ratio = 0.5
+    [[[left_top_split]]]
+      type = VPaned
+      parent = main_split
+      order = 0
+      ratio = 0.34
+    [[[pane1]]]
+      type = Terminal
+      parent = left_top_split
+      order = 0
+      profile = default
+      command = bash --noprofile --rcfile ${PANE_SCRIPTS[0]} -i
+      directory = $WS
+    [[[left_bottom_split]]]
+      type = VPaned
+      parent = left_top_split
+      order = 1
+      ratio = 0.5
+    [[[pane2]]]
+      type = Terminal
+      parent = left_bottom_split
+      order = 0
+      profile = default
+      command = bash --noprofile --rcfile ${PANE_SCRIPTS[1]} -i
+      directory = $WS
+EOF
+
+  if (( pane_count == 5 )); then
+    cat >> "$config_path" <<EOF
+    [[[pane3]]]
+      type = Terminal
+      parent = left_bottom_split
+      order = 1
+      profile = default
+      command = bash --noprofile --rcfile ${PANE_SCRIPTS[2]} -i
+      directory = $WS
+    [[[right_split]]]
+      type = VPaned
+      parent = main_split
+      order = 1
+      ratio = 0.5
+    [[[pane4]]]
+      type = Terminal
+      parent = right_split
+      order = 0
+      profile = default
+      command = bash --noprofile --rcfile ${PANE_SCRIPTS[3]} -i
+      directory = $WS
+    [[[pane5]]]
+      type = Terminal
+      parent = right_split
+      order = 1
+      profile = default
+      command = bash --noprofile --rcfile ${PANE_SCRIPTS[4]} -i
+      directory = $WS
+EOF
+  else
+    cat >> "$config_path" <<EOF
+    [[[pane3]]]
+      type = Terminal
+      parent = left_bottom_split
+      order = 1
+      profile = default
+      command = bash --noprofile --rcfile ${PANE_SCRIPTS[2]} -i
+      directory = $WS
+    [[[right_top_split]]]
+      type = VPaned
+      parent = main_split
+      order = 1
+      ratio = 0.34
+    [[[pane4]]]
+      type = Terminal
+      parent = right_top_split
+      order = 0
+      profile = default
+      command = bash --noprofile --rcfile ${PANE_SCRIPTS[3]} -i
+      directory = $WS
+    [[[right_bottom_split]]]
+      type = VPaned
+      parent = right_top_split
+      order = 1
+      ratio = 0.5
+    [[[pane5]]]
+      type = Terminal
+      parent = right_bottom_split
+      order = 0
+      profile = default
+      command = bash --noprofile --rcfile ${PANE_SCRIPTS[4]} -i
+      directory = $WS
+    [[[pane6]]]
+      type = Terminal
+      parent = right_bottom_split
+      order = 1
+      profile = default
+      command = bash --noprofile --rcfile ${PANE_SCRIPTS[5]} -i
+      directory = $WS
+EOF
+  fi
+
+  cat >> "$config_path" <<EOF
+[plugins]
+EOF
+
+  echo "[sim_glim_mapping] Opening one Terminator window with $pane_count panes."
+  terminator --no-dbus -g "$config_path" -l "$layout_name" &
 }
 
 wait_for_topic_cmd() {
@@ -375,7 +595,7 @@ echo "[sim_glim_mapping] RMW           : ${SIM_RMW_IMPLEMENTATION:-unset/default
 echo "[sim_glim_mapping] CycloneDDS    : ${SIM_CYCLONEDDS_URI:-unset/default}"
 echo "[sim_glim_mapping] Scene         : $WS/src/robot_sim/usd/scenes/full_warehouse_r.usd"
 echo "[sim_glim_mapping] LiDAR mainline: mid360_like"
-echo "[sim_glim_mapping] IMU mainline  : corrected ROS fake IMU (Isaac true IMU is experimental)"
+echo "[sim_glim_mapping] IMU mainline  : Isaac true IMU"
 echo "[sim_glim_mapping] Config        : $GLIM_CONFIG"
 echo "[sim_glim_mapping] GLIM GPU      : $GLIM_GPU"
 echo "[sim_glim_mapping] Bag           : $BAG_PATH"
@@ -384,8 +604,31 @@ echo "[sim_glim_mapping] Joy-Con       : $JOY"
 echo "[sim_glim_mapping] Direct cmd_vel: $DIRECT_CMD_VEL"
 echo "[sim_glim_mapping] Fake IMU      : $FAKE_IMU"
 echo "[sim_glim_mapping] Allow multi /point_cloud: $ALLOW_MULTI_POINT_CLOUD"
+echo "[sim_glim_mapping] Record D455    : $RECORD_D455"
+echo "[sim_glim_mapping] Session logs  : $SESSION_LOG_DIR"
+echo "[sim_glim_mapping] ROS logs      : $ROS_LOG_DIR"
 
-open_terminal "sim_map 1 isaac sensor commands" \
+cat > "$SESSION_LOG_DIR/run-info.txt" <<EOF
+started_at=$RUN_STAMP
+workspace=$WS
+ros_domain_id=$ROS_DOMAIN_ID
+rmw_implementation=${SIM_RMW_IMPLEMENTATION:-unset/default}
+cyclonedds_uri=${SIM_CYCLONEDDS_URI:-unset/default}
+scene=$WS/src/robot_sim/usd/scenes/full_warehouse_r.usd
+glim_config=$GLIM_CONFIG
+glim_gpu=$GLIM_GPU
+bag_path=$BAG_PATH
+rviz=$RVIZ
+joy=$JOY
+direct_cmd_vel=$DIRECT_CMD_VEL
+fake_imu=$FAKE_IMU
+allow_multi_point_cloud=$ALLOW_MULTI_POINT_CLOUD
+record_d455=$RECORD_D455
+session_log_dir=$SESSION_LOG_DIR
+ros_log_dir=$ROS_LOG_DIR
+EOF
+
+add_pane "sim_map 1 isaac sensor commands" \
   'cat <<'"'"'EOF'"'"'
 Open this scene in Isaac Sim:
   /home/ruan-x/robot_ws/src/robot_sim/usd/scenes/full_warehouse_r.usd
@@ -395,35 +638,48 @@ Open this scene in Isaac Sim:
   exec(open("/home/ruan-x/robot_ws/src/robot_sim/scripts/sim/list_articulations.py").read())
   exec(open("/home/ruan-x/robot_ws/src/robot_sim/scripts/sim/cleanup_foreign_articulations.py").read())
   exec(open("/home/ruan-x/robot_ws/src/robot_sim/scripts/sim/disable_isaac_joint_state_publisher.py").read())
-  exec(open("/home/ruan-x/robot_ws/src/robot_sim/scripts/sim/cleanup_d455_for_mapping.py").read())
+
+  D455 mode selected by quickstart: '"$RECORD_D455"'
+  If false:
+    exec(open("/home/ruan-x/robot_ws/src/robot_sim/scripts/sim/cleanup_d455_for_mapping.py").read())
+  If true (--record-d455):
+    exec(open("/home/ruan-x/robot_ws/src/robot_sim/scripts/sim/prepare_d455_camera_only.py").read())
+
   exec(open("/home/ruan-x/robot_ws/src/robot_sim/scripts/sim/cleanup_isaac_livox_imu_ros.py").read())
+  exec(open("/home/ruan-x/robot_ws/src/robot_sim/scripts/sim/setup_isaac_livox_imu_ros.py").read())
+  exec(open("/home/ruan-x/robot_ws/src/robot_sim/scripts/sim/cleanup_isaac_mid360_ros.py").read())
 
 === Press Play ===
 
 === AFTER Play: run these in Isaac Script Editor ===
-  exec(open("/home/ruan-x/robot_ws/src/robot_sim/scripts/sim/cleanup_isaac_mid360_ros.py").read())
   exec(open("/home/ruan-x/robot_ws/src/robot_sim/scripts/setup_isaac_mid360_like_ros.py").read())
 
-  # Optional later, after LiDAR mapping is stable:
-  # exec(open("/home/ruan-x/robot_ws/src/robot_sim/scripts/setup_isaac_d455_ros.py").read())
+  If D455 mode is true, run once after MID360:
+    exec(open("/home/ruan-x/robot_ws/src/robot_sim/scripts/setup_isaac_d455_ros.py").read())
 
 Expected topics after Play + MID360 setup:
   /point_cloud
-  /livox/imu              (published by corrected ROS fake IMU terminal)
+  /livox/imu              (published by Isaac true IMU graph)
   /livox/lidar
   /livox/lidar_pc2_accumulated
+  /camera/camera/color/image_raw       (only with --record-d455)
+  /camera/camera/depth/image_rect_raw  (only with --record-d455)
 
 Important:
-  Do not run setup_isaac_livox_imu_ros.py in the default mapping flow.
-  Isaac physics IMU currently triggers PhysX getVelocities (2,6) in this scene.
-  The corrected ROS fake IMU keeps GLIM bringup stable while LiDAR mapping is debugged.
+  setup_isaac_livox_imu_ros.py must run BEFORE Play.
+  It reads Isaac true IMU through Python ImuSensorInterface and timestamps ROS
+  messages with Isaac simulation time.
+  cleanup_isaac_mid360_ros.py must run BEFORE Play. Never detach/remove an RTX
+  LiDAR writer while Play is running. Run setup_isaac_mid360_like_ros.py exactly
+  once AFTER Play.
   If /point_cloud Publisher count becomes 2 or 3, restart Isaac Sim before mapping:
     ros2 topic info -v /point_cloud
+  D455 is recording-only and not used by GLIM. Start with 640x360 @ 10 Hz.
 EOF'
 
 sleep 1
 
-open_terminal "sim_map 2 sim bringup" \
+add_pane "sim_map 2 sim bringup" \
   'ros2 launch robot_sim sim_sensor_check.launch.py \
     start_joy:='"$JOY"' \
     direct_cmd_vel:='"$DIRECT_CMD_VEL"' \
@@ -432,7 +688,7 @@ open_terminal "sim_map 2 sim bringup" \
 sleep 3
 
 if [[ "$FAKE_IMU" == "true" ]]; then
-  open_terminal "sim_map 3 fake livox imu" \
+  add_pane "sim_map 3 fake livox imu" \
     'ros2 run robot_sim sim_livox_imu_node --ros-args \
       -p use_sim_time:=true \
       -p topic:=/livox/imu \
@@ -445,17 +701,44 @@ if [[ "$FAKE_IMU" == "true" ]]; then
   sleep 1
 fi
 
-open_terminal "sim_map 4 glim_rosnode" \
-  "$(wait_for_topic_cmd /point_cloud 45)
+make_glim_pane_body() {
+  cat <<EOF
+$(wait_for_topic_cmd /point_cloud 45)
 $(wait_for_topic_cmd /livox/lidar 45)
 $(wait_for_topic_cmd /livox/lidar_pc2_accumulated 45)
 $(wait_for_topic_cmd /livox/imu 45)
 $(wait_for_tf_cmd base_footprint livox_frame 45)
-ALLOW_MULTI_POINT_CLOUD=\"$ALLOW_MULTI_POINT_CLOUD\"
+ALLOW_MULTI_POINT_CLOUD="$ALLOW_MULTI_POINT_CLOUD"
 $(assert_single_point_cloud_publisher_cmd)
+echo
+echo "IMPORTANT: Ctrl-C this GLIM pane to save the map."
+echo "Keep this Terminator window open until GLIM prints 'saved' and MAP SAVE OK."
+echo "GLIM is running in the foreground so Ctrl-C reaches it directly."
 ros2 run glim_ros glim_rosnode --ros-args \
     -p use_sim_time:=true \
-    -p config_path:=\"$GLIM_CONFIG\" 2>&1 | tee \"$ROS_LOG_DIR/glim_rosnode_${BAG_NAME}.log\""
+    -p config_path:="$GLIM_CONFIG" || true
+
+echo "[sim_glim_mapping] GLIM stopped. Waiting for dump files ..."
+sleep 3
+if [[ -s /tmp/dump/graph.txt ]]; then
+  cat /tmp/dump/graph.txt
+  num_submaps=\$(awk '/num_submaps:/ {print \$2; exit}' /tmp/dump/graph.txt)
+  traj_lines=\$(wc -l < /tmp/dump/traj_lidar.txt 2>/dev/null || echo 0)
+  if [[ "\${num_submaps:-0}" =~ ^[0-9]+$ ]] && (( num_submaps > 0 )) && (( traj_lines > 0 )); then
+    saved_map="$WS/maps/sim_glim_dump_${BAG_NAME}_${RUN_STAMP}"
+    cp -a /tmp/dump "\$saved_map"
+    echo "MAP SAVE OK: \$saved_map"
+  else
+    echo "MAP SAVE INVALID: num_submaps=\${num_submaps:-missing}, traj_lidar_lines=\$traj_lines" >&2
+  fi
+else
+  echo "MAP SAVE FAILED: /tmp/dump/graph.txt is missing or empty." >&2
+  find /tmp/dump -maxdepth 2 -type f -printf "%p %s bytes\\n" 2>/dev/null || true
+fi
+EOF
+}
+
+add_pane "sim_map 4 glim_rosnode" "$(make_glim_pane_body)"
 
 sleep 2
 
@@ -471,31 +754,56 @@ record_topics="
 /joint_states
 /cmd_vel
 /sim/target_joint_states
+/glim_ros/aligned_points
+/glim_ros/odom
+/glim_ros/pose
+/glim_ros/map
 "
 if [[ -n "$EXTRA_TOPICS" ]]; then
   record_topics="$record_topics $EXTRA_TOPICS"
 fi
+if [[ "$RECORD_D455" == "true" ]]; then
+  record_topics="$record_topics
+/camera/camera/color/image_raw
+/camera/camera/color/camera_info
+/camera/camera/depth/image_rect_raw
+/camera/camera/depth/camera_info
+"
+fi
+record_topics_args="$(printf '%s' "$record_topics" | tr '\n' ' ')"
 
-open_terminal "sim_map 5 rosbag record" \
-  "$(wait_for_topic_cmd /point_cloud 45)
+make_rosbag_pane_body() {
+  cat <<EOF
+$(wait_for_topic_cmd /point_cloud 45)
 $(wait_for_topic_cmd /livox/lidar 45)
 $(wait_for_topic_cmd /livox/lidar_pc2_accumulated 45)
 $(wait_for_topic_cmd /livox/imu 45)
+$(if [[ "$RECORD_D455" == "true" ]]; then
+    wait_for_topic_cmd /camera/camera/color/image_raw 60
+    wait_for_topic_cmd /camera/camera/depth/image_rect_raw 60
+  fi)
 $(wait_for_tf_cmd base_footprint livox_frame 45)
-ALLOW_MULTI_POINT_CLOUD=\"$ALLOW_MULTI_POINT_CLOUD\"
+ALLOW_MULTI_POINT_CLOUD="$ALLOW_MULTI_POINT_CLOUD"
 $(assert_single_point_cloud_publisher_cmd)
-echo \"Recording bag to: $BAG_PATH\"
+echo "Recording bag to: $BAG_PATH"
 echo "Topics:"
-printf \"%s\n\" \"$record_topics\"
+printf "%s\n" "$record_topics"
+echo "rosbag is running in the foreground so Ctrl-C reaches it directly."
 ros2 bag record \
-  --output \"$BAG_PATH\" \
+  --output "$BAG_PATH" \
   --compression-mode file \
   --compression-format zstd \
-  $record_topics 2>&1 | tee \"$ROS_LOG_DIR/rosbag_record_${BAG_NAME}.log\""
+  $record_topics_args || true
+echo "[sim_glim_mapping] rosbag stopped. Validating metadata ..."
+ros2 bag info "$BAG_PATH" || echo "ROSBAG VALIDATION FAILED: $BAG_PATH" >&2
+EOF
+}
+
+add_pane "sim_map 5 rosbag record" "$(make_rosbag_pane_body)"
 
 sleep 1
 
-open_terminal "sim_map 6 status" \
+add_pane "sim_map 6 status" \
   'echo "Waiting for topics..."
 sleep 5
 while true; do
@@ -512,6 +820,11 @@ while true; do
   timeout 5s ros2 topic hz /livox/imu --window 20 2>/dev/null || echo "no /livox/imu"
   echo "--- GLIM output ---"
   timeout 5s ros2 topic hz /glim_ros/aligned_points --window 5 2>/dev/null || echo "no /glim_ros/aligned_points"
+  if [[ "'"$RECORD_D455"'" == "true" ]]; then
+    echo "--- D455 recording-only side channel ---"
+    timeout 5s ros2 topic hz /camera/camera/color/image_raw --window 5 2>/dev/null || echo "no D455 color"
+    timeout 5s ros2 topic hz /camera/camera/depth/image_rect_raw --window 5 2>/dev/null || echo "no D455 depth"
+  fi
   echo "--- current TF ---"
   timeout 3s ros2 run tf2_ros tf2_echo base_footprint livox_frame 2>/dev/null || echo "no base_footprint->livox_frame"
   echo "--- /tf_static sample ---"
@@ -522,11 +835,19 @@ while true; do
   sleep 8
 done'
 
-echo "[sim_glim_mapping] All terminals opened."
+launch_terminator_layout
+
+if [[ "${SIM_GLIM_DRY_RUN:-false}" == "true" ]]; then
+  echo "[sim_glim_mapping] Dry run complete; Terminator was not opened."
+else
+  echo "[sim_glim_mapping] Terminator layout opened."
+fi
 echo
-echo "Drive slowly with Joy-Con. Keep turns gentle for the first map."
+echo "Keep the robot stationary until GLIM aligned_points is stable for 5 seconds."
+echo "Then drive slowly with Joy-Con. Keep turns gentle for the first map."
 echo "When finished, stop GLIM and rosbag record with Ctrl-C in their terminals."
 echo "Bag output: $BAG_PATH"
+echo "Debug logs: $SESSION_LOG_DIR"
 echo "GLIM dump, if generated: /tmp/dump"
 echo "Suggested save path:"
 echo "  ls -lah /tmp/dump"

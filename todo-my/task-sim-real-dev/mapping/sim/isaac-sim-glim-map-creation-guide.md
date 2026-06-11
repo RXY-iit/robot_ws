@@ -6,6 +6,15 @@
 
 This is the sim-side version of the real robot GLIM mapping flow. Use the same ROS topic names and the same GLIM config as the real robot whenever possible.
 
+Current default flow:
+
+```text
+D455 camera-only recording + Isaac true IMU + MID360-like RTX LiDAR + GLIM GPU
+```
+
+D455 is recorded to the bag as a camera-only side channel. It is not used by
+GLIM, and it must not participate in robot PhysX.
+
 Important policy:
 
 ```text
@@ -16,7 +25,32 @@ Do not create a separate sim GLIM config unless there is a proven sim-only reaso
 Save sim outputs with sim-specific names:
   sim_bag/*
   maps/sim_*
+  log/sim_glim_mapping_*
 ```
+
+The quickstart opens one Terminator window with every process in a separate
+split pane. Each run creates one debug session directory under:
+
+```text
+/home/ruan-x/robot_ws/log/sim_glim_mapping_<bag>_<timestamp>/
+```
+
+It contains generated pane startup files, ROS native logs under `ros/`, and
+`run-info.txt` with the launch parameters. Pane output is kept on the real
+interactive TTY instead of being redirected through `tee`, because GLIM must
+receive `Ctrl-C` exactly like a manually launched foreground process.
+
+The quickstart archives any old `/tmp/dump` before GLIM starts. Stop GLIM with
+`Ctrl-C` in its pane. Every pane is an interactive foreground terminal and
+remains open after its command stops. GLIM runs directly on the pane TTY,
+matching a manual terminal launch, so `Ctrl-C` reaches GLIM directly. Wait for
+`saved` and `MAP SAVE OK` before closing the Terminator window. After GLIM
+exits, the script validates `graph.txt` and the trajectory, then copies a valid
+dump into `maps/` automatically.
+
+The Isaac true IMU publish graph uses `OnPhysicsStep -> ROS2PublishImu`.
+`OnPlaybackTick` must not be used here: recorded tests showed intermittent IMU
+publication gaps up to 7.5 seconds while `/clock` and LiDAR remained stable.
 
 GPU exception:
 
@@ -55,6 +89,10 @@ GLIM
   /livox/lidar + /livox/imu
   -> /glim_ros/aligned_points
   -> /tmp/dump when GLIM is stopped
+
+D455 camera-only
+  -> color/depth/CameraInfo
+  -> rosbag only
 ```
 
 Before Play, remove non-robot articulations from the warehouse scene. GLIM
@@ -209,45 +247,191 @@ Open this scene in Isaac Sim:
 /home/ruan-x/robot_ws/src/robot_sim/usd/scenes/full_warehouse_r.usd
 ```
 
-Before pressing Play, run cleanup. Do not create the Isaac physics IMU in the
-default mapping flow:
+## Isaac sensor 启动
+
+打开 Isaac:
+
+```bash
+source /opt/ros/humble/setup.bash
+source /home/ruan-x/robot_ws/install/setup.bash
+export ROS_DOMAIN_ID=20
+export ROS_DISTRO=humble
+export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+unset CYCLONEDDS_URI
+export LD_LIBRARY_PATH="${LD_LIBRARY_PATH}:/home/ruan-x/isaac-sim/exts/isaacsim.ros2.bridge/humble/lib"
+
+cd /home/ruan-x/isaac-sim
+./isaac-sim.sh
+```
+
+Before pressing Play, run the default cleanup and sensor preparation. This is
+the current default flow and includes D455 camera-only preparation:
 
 ```python
 exec(open("/home/ruan-x/robot_ws/src/robot_sim/scripts/sim/configure_mapping_physx_cpu.py").read())
 exec(open("/home/ruan-x/robot_ws/src/robot_sim/scripts/sim/list_articulations.py").read())
 exec(open("/home/ruan-x/robot_ws/src/robot_sim/scripts/sim/cleanup_foreign_articulations.py").read())
-exec(open("/home/ruan-x/robot_ws/src/robot_sim/scripts/sim/cleanup_d455_for_mapping.py").read())
+exec(open("/home/ruan-x/robot_ws/src/robot_sim/scripts/sim/prepare_d455_camera_only.py").read())
 exec(open("/home/ruan-x/robot_ws/src/robot_sim/scripts/sim/cleanup_isaac_livox_imu_ros.py").read())
 exec(open("/home/ruan-x/robot_ws/src/robot_sim/scripts/sim/setup_isaac_livox_imu_ros.py").read())
+exec(open("/home/ruan-x/robot_ws/src/robot_sim/scripts/sim/cleanup_isaac_mid360_ros.py").read())
 exec(open("/home/ruan-x/robot_ws/src/robot_sim/scripts/sim/list_articulations.py").read())
+exec(open("/home/ruan-x/robot_ws/src/robot_sim/scripts/sim/inspect_rtx_lidar_pipeline.py").read())
 ```
 
 Press Play.
 
-After Play, create only the MID360-like LiDAR:
+Expected preparation output includes:
+
+```text
+Disabled D455 non-camera physics sensor: .../RSD455/Imu_Sensor
+OK: D455 cameras remain active without participating in robot physics.
+Found 1 articulation prim(s):
+ACTIVE robot /World/robot_sim/base_footprint
+```
+
+After Play, create MID360-like LiDAR and D455 ROS publishers exactly once:
 
 ```python
-exec(open("/home/ruan-x/robot_ws/src/robot_sim/scripts/sim/cleanup_isaac_mid360_ros.py").read())
 exec(open("/home/ruan-x/robot_ws/src/robot_sim/scripts/setup_isaac_mid360_like_ros.py").read())
+exec(open("/home/ruan-x/robot_ws/src/robot_sim/scripts/setup_isaac_d455_ros.py").read())
+exec(open("/home/ruan-x/robot_ws/src/robot_sim/scripts/sim/inspect_rtx_lidar_pipeline.py").read())
 ```
+
+Run MID360 cleanup only before Play. Never detach/delete an active RTX
+Replicator or RenderGraph while Play is running; this can leave an illegal cycle
+and trigger `CUDA error 700`. Run MID360 setup exactly once after Play. If it
+was already run, restart Isaac Sim instead of rerunning setup.
+
+The LiDAR setup uses Isaac's `ROS2RtxLidarHelper` ActionGraph and publishes only
+complete rotations (`fullScan=True`). Do not replace it with a directly attached
+`RtxLidarROS2PublishPointCloud` writer: repeated tests created unhealthy
+`DispatchSync` / `WriterSyncGate` state before CUDA error 700. With full scans,
+`/point_cloud` should normally follow the LiDAR scan rate instead of the
+rendering frame rate.
+
+Do not dock, undock, or rearrange Isaac Sim UI windows while the RTX LiDAR is
+running. NVIDIA documents that docking windows during RTX LiDAR simulation is
+likely to crash Isaac Sim. Stop playback before changing the UI layout.
 
 The mapping USD already disables PhysX GPU dynamics, but the CPU script is kept
 for current Isaac sessions opened before the USD change. RTX LiDAR still uses
 GPU rendering.
 
-Use the corrected ROS fake IMU in this mainline. Isaac true IMU currently gives
-correct gravity readings, but both `IsaacReadIMU` and direct
-`ImuSensorInterface.get_sensor_reading()` trigger Isaac PhysX tensor
-`getVelocities (2,6)` in this scene.
+Use Isaac true IMU in this mainline. The current implementation uses Python
+`ImuSensorInterface` to read the Isaac physics IMU and a minimal
+`ROS2PublishImu` graph to publish `/livox/imu`. The IMU message timestamp must
+reuse the existing `/clock` source
+`/World/ROS2_ActionGraph/read_sim_time.outputs:simulationTime`. The Python
+callback copies that value into `ROS2PublishImu.inputs:timeStamp`; it must not use
+the sensor reading local time or a newly created time node with a different epoch.
 
-The key safety rule is to remove non-robot articulations, disable D455/RSD455,
-and remove any Isaac IMU runtime prim before Play.
+The key safety rule is to remove non-robot articulations, remove old Isaac
+IMU/MID360 runtime prims, and create the true IMU before Play.
 
-D455 is optional for mapping debug. Add it later only after GLIM is stable:
+### D455 recording-only side channel
+
+D455 is part of the default recording flow, but it is not used by GLIM. It is
+kept outside robot physics and used only as a camera renderer.
+
+
+The default before-Play block above already includes:
 
 ```python
+exec(open("/home/ruan-x/robot_ws/src/robot_sim/scripts/sim/prepare_d455_camera_only.py").read())
+```
+
+This keeps Camera prims active, first disables the D455 asset's internal
+`Imu_Sensor`, then removes RigidBody/Mass APIs and disables collisions and
+joints. The order matters: removing the parent `RSD455` rigid body before
+disabling its IMU can leave a stale PhysX tensor reader and trigger `(2,6)`.
+Merely setting
+`rigidBodyEnabled=false` is insufficient: PhysX hierarchy validation still sees
+the nested RigidBodyAPI and prints the RSD455 xformstack error.
+
+The internal D455 `Imu_Sensor` must also be inactive. If it remains active after
+the RSD455 RigidBodyAPI is removed, Play reports:
+
+```text
+Failed to find rigid body at .../d455_sensor/RSD455
+getVelocities ... shape (2, 6)
+```
+
+Do not continue that session; restart Isaac and rerun the updated camera-only
+preparation before Play.
+
+After Play, run MID360 setup first, then run D455 setup exactly once:
+
+```python
+exec(open("/home/ruan-x/robot_ws/src/robot_sim/scripts/setup_isaac_mid360_like_ros.py").read())
 exec(open("/home/ruan-x/robot_ws/src/robot_sim/scripts/setup_isaac_d455_ros.py").read())
 ```
+
+The current D455 profile is intentionally conservative:
+
+```text
+640x360 @ 10 Hz
+```
+
+Increasing resolution or frame rate adds RTX load and can lower LiDAR output
+frequency or increase CUDA 700 risk. The latest default run recorded D455 at
+about `6.3 Hz` and kept GLIM stable.
+
+Start quickstart with camera recording enabled:
+
+```bash
+tools/sim/create_sim_glim_map_quickstart.sh \
+  --bag sim_factory_mid360_trueimu_d455_001 \
+  --gpu \
+  --direct-cmd-vel \
+  --record-d455 \
+  --cleanup
+```
+
+It waits for and records:
+
+```text
+/camera/camera/color/image_raw
+/camera/camera/color/camera_info
+/camera/camera/depth/image_rect_raw
+/camera/camera/depth/camera_info
+```
+
+If `(2,6)`, nested RigidBody warnings, RSD455 missing rigid body, CUDA 700, or
+a large LiDAR rate drop returns, stop the run and restart Isaac. Do not continue
+mapping in a polluted session.
+
+### RTX SDGPipeline warning and LiDAR rate
+
+The current `ROS2RtxLidarHelper + fullScan=True` path can still print a few
+Isaac-internal `DispatchSync` or `Illegal cycle connection` warnings. There is
+no confirmed script-level way to remove all of them. Treat them as warning-only
+when all of the following remain true:
+
+- no CUDA error 700 or rendering failure follows;
+- `/point_cloud` continues publishing;
+- `/point_cloud` Publisher count is exactly 1;
+- header timestamps continue advancing.
+
+`fullScan=True` publishes only after a complete rotation, so `/point_cloud`
+frequency follows completed scan rate rather than render FPS. The configured
+scan rate is an upper target; scene RTX load and simulation real-time factor can
+lower the actual rate. Diagnose it by comparing:
+
+```bash
+ros2 topic hz /clock --window 30
+ros2 topic hz /point_cloud --window 30
+ros2 topic hz /livox/lidar_pc2_accumulated --window 30
+nvidia-smi
+```
+
+The LiDAR setup uses a `1x1` render product because RTX LiDAR point data comes
+from the sensor AOV and does not need an image-sized render target. LiDAR-only
+A/B testing remains useful for performance diagnosis, but the default mapping
+flow records D455.
+
+Do not raise scan rate first. Reduce extra RTX load, keep one LiDAR publisher,
+disable unnecessary viewport rendering, and measure again.
 
 Expected topics:
 
@@ -262,7 +446,8 @@ ros2 topic list | grep -E 'point_cloud|livox|clock'
 
 ## 4. Run Mapping Quickstart
 
-Use the sim tool under `tools/sim`. It starts corrected ROS fake IMU by default:
+Use the sim tool under `tools/sim`. It uses Isaac true IMU by default. The
+current default also records D455:
 
 ```bash
 # 1. 关闭 quickstart 打开的所有 terminal，或 Ctrl+C
@@ -274,13 +459,32 @@ source /opt/ros/humble/setup.bash
 source install/setup.bash
 
 tools/sim/create_sim_glim_map_quickstart.sh \
-  --bag sim_warehouse_mid360_fakeimu_001 \
+  --bag sim_factory_mid360_trueimu_d455_XXX \
   --gpu \
   --direct-cmd-vel \
+  --record-d455 \
   --cleanup
 ```
 
-tools/sim/create_sim_glim_map_quickstart.sh   --bag sim_factory_mid360_like_gpu_trueimu_003   --gpu   --direct-cmd-vel   --cleanup   --no-fake-imu
+```
+ros2 bag record \
+  -o sim_bag/sim_mapping_trueimu_d455_$(date +%Y%m%d_%H%M%S) \
+  /clock \
+  /tf \
+  /tf_static \
+  /point_cloud \
+  /livox/lidar \
+  /livox/lidar_pc2_accumulated \
+  /livox/imu \
+  /glim_ros/odom \
+  /glim_ros/pose \
+  /glim_ros/map \
+  /camera/camera/color/image_raw \
+  /camera/camera/color/camera_info \
+  /camera/camera/depth/image_rect_raw \
+  /camera/camera/depth/camera_info
+
+```
 
 The script intentionally uses the same local sim ROS environment:
 
@@ -293,13 +497,14 @@ Reason: `/home/ruan-x/cyclonedds.xml` binds CycloneDDS to `lo`, and on this PC
 that can make ROS nodes fail with `selected interface "lo" is not
 multicast-capable`.
 
-GPU run:
+LiDAR-only diagnostic run, only when isolating D455/RTX load:
 
 ```bash
 cd /home/ruan-x/robot_ws
 tools/sim/create_sim_glim_map_quickstart.sh \
-  --bag sim_factory_mid360_like_gpu_001 \
+  --bag sim_factory_mid360_trueimu_lidaronly_debug_XXX \
   --gpu \
+  --direct-cmd-vel \
   --cleanup
 ```
 
@@ -308,16 +513,15 @@ The script opens terminals for:
 ```text
 1. Isaac sensor command reminder
 2. sim bringup + Joy-Con + RViz
-3. fake Livox IMU
-4. GLIM mapping
-5. rosbag record
-6. status monitor
+3. GLIM mapping
+4. rosbag record
+5. status monitor
 ```
 
 Default bag output:
 
 ```text
-/home/ruan-x/robot_ws/sim_bag/sim_factory_mid360_like_001
+/home/ruan-x/robot_ws/sim_bag/sim_factory_mid360_trueimu_d455_XXX
 ```
 
 Drive slowly with Joy-Con:
@@ -388,9 +592,6 @@ Open the saved GLIM dump:
 source /opt/ros/humble/setup.bash
 source /home/ruan-x/robot_ws/install/setup.bash
 
-ros2 run glim_ros offline_viewer \
-  --map_path /home/ruan-x/robot_ws/maps/sim_glim_dump_YYYYMMDD_HHMMSS \
-  --config_path /home/ruan-x/robot_ws/glim_config
 ```
 
 In the GLIM offline viewer, export point cloud:
@@ -514,16 +715,16 @@ tools/sim/create_sim_glim_map_quickstart.sh --bag sim_factory_mid360_like_002 --
 
 ### No `/livox/imu`
 
-For current bringup, start the temporary IMU node:
+For the default flow, `/livox/imu` must come from the Isaac true IMU. Restart
+Isaac and rerun the before-Play block, especially:
 
-```bash
-ros2 run robot_sim sim_livox_imu_node --ros-args \
-  -p use_sim_time:=true \
-  -p topic:=/livox/imu \
-  -p frame_id:=livox_frame \
-  -p publish_rate:=100.0 \
-  -p accel_z_g:=1.0
+```python
+exec(open("/home/ruan-x/robot_ws/src/robot_sim/scripts/sim/cleanup_isaac_livox_imu_ros.py").read())
+exec(open("/home/ruan-x/robot_ws/src/robot_sim/scripts/sim/setup_isaac_livox_imu_ros.py").read())
 ```
+
+Do not use `sim_livox_imu_node` in the default mapping flow. It is retained
+only for emergency fault isolation.
 
 ### GLIM starts but no aligned points
 

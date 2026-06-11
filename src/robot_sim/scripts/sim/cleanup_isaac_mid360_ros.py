@@ -9,12 +9,14 @@ Then run the MID360 setup script exactly once.
 
 import omni
 import omni.replicator.core as rep
+import omni.timeline
 from pxr import Usd
 
 
 LIVOX_PARENT = "/World/robot_sim/base_footprint/base_link/livox_frame"
 LIVOX_PATH = "localization_lidar"
 SENSOR_PATH = f"{LIVOX_PARENT}/{LIVOX_PATH}"
+GRAPH_PATH = "/World/robot_sim/livox_lidar_ros_graph"
 
 
 def _try_detach_writer():
@@ -54,6 +56,8 @@ def _remove_runtime_lidar_prims(stage):
     removed = 0
     if _remove_prim(stage, SENSOR_PATH):
         removed += 1
+    if _remove_prim(stage, GRAPH_PATH):
+        removed += 1
 
     for root_path in ("/Render", "/Replicator"):
         root = stage.GetPrimAtPath(root_path)
@@ -69,6 +73,7 @@ def _remove_runtime_lidar_prims(stage):
                 or "rtxlidar" in lower
                 or "lidar" in lower
                 or "pointcloud" in lower
+                or "robotsimlivox" in lower
             ):
                 paths.append(path)
 
@@ -80,11 +85,19 @@ def _remove_runtime_lidar_prims(stage):
 
 
 def main():
+    timeline = omni.timeline.get_timeline_interface()
+    if timeline.is_playing():
+        raise RuntimeError(
+            "Refusing to modify the RTX LiDAR RenderGraph while Play is running. "
+            "Stop playback, run this cleanup, then press Play and run "
+            "setup_isaac_mid360_like_ros.py exactly once."
+        )
+
     stage = omni.usd.get_context().get_stage()
     _try_detach_writer()
     _remove_runtime_lidar_prims(stage)
     print("MID360 ROS cleanup done.")
-    print("Now run once:")
+    print("Now press Play, then run once:")
     print(
         '  exec(open("/home/ruan-x/robot_ws/src/robot_sim/scripts/'
         'setup_isaac_mid360_like_ros.py").read())'

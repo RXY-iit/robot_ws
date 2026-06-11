@@ -16,6 +16,7 @@ log/
 # Runtime debug / bags
 debug-output/
 debug-ouput/
+calib_bags/
 slam_bag/
 
 # Python / editor noise
@@ -28,3 +29,5 @@ __pycache__/
 
 # Large/local visualization state
 imgui.ini
+# map
+maps/

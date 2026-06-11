@@ -4,7 +4,7 @@ gicp_localizer:
     # ── Map ──────────────────────────────────────────────────────────────────
     # Path to the 3D PLY map exported from GLIM.
     # This map is fixed (prior map); the localizer does NOT modify it.
-    map_path: "/home/matsunaga-h/robot_ws/maps/saved-map/map-l402-0503/l402_points_0503"
+    map_path: "/home/ruan-x/robot_ws/maps/sim_factory_mid360_like_gpu_trueimu_011_3d.ply"
 
     # ── Downsampling ─────────────────────────────────────────────────────────
     # map_voxel_size: voxel grid applied once at startup to reduce map size.

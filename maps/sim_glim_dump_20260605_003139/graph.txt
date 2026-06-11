@@ -1,3 +1,0 @@
-num_submaps: 0
-num_all_frames: 0
-num_matching_cost_factors: 0

@@ -4,6 +4,7 @@
 set -euo pipefail
 
 WS="${WS:-/home/matsunaga-h/robot_ws}"
+USE_SIM_TIME="${USE_SIM_TIME:-false}"
 export ROS_LOG_DIR="${ROS_LOG_DIR:-/tmp/ros2_cli_logs}"
 
 set +u
@@ -14,7 +15,13 @@ set -u
 
 echo "=== Nav2 Phase 1 graph check ==="
 echo "WS: $WS"
+echo "USE_SIM_TIME: $USE_SIM_TIME"
 echo
+
+tf_args=()
+if [[ "$USE_SIM_TIME" == "true" ]]; then
+  tf_args=(--ros-args -p use_sim_time:=true)
+fi
 
 echo "--- nodes ---"
 nodes="$(ros2 node list 2>/dev/null || true)"
@@ -70,15 +77,15 @@ ros2 topic info -v /cmd_vel_raw 2>/dev/null | sed -n '/Publisher count/,$p' || e
 echo
 
 echo "--- TF quick check ---"
-timeout 8s ros2 run tf2_ros tf2_echo map odom >/tmp/nav2_tf_map_odom.txt 2>&1 || true
+timeout 8s ros2 run tf2_ros tf2_echo map odom "${tf_args[@]}" >/tmp/nav2_tf_map_odom.txt 2>&1 || true
 grep -q "At time" /tmp/nav2_tf_map_odom.txt \
   && echo "OK TF: map -> odom" \
   || echo "MISSING TF: map -> odom"
-timeout 8s ros2 run tf2_ros tf2_echo odom base_footprint >/tmp/nav2_tf_odom_base.txt 2>&1 || true
+timeout 8s ros2 run tf2_ros tf2_echo odom base_footprint "${tf_args[@]}" >/tmp/nav2_tf_odom_base.txt 2>&1 || true
 grep -q "At time" /tmp/nav2_tf_odom_base.txt \
   && echo "OK TF: odom -> base_footprint" \
   || echo "MISSING TF: odom -> base_footprint"
-timeout 8s ros2 run tf2_ros tf2_echo base_footprint base_link >/tmp/nav2_tf_base_link.txt 2>&1 || true
+timeout 8s ros2 run tf2_ros tf2_echo base_footprint base_link "${tf_args[@]}" >/tmp/nav2_tf_base_link.txt 2>&1 || true
 grep -q "At time" /tmp/nav2_tf_base_link.txt \
   && echo "OK TF: base_footprint -> base_link" \
   || echo "MISSING TF: base_footprint -> base_link"
@@ -100,5 +107,5 @@ echo "  ros2 lifecycle set /bt_navigator activate"
 echo
 echo "If TF is missing in phase1-safe:"
 echo "  /tf_static should contain base_footprint -> base_link from robot_state_publisher"
-echo "  /tf_static should contain odom -> base_footprint from odom_to_base_static"
-echo "  map -> odom must come from gicp_localizer or a temporary static TF"
+echo "  /tf should contain odom -> base_footprint from wheel odometry"
+echo "  map -> odom must come from AMCL/GICP after localization has an initial pose"

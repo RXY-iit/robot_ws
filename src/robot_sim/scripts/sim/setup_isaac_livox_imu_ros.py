@@ -44,6 +44,7 @@ GRAPH_PATH = "/World/robot_sim/livox_imu_ros_graph"
 TOPIC_NAME = "livox/imu"
 FRAME_ID   = "livox_frame"
 SENSOR_HZ  = 200.0  # sensor buffer period; actual publish rate ≤ physics Hz (120)
+SIM_TIME_OUTPUT = "/World/ROS2_ActionGraph/read_sim_time.outputs:simulationTime"
 
 # ── Subscription persistence ───────────────────────────────────────────────────
 # Store the subscription handle on the omni module so it survives exec() re-runs
@@ -93,18 +94,28 @@ def _acquire_imu_interface():
     return iface
 
 
-def _make_publish_graph():
-    """Minimal OmniGraph: OnPlaybackTick → ROS2PublishImu.  No IsaacReadIMU."""
+def _make_publish_graph(stage):
+    """Minimal OmniGraph: OnPhysicsStep → ROS2PublishImu.  No IsaacReadIMU."""
+    sim_time_attr = stage.GetAttributeAtPath(SIM_TIME_OUTPUT)
+    if not sim_time_attr or not sim_time_attr.IsValid():
+        raise RuntimeError(
+            "Existing Isaac sim-time output not found: "
+            f"{SIM_TIME_OUTPUT}. Open robot_sim/full_warehouse scene first."
+        )
+
     keys = og.Controller.Keys
     og.Controller.edit(
-        {"graph_path": GRAPH_PATH, "evaluator_name": "execution"},
+        {
+            "graph_path": GRAPH_PATH,
+            "pipeline_stage": og.GraphPipelineStage.GRAPH_PIPELINE_STAGE_ONDEMAND,
+        },
         {
             keys.CREATE_NODES: [
-                ("OnPlaybackTick", "omni.graph.action.OnPlaybackTick"),
-                ("PublishIMU",     "isaacsim.ros2.bridge.ROS2PublishImu"),
+                ("OnPhysicsStep", "isaacsim.core.nodes.OnPhysicsStep"),
+                ("PublishIMU",    "isaacsim.ros2.bridge.ROS2PublishImu"),
             ],
             keys.CONNECT: [
-                ("OnPlaybackTick.outputs:tick", "PublishIMU.inputs:execIn"),
+                ("OnPhysicsStep.outputs:step", "PublishIMU.inputs:execIn"),
             ],
             keys.SET_VALUES: [
                 ("PublishIMU.inputs:topicName",                TOPIC_NAME),
@@ -118,14 +129,15 @@ def _make_publish_graph():
     )
     print(f"  publish-only IMU graph created: {GRAPH_PATH}")
     print("  No IsaacReadIMU OmniGraph node is created")
+    print(f"  IMU timestamp source: {SIM_TIME_OUTPUT} (copied in Python callback)")
 
 
 def _subscribe_physics_reader(imu_iface):
     """Physics step callback: read via C++ iface, push values into OmniGraph inputs.
 
-    ROS2PublishImu reads its inputs on each OnPlaybackTick (app update rate, ~60 Hz).
-    The physics step runs at 120 Hz and updates the inputs; the last value before
-    each app tick is what gets published.
+    The Python callback updates the latest true IMU values each physics step.
+    ROS2PublishImu is also triggered by OnPhysicsStep so publishing cannot pause
+    independently of the physics reader, as happened with OnPlaybackTick.
     """
     _la = f"{GRAPH_PATH}/PublishIMU.inputs:linearAcceleration"
     _av = f"{GRAPH_PATH}/PublishIMU.inputs:angularVelocity"
@@ -178,20 +190,24 @@ def _subscribe_physics_reader(imu_iface):
         else:
             q_xyzw = (0.0, 0.0, 0.0, 1.0)
 
-        t = _f(r, "time", "sensor_time")
+        sensor_t = _f(r, "time", "sensor_time")
+        try:
+            sim_t = float(og.Controller.get(og.Controller.attribute(SIM_TIME_OUTPUT)))
+        except Exception:
+            sim_t = sensor_t
 
         # Print first few readings to confirm data format is correct.  ROS echo
         # should show approximately x=0, y=0.2588, z=0, w=0.9659 for orientation.
         _debug_counter[0] += 1
         if _debug_counter[0] <= 3:
             print(f"[IMU step {_debug_counter[0]}] lin_acc={lin_acc}  ang_vel={ang_vel}  "
-                  f"orient_xyzw={q_xyzw}  t={t:.3f}")
+                  f"orient_xyzw={q_xyzw}  sensor_t={sensor_t:.3f}  sim_t={sim_t:.3f}")
 
         try:
             og.Controller.set(og.Controller.attribute(_la), lin_acc)
             og.Controller.set(og.Controller.attribute(_av), ang_vel)
             og.Controller.set(og.Controller.attribute(_or), q_xyzw)
-            og.Controller.set(og.Controller.attribute(_ts), t)
+            og.Controller.set(og.Controller.attribute(_ts), sim_t)
         except Exception:
             pass   # OmniGraph not ready on very first steps — silently skip
 
@@ -204,7 +220,6 @@ def _subscribe_physics_reader(imu_iface):
 
 def main():
     os.environ.setdefault("ROS_DOMAIN_ID", "20")
-    os.environ.pop("RMW_IMPLEMENTATION", None)
     os.environ.pop("CYCLONEDDS_URI", None)
 
     _enable_extension("isaacsim.sensors.physics")
@@ -234,7 +249,7 @@ def main():
         raise RuntimeError("IsaacSensorCreateImuSensor failed")
     print(f"IMU prim created: {IMU_PATH}")
 
-    _make_publish_graph()
+    _make_publish_graph(stage)
 
     imu_iface = _acquire_imu_interface()
     sub = _subscribe_physics_reader(imu_iface)
@@ -243,10 +258,10 @@ def main():
     print()
     print("IMU setup complete (run BEFORE Play).")
     print("Next steps:")
-    print("  1. Press Play")
-    print("  2. Check first readings in console (3 debug lines printed automatically)")
-    print("  3. exec(open('.../scripts/sim/cleanup_isaac_mid360_ros.py').read())")
-    print("  4. exec(open('.../scripts/setup_isaac_mid360_like_ros.py').read())")
+    print("  1. While still stopped: run cleanup_isaac_mid360_ros.py")
+    print("  2. Press Play")
+    print("  3. Check first IMU readings in console")
+    print("  4. Run setup_isaac_mid360_like_ros.py exactly once")
     print("  5. ros2 topic hz /livox/imu --window 20")
     print("  6. ros2 topic echo /livox/imu --once")
 

@@ -33,7 +33,9 @@ adapter is currently more useful than a visually misleading MID360 mimic.
 """
 
 import omni
+import omni.graph.core as og
 import omni.replicator.core as rep
+import omni.timeline
 from pxr import Gf
 
 
@@ -52,6 +54,7 @@ TOPIC = "point_cloud"
 
 # Frame used by the raw PointCloud2 publisher and by the adapter output.
 FRAME_ID = "livox_frame"
+GRAPH_PATH = "/World/robot_sim/livox_lidar_ros_graph"
 
 # Override from Script Editor before exec(...) when needed, for example:
 # LIDAR_MODE = "os1_32"
@@ -74,9 +77,21 @@ def main():
 
     sensor_path = f"{LIVOX_PARENT}/{LIVOX_PATH}"
     stage = omni.usd.get_context().get_stage()
+    if not omni.timeline.get_timeline_interface().is_playing():
+        raise RuntimeError("Press Play before creating the RTX LiDAR publisher.")
+
     existing = stage.GetPrimAtPath(sensor_path)
     if existing and existing.IsValid():
-        stage.RemovePrim(sensor_path)
+        raise RuntimeError(
+            f"RTX LiDAR already exists at {sensor_path}. Restart Isaac Sim instead "
+            "of recreating an active RTX sensor."
+        )
+    existing_graph = stage.GetPrimAtPath(GRAPH_PATH)
+    if existing_graph and existing_graph.IsValid():
+        raise RuntimeError(
+            f"LiDAR ROS graph already exists: {GRAPH_PATH}. Restart Isaac Sim "
+            "instead of creating another RTX publishing pipeline."
+        )
 
     config, variant = LIDAR_PROFILES[LIDAR_MODE]
     command_kwargs = {
@@ -93,14 +108,42 @@ def main():
 
     _, sensor = omni.kit.commands.execute("IsaacSensorCreateRtxLidar", **command_kwargs)
 
-    render_product = rep.create.render_product(sensor.GetPath(), resolution=(1, 1))
-    writer = rep.writers.get("RtxLidarROS2PublishPointCloud")
-    writer.initialize(topicName=TOPIC, frameId=FRAME_ID)
-    writer.attach([render_product])
+    render_product = rep.create.render_product(
+        sensor.GetPath(),
+        # RTX LiDAR data comes from the sensor AOV; a 1x1 render product avoids
+        # spending GPU work on an unused image-sized target.
+        resolution=(1, 1),
+        render_vars=["GenericModelOutput", "RtxSensorMetadata"],
+        name="RobotSimLivox",
+    )
+
+    keys = og.Controller.Keys
+    og.Controller.edit(
+        {"graph_path": GRAPH_PATH, "evaluator_name": "execution"},
+        {
+            keys.CREATE_NODES: [
+                ("OnPlaybackTick", "omni.graph.action.OnPlaybackTick"),
+                ("PublishPointCloud", "isaacsim.ros2.bridge.ROS2RtxLidarHelper"),
+            ],
+            keys.SET_VALUES: [
+                ("PublishPointCloud.inputs:renderProductPath", render_product.path),
+                ("PublishPointCloud.inputs:topicName", TOPIC),
+                ("PublishPointCloud.inputs:frameId", FRAME_ID),
+                ("PublishPointCloud.inputs:type", "point_cloud"),
+                ("PublishPointCloud.inputs:fullScan", True),
+                ("PublishPointCloud.inputs:useSystemTime", False),
+                ("PublishPointCloud.inputs:resetSimulationTimeOnStop", False),
+            ],
+            keys.CONNECT: [
+                ("OnPlaybackTick.outputs:tick", "PublishPointCloud.inputs:execIn"),
+            ],
+        },
+    )
     print(
         f"Created {sensor.GetPath()} using LIDAR_MODE={LIDAR_MODE!r} "
         f"and ROS2 PointCloud2 topic /{TOPIC}"
     )
+    print("Publisher uses ROS2RtxLidarHelper with fullScan=True.")
     print("For RViz, prefer /livox/lidar_pc2_accumulated from the ROS adapter.")
 
 

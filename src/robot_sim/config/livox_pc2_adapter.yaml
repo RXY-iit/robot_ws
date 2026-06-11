@@ -6,6 +6,13 @@ pointcloud2_to_livox_custom_msg_node:
     frame_id: livox_frame
     lidar_id: 0
     publish_rate: 10.0
-    target_points_per_packet: 20000
-    max_buffer_points: 60000
+    target_points_per_packet: 30000
+    max_buffer_points: 30000
+    # Build one non-overlapping 10 Hz scan from the ~60 Hz rotary RTX slices.
+    # The old 20k-point sliding window changed scan sectors even while stationary,
+    # which GLIM interpreted as motion and caused severe drift.
     accumulate_packets: true
+    throttle_latest_frame: false
+    clear_after_publish: true
+    drop_duplicate_stamps: true
+    input_point_stride: 4
