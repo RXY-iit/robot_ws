@@ -1,0 +1,11 @@
+<library path="omni_mppi_critics">
+  <class name="mppi::critics::SteeringChangeCritic"
+         type="omni_mppi_critics::SteeringChangeCritic"
+         base_class_type="mppi::critics::CriticFunction">
+    <description>
+      3-wheel steer+drive steering-change cost critic.
+      Penalises MPPI trajectories that require large wheel steering angle
+      changes between consecutive time steps.
+    </description>
+  </class>
+</library>

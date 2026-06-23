@@ -16,8 +16,7 @@ from pxr import Usd, UsdPhysics
 
 
 D455_ROOT = (
-    "/World/robot_sim/base_footprint/base_link/"
-    "camera_bottom_screw_frame/camera_link/d455_sensor"
+    "/World/robot_sim/camera_swing_link/d455_sensor"
 )
 PHYSICS_SENSOR_HINTS = ("imu", "accelerometer", "gyroscope")
 

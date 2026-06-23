@@ -1,0 +1,24 @@
+# Sim-only Joy-Con/gamepad -> /cmd_vel mapping.
+# Keep the real robot teleop config unchanged; sim speed is limited again by
+# cmd_vel_safety_node before reaching the Isaac drive bridge.
+
+teleop_twist_joy_node:
+  ros__parameters:
+    axis_linear:
+      x: 1
+      y: 0
+    axis_angular:
+      yaw: 3
+    scale_linear:
+      x: 0.6
+      y: 0.6
+    scale_linear_turbo:
+      x: 1.2
+      y: 1.2
+    scale_angular:
+      yaw: 1.0
+    scale_angular_turbo:
+      yaw: 2.0
+    enable_button: 4
+    enable_turbo_button: 5
+    require_enable_button: true

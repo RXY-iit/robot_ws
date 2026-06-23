@@ -9,7 +9,7 @@ Topic flow:
 
 Emergency stop sources:
   /emergency_stop  (std_msgs/Bool, True = stop)
-  Y button (Joy index 3)
+  Joy button (default index 3 = Y; set joy_estop_button=-1 to disable)
 
 Safety status published on /safety_status (std_msgs/String):
   "OK", "WATCHDOG", "ESTOP", "MANUAL_STOP"
@@ -19,6 +19,7 @@ Parameters (ROS):
   max_vx:            float = 0.15  m/s
   max_vy:            float = 0.10  m/s
   max_wz:            float = 0.5   rad/s
+  joy_estop_button:  int   = 3     Joy button index for ESTOP toggle; -1 disables
 """
 import rclpy
 from rclpy.node import Node
@@ -40,16 +41,18 @@ class CmdVelSafetyNode(Node):
         self.declare_parameter('max_vx', 0.15)
         self.declare_parameter('max_vy', 0.10)
         self.declare_parameter('max_wz', 0.5)
+        self.declare_parameter('joy_estop_button', 3)
 
         self._timeout = self.get_parameter('watchdog_timeout').value
         self._max_vx = self.get_parameter('max_vx').value
         self._max_vy = self.get_parameter('max_vy').value
         self._max_wz = self.get_parameter('max_wz').value
+        self._joy_estop_button = int(self.get_parameter('joy_estop_button').value)
 
         self._last_input_time = time.time()
         self._estop = False
         self._last_status = self.STATUS_OK
-        self._prev_joy_y = 0  # for rising-edge detection on Y button
+        self._prev_joy_estop = 0  # for rising-edge detection
 
         self.create_subscription(Twist, '/cmd_vel_raw', self._raw_cb, 10)
         self.create_subscription(Bool, '/emergency_stop', self._estop_cb, 10)
@@ -66,7 +69,8 @@ class CmdVelSafetyNode(Node):
         self.get_logger().info(
             f'CmdVelSafetyNode ready. '
             f'watchdog={self._timeout}s '
-            f'max vx={self._max_vx} vy={self._max_vy} wz={self._max_wz}'
+            f'max vx={self._max_vx} vy={self._max_vy} wz={self._max_wz} '
+            f'joy_estop_button={self._joy_estop_button}'
         )
 
     def _raw_cb(self, msg: Twist):
@@ -92,17 +96,19 @@ class CmdVelSafetyNode(Node):
             self._set_status(self.STATUS_ESTOP)
 
     def _joy_cb(self, msg: Joy):
-        # Y button = index 3 → toggle ESTOP on rising edge only (prev=0, curr=1)
-        curr_y = msg.buttons[3] if len(msg.buttons) > 3 else 0
-        if curr_y == 1 and self._prev_joy_y == 0:
+        if self._joy_estop_button < 0:
+            return
+        # Toggle ESTOP on rising edge only (prev=0, curr=1).
+        curr = msg.buttons[self._joy_estop_button] if len(msg.buttons) > self._joy_estop_button else 0
+        if curr == 1 and self._prev_joy_estop == 0:
             self._estop = not self._estop
             if self._estop:
-                self.get_logger().warn('Emergency stop activated via Y button.')
+                self.get_logger().warn('Emergency stop activated via Joy button.')
                 self._publish_zero()
                 self._set_status(self.STATUS_ESTOP)
             else:
-                self.get_logger().info('Emergency stop cleared via Y button.')
-        self._prev_joy_y = curr_y
+                self.get_logger().info('Emergency stop cleared via Joy button.')
+        self._prev_joy_estop = curr
 
     def _watchdog_tick(self):
         if self._estop:

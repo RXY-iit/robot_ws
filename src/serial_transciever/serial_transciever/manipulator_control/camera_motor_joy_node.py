@@ -76,7 +76,7 @@ class CameraMotorJoyNode(Node):
     def _command_timer_cb(self):
         if self.last_joy is None:
             return
-        if not self._button_pressed(self.last_joy, self.enable_button):
+        if self.enable_button >= 0 and not self._button_pressed(self.last_joy, self.enable_button):
             return
 
         pan_input = self._axis_value(self.last_joy, self.pan_axis)

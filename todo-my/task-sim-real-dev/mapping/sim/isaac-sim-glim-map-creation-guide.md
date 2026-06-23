@@ -297,6 +297,11 @@ exec(open("/home/ruan-x/robot_ws/src/robot_sim/scripts/setup_isaac_mid360_like_r
 exec(open("/home/ruan-x/robot_ws/src/robot_sim/scripts/setup_isaac_d455_ros.py").read())
 exec(open("/home/ruan-x/robot_ws/src/robot_sim/scripts/sim/inspect_rtx_lidar_pipeline.py").read())
 ```
+After Play, pub odom:
+
+```python
+exec(open("/home/ruan-x/robot_ws/src/robot_sim/scripts/sim/setup_isaac_wheel_odom_ros.py").read())
+```
 
 Run MID360 cleanup only before Play. Never detach/delete an active RTX
 Replicator or RenderGraph while Play is running; this can leave an illegal cycle

@@ -4,3 +4,7 @@ sim_omni_drive_command_node:
     cmd_vel_topic: /cmd_vel
     publish_rate: 60.0
     wheel_radius: 0.1125
+    steer_angle_limit_rad: 2.23053   # 0.71*pi, same steering range as real kinematics
+    steer_rate_limit_rad_s: 0.9
+    wheel_speed_deadband_m_s: 0.055
+    drive_disable_steer_error_rad: 0.25

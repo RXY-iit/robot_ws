@@ -15,8 +15,8 @@ Controllers:
   FollowPathRPP : RegulatedPurePursuit (fallback)
 
 Joy-Con buttons:
-  A (index 0): AUTO  — Nav2 cmd_vel relayed to motors
-  B (index 1): MANUAL — Nav2 goal cancelled, robot stops
+  A (index 0): AUTO  — Nav2 cmd_vel relayed to motors by default
+  B (index 1): MANUAL — Nav2 goal cancelled, robot stops by default
   Y (index 3): Emergency stop toggle (via cmd_vel_safety_node)
 """
 import os
@@ -33,6 +33,11 @@ def generate_launch_description():
     nav2_params = os.path.join(
         get_package_share_directory('nav_pkg'), 'config', 'nav2_params.yaml')
     use_sim_time = LaunchConfiguration('use_sim_time')
+    auto_button = LaunchConfiguration('auto_button')
+    manual_button = LaunchConfiguration('manual_button')
+    mode_command_topic = LaunchConfiguration('mode_command_topic')
+    joy_estop_button = LaunchConfiguration('joy_estop_button')
+    enable_motion_policy = LaunchConfiguration('enable_motion_policy')
 
     controller_server = Node(
         package='nav2_controller',
@@ -91,6 +96,29 @@ def generate_launch_description():
         executable='nav_mode_switch_node.py',
         name='nav_mode_switch_node',
         output='screen',
+        parameters=[{
+            'auto_button': auto_button,
+            'manual_button': manual_button,
+            'mode_command_topic': mode_command_topic,
+            'enable_motion_policy': enable_motion_policy,
+            'base_frame': 'base_footprint',
+            'plan_topic': '/plan',
+            'align_angle_rad': 0.50,
+            'align_distance_m': 0.25,
+            'finish_distance_m': 0.18,
+            'finish_yaw_gate_rad': 0.45,
+            'finish_max_vx': 0.08,
+            'finish_max_wz': 0.25,
+            'reverse_distance_m': 0.55,
+            'reverse_lateral_window_m': 0.25,
+            'policy_lookahead_m': 1.2,
+            'lateral_scale': 0.10,
+            'lateral_to_yaw_gain': 1.4,
+            'min_align_wz': 0.18,
+            'max_align_wz': 0.55,
+            'max_reverse_vx': 0.12,
+            'reverse_yaw_gain': 1.0,
+        }],
     )
 
     # Safety layer: watchdog + speed clamp + emergency stop.
@@ -102,9 +130,10 @@ def generate_launch_description():
         output='screen',
         parameters=[{
             'watchdog_timeout': 0.5,
-            'max_vx': 0.15,
-            'max_vy': 0.10,
-            'max_wz': 0.5,
+            'max_vx': 0.30,
+            'max_vy': 0.20,
+            'max_wz': 1.0,
+            'joy_estop_button': joy_estop_button,
         }],
     )
 
@@ -122,6 +151,7 @@ def generate_launch_description():
                 remappings=[
                     ('image_rect', '/camera/camera/depth/image_rect_raw'),
                     ('camera_info', '/camera/camera/depth/camera_info'),
+                    ('/camera_info', '/camera/camera/depth/camera_info'),
                     ('points', '/camera/depth/points'),
                 ],
             ),
@@ -131,6 +161,11 @@ def generate_launch_description():
 
     return LaunchDescription([
         DeclareLaunchArgument('use_sim_time', default_value='false'),
+        DeclareLaunchArgument('auto_button', default_value='0'),
+        DeclareLaunchArgument('manual_button', default_value='1'),
+        DeclareLaunchArgument('mode_command_topic', default_value='/nav_mode/command'),
+        DeclareLaunchArgument('joy_estop_button', default_value='3'),
+        DeclareLaunchArgument('enable_motion_policy', default_value='true'),
         controller_server,
         planner_server,
         behavior_server,

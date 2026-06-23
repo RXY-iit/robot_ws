@@ -18,6 +18,7 @@ def generate_launch_description():
     start_pc2_adapter = LaunchConfiguration('start_pc2_adapter')
     direct_cmd_vel = LaunchConfiguration('direct_cmd_vel')
     use_sim_time = LaunchConfiguration('use_sim_time')
+    start_arm = LaunchConfiguration('start_arm')
 
     robot_description_content = Command([
         'xacro ',
@@ -29,9 +30,9 @@ def generate_launch_description():
     ])
 
     joy_config = os.path.join(
-        get_package_share_directory('robot_bringup'),
+        get_package_share_directory('robot_sim'),
         'config',
-        'joy_teleop.yaml',
+        'sim_joy_teleop.yaml',
     )
 
     sim_drive_config = os.path.join(
@@ -74,6 +75,15 @@ def generate_launch_description():
             'use_sim_time',
             default_value='false',
             description='Use Isaac /clock for sim bringup helper nodes.',
+        ),
+        DeclareLaunchArgument(
+            'start_arm',
+            default_value='true',
+            description=(
+                'Start lift_joy_node, camera_motor_joy_node, and sim_lift_command_node '
+                'to control lift_joint + camera_swing_joint in Isaac Sim via Joy-Con. '
+                'Uses same /lift/command and /cameraswingmotor/target_angle topics as real robot.'
+            ),
         ),
 
         Node(
@@ -136,6 +146,13 @@ def generate_launch_description():
             executable='cmd_vel_safety_node',
             name='cmd_vel_safety_node',
             condition=UnlessCondition(direct_cmd_vel),
+            parameters=[{
+                # Sim uses L1+Y for lift up, so keep emergency stop on topic only.
+                'joy_estop_button': -1,
+                'max_vx': 0.30,
+                'max_vy': 0.20,
+                'max_wz': 1.0,
+            }],
             output='screen',
         ),
 
@@ -166,6 +183,73 @@ def generate_launch_description():
             name='pointcloud2_to_livox_custom_msg_node',
             parameters=[adapter_config, {'use_sim_time': use_sim_time}],
             condition=IfCondition(start_pc2_adapter),
+            output='screen',
+        ),
+
+        # --- Arm control: lift + camera swing ---
+        # lift_joy_node and camera_motor_joy_node are reused from real-robot stack
+        # (serial_transciever package) — no hardware dependency, they only talk ROS2.
+        # sim_lift_command_node bridges their output → /sim/arm_joint_states → Isaac Sim.
+        Node(
+            package='serial_transciever',
+            executable='lift_joy_node',
+            name='lift_joy_node',
+            parameters=[{
+                'enable_button': 4,   # L1 — same dead-man as real robot
+                'up_button':     3,   # Y
+                'down_button':   0,   # A
+            }],
+            condition=IfCondition(PythonExpression([
+                "'", start_joy, "' == 'true' and '", start_arm, "' == 'true'",
+            ])),
+            output='screen',
+        ),
+
+        Node(
+            package='serial_transciever',
+            executable='camera_motor_joy_node',
+            name='camera_motor_joy_node',
+            parameters=[{
+                'enable_button':          4,
+                'pan_axis':               6,
+                'tilt_axis':              7,
+                'pan_sign':               1.0,
+                'tilt_sign':              -1.0,
+                'pan_step_deg':           5.0,
+                'tilt_step_deg':          5.0,
+                'command_period_sec':     0.05,
+                'initial_tilt_angle':     67.0,   # Dynamixel neutral = horizontal forward
+                'initial_pan_angle':      0.0,    # sim pan neutral = forward
+            }],
+            condition=IfCondition(PythonExpression([
+                "'", start_joy, "' == 'true' and '", start_arm, "' == 'true'",
+            ])),
+            output='screen',
+        ),
+
+        Node(
+            package='robot_sim',
+            executable='sim_lift_command_node',
+            name='sim_lift_command_node',
+            parameters=[{
+                'publish_rate':       30.0,
+                'lift_speed_m_s':     0.06,
+                'lift_lower_m':        0.0,
+                'lift_upper_m':        0.3,
+                'camera_pan_neutral_deg': 0.0,
+                'camera_pan_lower_rad':  -1.5708,  # -π/2
+                'camera_pan_upper_rad':   1.5708,  # +π/2
+                'camera_neutral_deg': 67.0,
+                'camera_down_offset_deg': 42.0,
+                'camera_lower_rad':    -1.57080,  # -90°
+                'camera_upper_rad':    2.30383,   # 132°
+                'robot_cmd_vel_topic': '/cmd_vel',
+                'robot_mode_topic':    '/robot_mode',
+                'stop_linear_threshold': 0.01,
+                'stop_angular_threshold': 0.02,
+                'cmd_vel_timeout_sec': 0.5,
+            }],
+            condition=IfCondition(start_arm),
             output='screen',
         ),
     ])

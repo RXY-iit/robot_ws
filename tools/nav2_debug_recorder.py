@@ -115,6 +115,7 @@ class Nav2DebugRecorder(Node):
         self.cmd: Optional[Twist] = None
         self.teleop_cmd: Optional[Twist] = None
         self.odom: Optional[dict[str, Any]] = None
+        self.motion_policy: Optional[str] = None
         self.status = "no_status"
         self.feedback: Optional[dict[str, Any]] = None
         self.last_hint = "waiting for goal"
@@ -127,6 +128,7 @@ class Nav2DebugRecorder(Node):
         self.create_subscription(Twist, "/cmd_vel", self._cmd_cb, 10)
         self.create_subscription(Twist, "/teleop/cmd_vel", self._teleop_cmd_cb, 10)
         self.create_subscription(Odometry, "/wheel_odom", self._odom_cb, 10)
+        self.create_subscription(String, "/motion_policy/status", self._motion_policy_cb, 10)
         self.create_subscription(
             GoalStatusArray,
             "/navigate_to_pose/_action/status",
@@ -230,6 +232,12 @@ class Nav2DebugRecorder(Node):
     def _odom_cb(self, msg: Odometry):
         self.odom = odom_dict(msg)
 
+    def _motion_policy_cb(self, msg: String):
+        if msg.data != self.motion_policy:
+            old = self.motion_policy
+            self.motion_policy = msg.data
+            self._event("motion_policy", {"old": old, "new": self.motion_policy})
+
     def _status_cb(self, msg: GoalStatusArray):
         if not msg.status_list:
             return
@@ -270,6 +278,7 @@ class Nav2DebugRecorder(Node):
         snapshot = {
             "t": now_stamp(self),
             "mode": self.mode,
+            "motion_policy": self.motion_policy,
             "action_status": self.status,
             "feedback": self.feedback,
             "goal": self.goal,
@@ -288,6 +297,7 @@ class Nav2DebugRecorder(Node):
             "# Latest Nav2 Debug State",
             "",
             f"- mode: `{snapshot['mode']}`",
+            f"- motion_policy: `{snapshot['motion_policy']}`",
             f"- action_status: `{snapshot['action_status']}`",
             f"- hint: {snapshot['hint']}",
             f"- feedback: `{snapshot['feedback']}`",

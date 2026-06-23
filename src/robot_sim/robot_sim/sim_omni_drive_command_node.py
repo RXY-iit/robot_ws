@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 import rclpy
 from rclpy.node import Node
-from math import nan
+from math import atan2, hypot, nan, pi
 
 from geometry_msgs.msg import Twist
 from my_messages.msg import DriveMotor, SteerMotor
 from sensor_msgs.msg import JointState
 
-from robot_sim.omni_kinematics import cmd_vel_to_wheels, linear_to_wheel_rad_s
+from robot_sim.omni_kinematics import R_X, R_Y, cmd_vel_to_wheels, linear_to_wheel_rad_s
 
 
 STEER_JOINTS = [
@@ -30,16 +30,28 @@ class SimOmniDriveCommandNode(Node):
         self.declare_parameter('publish_rate', 60.0)
         self.declare_parameter('wheel_radius', 0.1125)
         self.declare_parameter('cmd_vel_topic', '/cmd_vel')
+        self.declare_parameter('steer_angle_limit_rad', 0.71 * pi)
+        self.declare_parameter('steer_rate_limit_rad_s', 1.2)
+        self.declare_parameter('wheel_speed_deadband_m_s', 0.035)
+        self.declare_parameter('drive_disable_steer_error_rad', 0.35)
 
         self._timeout = float(self.get_parameter('cmd_vel_timeout').value)
         self._rate = float(self.get_parameter('publish_rate').value)
         self._wheel_radius = float(self.get_parameter('wheel_radius').value)
         self._cmd_vel_topic = str(self.get_parameter('cmd_vel_topic').value)
+        self._steer_limit = float(self.get_parameter('steer_angle_limit_rad').value)
+        self._steer_rate_limit = float(self.get_parameter('steer_rate_limit_rad_s').value)
+        self._wheel_speed_deadband = float(self.get_parameter('wheel_speed_deadband_m_s').value)
+        self._drive_disable_steer_error = float(
+            self.get_parameter('drive_disable_steer_error_rad').value)
 
         self._last_cmd_time = self.get_clock().now()
+        self._last_publish_time = self.get_clock().now()
         self._has_cmd = False
         self._drive_vel = [0.0, 0.0, 0.0]
         self._steer_phi = [0.0, 0.0, 0.0]
+        self._target_drive_vel = [0.0, 0.0, 0.0]
+        self._target_steer_phi = [0.0, 0.0, 0.0]
 
         self.create_subscription(Twist, self._cmd_vel_topic, self._cmd_vel_cb, 10)
         self._joint_pub = self.create_publisher(JointState, '/sim/target_joint_states', 10)
@@ -50,20 +62,47 @@ class SimOmniDriveCommandNode(Node):
         self.create_timer(period, self._publish_targets)
         self.get_logger().info(
             f'SimOmniDriveCommandNode ready: {self._cmd_vel_topic} -> '
-            '/sim/target_joint_states')
+            f'/sim/target_joint_states, steer_limit={self._steer_limit:.3f} rad, '
+            f'steer_rate_limit={self._steer_rate_limit:.3f} rad/s')
 
     def _cmd_vel_cb(self, msg: Twist):
         self._last_cmd_time = self.get_clock().now()
         self._has_cmd = True
-        self._drive_vel, self._steer_phi = cmd_vel_to_wheels(
+        drive_vel, steer_phi = self._nearest_limited_wheel_targets(
             msg.linear.x, msg.linear.y, msg.angular.z)
+        if max(abs(v) for v in drive_vel) < self._wheel_speed_deadband:
+            self._target_drive_vel = [0.0, 0.0, 0.0]
+            self._target_steer_phi = list(self._steer_phi)
+            return
+        self._target_drive_vel = drive_vel
+        self._target_steer_phi = steer_phi
 
     def _publish_targets(self):
-        if (not self._has_cmd or
-                (self.get_clock().now() - self._last_cmd_time).nanoseconds * 1e-9 > self._timeout):
-            self._drive_vel = [0.0, 0.0, 0.0]
+        now = self.get_clock().now()
+        dt = (now - self._last_publish_time).nanoseconds * 1e-9
+        self._last_publish_time = now
+        dt = min(max(dt, 1.0 / max(self._rate, 1.0)), 0.1)
 
-        stamp = self.get_clock().now().to_msg()
+        if (not self._has_cmd or
+                (now - self._last_cmd_time).nanoseconds * 1e-9 > self._timeout):
+            self._target_drive_vel = [0.0, 0.0, 0.0]
+            self._target_steer_phi = list(self._steer_phi)
+
+        steer_error = [
+            target - current
+            for target, current in zip(self._target_steer_phi, self._steer_phi)
+        ]
+        max_step = max(0.0, self._steer_rate_limit * dt)
+        self._steer_phi = [
+            current + self._clamp(error, -max_step, max_step)
+            for current, error in zip(self._steer_phi, steer_error)
+        ]
+        if max(abs(e) for e in steer_error) > self._drive_disable_steer_error:
+            self._drive_vel = [0.0, 0.0, 0.0]
+        else:
+            self._drive_vel = list(self._target_drive_vel)
+
+        stamp = now.to_msg()
 
         joint = JointState()
         joint.header.stamp = stamp
@@ -86,6 +125,41 @@ class SimOmniDriveCommandNode(Node):
         steer.header.stamp = stamp
         steer.phi1, steer.phi2, steer.phi3 = self._steer_phi
         self._steer_pub.publish(steer)
+
+    def _nearest_limited_wheel_targets(self, vx, vy, wz):
+        drive_vel = []
+        steer_phi = []
+        for i, (rx, ry) in enumerate(zip(R_X, R_Y)):
+            wheel_x = vx - ry * wz
+            wheel_y = vy + rx * wz
+            speed = hypot(wheel_x, wheel_y)
+            raw_angle = atan2(wheel_y, wheel_x)
+            candidates = []
+            for k in range(-2, 3):
+                angle = self._normalize_angle(raw_angle + k * pi)
+                if abs(angle) <= self._steer_limit:
+                    signed_speed = speed * (-1.0 if abs(k) % 2 else 1.0)
+                    candidates.append((abs(angle - self._steer_phi[i]), signed_speed, angle))
+            if candidates:
+                _, signed_speed, angle = min(candidates, key=lambda item: item[0])
+                drive_vel.append(signed_speed)
+                steer_phi.append(angle)
+            else:
+                fallback_drive, fallback_steer = cmd_vel_to_wheels(vx, vy, wz)
+                return fallback_drive, fallback_steer
+        return drive_vel, steer_phi
+
+    @staticmethod
+    def _normalize_angle(angle):
+        while angle > pi:
+            angle -= 2.0 * pi
+        while angle < -pi:
+            angle += 2.0 * pi
+        return angle
+
+    @staticmethod
+    def _clamp(value, lo, hi):
+        return max(lo, min(hi, value))
 
 
 def main(args=None):

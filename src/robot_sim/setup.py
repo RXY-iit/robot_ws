@@ -43,6 +43,7 @@ setup(
             'pointcloud2_to_livox_custom_msg_node = robot_sim.pointcloud2_to_livox_custom_msg_node:main',
             'sim_sensor_check_node = robot_sim.sim_sensor_check_node:main',
             'sim_livox_imu_node = robot_sim.sim_livox_imu_node:main',
+            'sim_lift_command_node = robot_sim.sim_lift_command_node:main',
         ],
     },
 )

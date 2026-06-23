@@ -8,6 +8,7 @@ ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-20}"
 MAP="${MAP:-$WS/maps/sim_factory_mid360_like_gpu_trueimu_011_nav2.yaml}"
 PLY_MAP="${PLY_MAP:-$WS/maps/sim_factory_mid360_like_gpu_trueimu_011_3d.ply}"
 RVIZ_CONFIG="${RVIZ_CONFIG:-$WS/rviz/sim_nav2_navigation.rviz}"
+SIM_JOY_CONFIG="${SIM_JOY_CONFIG:-$WS/src/robot_sim/config/sim_joy_teleop.yaml}"
 JOY_DEV="${JOY_DEV:-/dev/input/js0}"
 DEBUG_OUTPUT_ROOT="${DEBUG_OUTPUT_ROOT:-$WS/debug-output}"
 DEBUG_SESSION_DIR="${DEBUG_SESSION_DIR:-$DEBUG_OUTPUT_ROOT/sim_nav2_$(date +%Y%m%d_%H%M%S)}"
@@ -34,7 +35,8 @@ Options:
   --initial-y Y    initial robot y in map frame (default: $INITIAL_Y)
   --initial-yaw R  initial robot yaw rad in map frame (default: $INITIAL_YAW)
   --cleanup        Kill old sim Nav2/localization/debug/RViz processes first
-  --no-auto        Do not publish Joy A to switch nav_mode_switch to AUTO
+  --auto           Switch nav_mode_switch to AUTO after startup (default)
+  --no-auto        Keep nav_mode_switch in MANUAL after startup
   -h, --help       Show this help
 
 Before running:
@@ -56,6 +58,7 @@ while [[ $# -gt 0 ]]; do
     --initial-y) INITIAL_Y="$2"; shift 2 ;;
     --initial-yaw) INITIAL_YAW="$2"; shift 2 ;;
     --cleanup) CLEANUP=true; shift ;;
+    --auto) AUTO=true; shift ;;
     --no-auto) AUTO=false; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown argument: $1" >&2; usage; exit 2 ;;
@@ -66,7 +69,7 @@ done
 [[ -f "$MAP" ]] || { echo "Missing map: $MAP" >&2; exit 1; }
 [[ -f "$PLY_MAP" ]] || { echo "Missing PLY map: $PLY_MAP" >&2; exit 1; }
 [[ -f "$RVIZ_CONFIG" ]] || { echo "Missing RViz config: $RVIZ_CONFIG" >&2; exit 1; }
-[[ -f "$WS/src/robot_bringup/config/joy_teleop.yaml" ]] || { echo "Missing joy config" >&2; exit 1; }
+[[ -f "$SIM_JOY_CONFIG" ]] || { echo "Missing sim joy config: $SIM_JOY_CONFIG" >&2; exit 1; }
 [[ -f "$WS/src/robot_sim/config/livox_pc2_adapter.yaml" ]] || { echo "Missing sim Livox adapter config" >&2; exit 1; }
 command -v gnome-terminal >/dev/null 2>&1 || { echo "gnome-terminal not found" >&2; exit 1; }
 
@@ -110,6 +113,12 @@ if [[ "$CLEANUP" == "true" ]]; then
   echo "[sim-nav2] Cleaning old processes..."
   pkill -f "sim_omni_drive_command_node" || true
   pkill -f "navigation.launch.py" || true
+  pkill -f "nav_mode_switch_node.py" || true
+  pkill -f "cmd_vel_safety_node" || true
+  pkill -f "controller_server" || true
+  pkill -f "planner_server" || true
+  pkill -f "behavior_server" || true
+  pkill -f "bt_navigator" || true
   pkill -f "fast_lio_localization.launch.py" || true
   pkill -f "fastlio_mapping" || true
   pkill -f "gicp_localizer_node" || true
@@ -120,6 +129,9 @@ if [[ "$CLEANUP" == "true" ]]; then
   pkill -f "pointcloud_to_laserscan_node" || true
   pkill -f "joy_node" || true
   pkill -f "teleop_node" || true
+  pkill -f "lift_joy_node" || true
+  pkill -f "camera_motor_joy_node" || true
+  pkill -f "sim_lift_command_node" || true
   pkill -f "nav2_map_server" || true
   pkill -f "lifecycle_manager" || true
   pkill -f "nav2_debug_recorder.py" || true
@@ -162,6 +174,7 @@ cat <<EOF
 [sim-nav2] map          : $MAP
 [sim-nav2] ply          : $PLY_MAP
 [sim-nav2] rviz         : $RVIZ_CONFIG
+[sim-nav2] joy_config   : $SIM_JOY_CONFIG
 [sim-nav2] joy_dev      : $JOY_DEV
 [sim-nav2] debug_output : $DEBUG_SESSION_DIR
 [sim-nav2] auto mode    : $AUTO
@@ -189,8 +202,46 @@ echo "Starting Joy-Con -> /teleop/cmd_vel..."
 ros2 run joy joy_node --ros-args -p dev:="'"$JOY_DEV"'" &
 ros2 run teleop_twist_joy teleop_node \
   --ros-args \
-  --params-file "'"$WS"'/src/robot_bringup/config/joy_teleop.yaml" \
+  --params-file "'"$SIM_JOY_CONFIG"'" \
   -r cmd_vel:=/teleop/cmd_vel &
+echo "Starting Joy-Con -> sim lift/camera holder control..."
+echo "  Y/A: arm lift base up/down"
+echo "  left D-pad/stick left/right: camera pan yaw; up/down: camera swing pitch"
+ros2 run serial_transciever lift_joy_node \
+  --ros-args \
+  -p enable_button:=4 \
+  -p up_button:=3 \
+  -p down_button:=0 &
+ros2 run serial_transciever camera_motor_joy_node \
+  --ros-args \
+  -p enable_button:=4 \
+  -p pan_axis:=6 \
+  -p tilt_axis:=7 \
+  -p pan_sign:=1.0 \
+  -p tilt_sign:=-1.0 \
+  -p pan_step_deg:=5.0 \
+  -p tilt_step_deg:=5.0 \
+  -p command_period_sec:=0.05 \
+  -p initial_tilt_angle:=67.0 \
+  -p initial_pan_angle:=0.0 &
+ros2 run robot_sim sim_lift_command_node \
+  --ros-args \
+  -p publish_rate:=30.0 \
+  -p lift_speed_m_s:=0.06 \
+  -p lift_lower_m:=0.0 \
+  -p lift_upper_m:=0.3 \
+  -p camera_pan_neutral_deg:=0.0 \
+  -p camera_pan_lower_rad:=-1.5708 \
+  -p camera_pan_upper_rad:=1.5708 \
+  -p camera_neutral_deg:=67.0 \
+  -p camera_down_offset_deg:=42.0 \
+  -p camera_lower_rad:=-1.57080 \
+  -p camera_upper_rad:=2.30383 \
+  -p robot_cmd_vel_topic:=/cmd_vel \
+  -p robot_mode_topic:=/robot_mode \
+  -p stop_linear_threshold:=0.01 \
+  -p stop_angular_threshold:=0.02 \
+  -p cmd_vel_timeout_sec:=0.5 &
 echo "Starting /point_cloud -> /livox/lidar Livox CustomMsg adapter..."
 ros2 run robot_sim pointcloud2_to_livox_custom_msg_node \
   --ros-args \
@@ -225,7 +276,9 @@ sleep 1
 
 open_window "sim nav2 4 navigation" '
 sleep 5
-ros2 launch nav_pkg navigation.launch.py use_sim_time:=true'
+ros2 launch nav_pkg navigation.launch.py \
+  use_sim_time:=true \
+  joy_estop_button:=-1'
 
 sleep 1
 
@@ -236,8 +289,17 @@ echo "Publishing initial pose for GICP at the mapping start pose..."
 ros2 topic pub --once /initialpose geometry_msgs/msg/PoseWithCovarianceStamped "{header: {frame_id: map}, pose: {pose: {position: {x: '"$INITIAL_X"', y: '"$INITIAL_Y"', z: 0.0}, orientation: {x: 0.0, y: 0.0, z: '"$INITIAL_QZ"', w: '"$INITIAL_QW"'}}, covariance: [0.25, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.25, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.06853892326654787]}}" || true
 sleep 2
 if [[ "'"$AUTO"'" == "true" ]]; then
+  echo "Clearing sim E-Stop before AUTO..."
+  ros2 topic pub --once /emergency_stop std_msgs/msg/Bool "{data: false}" || true
+  sleep 0.5
+  echo "Publishing neutral Joy state before AUTO to avoid stale button edges..."
+  ros2 topic pub --once /joy sensor_msgs/msg/Joy "{axes: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], buttons: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]}" || true
+  sleep 0.5
   echo "Switching nav_mode_switch to AUTO by publishing Joy A once..."
   ros2 topic pub --once /joy sensor_msgs/msg/Joy "{axes: [], buttons: [1, 0, 0, 0, 0, 0, 0, 0]}" || true
+  sleep 0.5
+  echo "Publishing neutral Joy state after AUTO..."
+  ros2 topic pub --once /joy sensor_msgs/msg/Joy "{axes: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], buttons: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]}" || true
   sleep 1
 fi
 WS="'"$WS"'" USE_SIM_TIME=true tools/check_nav2_phase1.sh

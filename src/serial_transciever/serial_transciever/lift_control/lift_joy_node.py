@@ -45,7 +45,7 @@ class LiftJoyNode(Node):
         )
 
     def _joy_cb(self, msg: Joy):
-        enable = self._btn(msg, self.enable_button)
+        enable = self.enable_button < 0 or self._btn(msg, self.enable_button)
         up = self._btn(msg, self.up_button)
         down = self._btn(msg, self.down_button)
 

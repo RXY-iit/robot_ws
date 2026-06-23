@@ -56,6 +56,29 @@ over "World"
             quatd xformOp:orient = (1, 0, 0, 0)
             double3 xformOp:translate = (0, 0, 0)
 
+            over "visuals" (
+                instanceable = false
+            )
+            {
+                over "mesh_2" (
+                    active = false
+                )
+                {
+                }
+
+                over "d435" (
+                    active = false
+                )
+                {
+                }
+
+                over "D435" (
+                    active = false
+                )
+                {
+                }
+            }
+
             over "collisions" (
                 active = false
             )
@@ -83,15 +106,8 @@ over "World"
                 {
                     over "camera_link"
                     {
-                        def Xform "d455_sensor" (
-                            references = @./assets/realsense_d455/rsd455.usd@
-                        )
-                        {
-                            quatd xformOp:orient = (1, 0, 0, 0)
-                            double3 xformOp:scale = (1, 1, 1)
-                            double3 xformOp:translate = (0, 0, 0)
-                            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
-                        }
+                        token visibility = "invisible"
+                        custom string sim:note = "D455 sensor is mounted under /World/robot_sim/camera_swing_link/d455_sensor."
                     }
                 }
 
@@ -167,6 +183,63 @@ over "World"
                 float drive:angular:physics:stiffness = 0
                 float drive:angular:physics:maxForce = 120
             }
+
+            def PhysicsPrismaticJoint "lift_joint" (
+                prepend apiSchemas = ["PhysicsDriveAPI:linear"]
+            )
+            {
+                float drive:linear:physics:damping = 5000
+                float drive:linear:physics:maxForce = 500
+                float drive:linear:physics:stiffness = 50000
+                float drive:linear:physics:targetPosition = 0
+                uniform token physics:axis = "Z"
+                float physics:lowerLimit = 0
+                float physics:upperLimit = 0.3
+                rel physics:body0 = </World/robot_sim/base_footprint>
+                rel physics:body1 = </World/robot_sim/lift_link>
+                point3f physics:localPos0 = (0.32, 0, 1.0125)
+                point3f physics:localPos1 = (0, 0, 0)
+                quatf physics:localRot0 = (1, 0, 0, 0)
+                quatf physics:localRot1 = (1, 0, 0, 0)
+            }
+
+            def PhysicsRevoluteJoint "camera_pan_joint" (
+                prepend apiSchemas = ["PhysicsDriveAPI:angular"]
+            )
+            {
+                float drive:angular:physics:damping = 10
+                float drive:angular:physics:maxForce = 50
+                float drive:angular:physics:stiffness = 200
+                float drive:angular:physics:targetPosition = 0
+                uniform token physics:axis = "Z"
+                float physics:lowerLimit = -90
+                float physics:upperLimit = 90
+                rel physics:body0 = </World/robot_sim/base_footprint>
+                rel physics:body1 = </World/robot_sim/camera_pan_link>
+                point3f physics:localPos0 = (0.32, 0, 0.7625)
+                point3f physics:localPos1 = (0, 0, 0)
+                quatf physics:localRot0 = (1, 0, 0, 0)
+                quatf physics:localRot1 = (1, 0, 0, 0)
+            }
+
+            def PhysicsRevoluteJoint "camera_swing_joint" (
+                prepend apiSchemas = ["PhysicsDriveAPI:angular"]
+            )
+            {
+                float drive:angular:physics:damping = 10
+                float drive:angular:physics:maxForce = 50
+                float drive:angular:physics:stiffness = 200
+                float drive:angular:physics:targetPosition = 42
+                uniform token physics:axis = "Y"
+                float physics:lowerLimit = -90
+                float physics:upperLimit = 132
+                rel physics:body0 = </World/robot_sim/camera_pan_link>
+                rel physics:body1 = </World/robot_sim/camera_swing_link>
+                point3f physics:localPos0 = (0, 0, 0)
+                point3f physics:localPos1 = (0, 0, 0)
+                quatf physics:localRot0 = (1, 0, 0, 0)
+                quatf physics:localRot1 = (1, 0, 0, 0)
+            }
         }
 
         over "root_joint" (
@@ -175,6 +248,131 @@ over "World"
         )
         {
             bool physics:jointEnabled = 0
+        }
+
+        # --- Arm lift base ---
+        # Vertical linear actuator for the future arm base.
+        # Controlled via /sim/arm_joint_states with joint name "lift_joint".
+        # The camera frame is approximately z=0.7625 m in base_footprint.
+        # targetPosition 0.0-0.3 m maps to z=1.0125-1.3125 m:
+        # 25-55 cm above the camera.
+        append rel isaac:physics:robotJoints = [
+            </World/robot_sim/joints/lift_joint>,
+            </World/robot_sim/joints/camera_pan_joint>,
+            </World/robot_sim/joints/camera_swing_joint>,
+        ]
+        append rel isaac:physics:robotLinks = [
+            </World/robot_sim/lift_link>,
+            </World/robot_sim/camera_pan_link>,
+            </World/robot_sim/camera_swing_link>,
+        ]
+
+        def Xform "lift_link" (
+            prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+        )
+        {
+            float physics:mass = 1.5
+            point3f physics:centerOfMass = (0, 0, 0)
+            float3 physics:diagonalInertia = (0.01, 0.01, 0.005)
+            quatf physics:principalAxes = (1, 0, 0, 0)
+            quatd xformOp:orient = (1, 0, 0, 0)
+            double3 xformOp:translate = (0.32, 0, 1.0125)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient"]
+
+            def Cube "collision" (
+                apiSchemas = ["PhysicsCollisionAPI"]
+            )
+            {
+                token visibility = "invisible"
+                uniform token purpose = "guide"
+                double size = 1
+                float3[] extent = [(-0.5, -0.5, -0.5), (0.5, 0.5, 0.5)]
+                double3 xformOp:scale = (0.08, 0.08, 0.03)
+                double3 xformOp:translate = (0, 0, 0)
+                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+            }
+
+            def Cube "arm_base_visual"
+            {
+                double size = 1
+                color3f[] primvars:displayColor = [(0.82, 0.82, 0.78)]
+                float3[] extent = [(-0.5, -0.5, -0.5), (0.5, 0.5, 0.5)]
+                double3 xformOp:scale = (0.12, 0.12, 0.06)
+                double3 xformOp:translate = (0, 0, 0)
+                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+            }
+        }
+
+        # --- Camera pan/swing mount ---
+        # camera_pan_joint controls yaw; camera_swing_joint controls pitch.
+        # Both drive the real D455 sensor prim mounted below camera_swing_link.
+        def Xform "camera_pan_link" (
+            prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+        )
+        {
+            float physics:mass = 0.2
+            point3f physics:centerOfMass = (0, 0, 0)
+            float3 physics:diagonalInertia = (0.001, 0.001, 0.001)
+            quatf physics:principalAxes = (1, 0, 0, 0)
+            quatd xformOp:orient = (1, 0, 0, 0)
+            double3 xformOp:translate = (0.32, 0, 0.7625)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient"]
+
+            def Cube "collision" (
+                apiSchemas = ["PhysicsCollisionAPI"]
+            )
+            {
+                token visibility = "invisible"
+                uniform token purpose = "guide"
+                double size = 1
+                float3[] extent = [(-0.5, -0.5, -0.5), (0.5, 0.5, 0.5)]
+                double3 xformOp:scale = (0.04, 0.04, 0.035)
+                double3 xformOp:translate = (0, 0, 0)
+                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+            }
+        }
+
+        # Controlled via /sim/arm_joint_states with joint name "camera_swing_joint".
+        # targetPosition is camera pitch in radians; neutral is 42 deg downward,
+        # matching the original fixed camera_bottom_screw_frame orientation.
+        def Xform "camera_swing_link" (
+            prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+        )
+        {
+            float physics:mass = 0.35
+            point3f physics:centerOfMass = (0, 0, 0)
+            float3 physics:diagonalInertia = (0.002, 0.002, 0.001)
+            quatf physics:principalAxes = (1, 0, 0, 0)
+            quatd xformOp:orient = (0.9335873126983643, 0, 0.35835006833076477, 0)
+            double3 xformOp:translate = (0.32, 0, 0.7625)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient"]
+
+            def Cube "collision" (
+                apiSchemas = ["PhysicsCollisionAPI"]
+            )
+            {
+                token visibility = "invisible"
+                uniform token purpose = "guide"
+                double size = 1
+                float3[] extent = [(-0.5, -0.5, -0.5), (0.5, 0.5, 0.5)]
+                double3 xformOp:scale = (0.05, 0.05, 0.05)
+                double3 xformOp:translate = (0, 0, 0)
+                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+            }
+
+            def Xform "d455_sensor" (
+                references = @./assets/realsense_d455/rsd455.usd@
+            )
+            {
+                token visibility = "inherited"
+                quatd xformOp:orient = (1, 0, 0, 0)
+                double3 xformOp:scale = (1, 1, 1)
+                # Match the original camera_link mounting offset from the
+                # imported robot model so the movable D455 starts where the
+                # fixed camera visual used to sit.
+                double3 xformOp:translate = (0.0106, 0.0175, 0.0125)
+                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+            }
         }
     }
 
@@ -314,6 +512,52 @@ over "World"
             token node:type = "isaacsim.core.nodes.IsaacArticulationController"
             int node:typeVersion = 1
             uniform float2 ui:nodegraph:node:pos = (720, 360)
+        }
+
+        # Arm/camera joints (lift_joint + camera_pan_joint + camera_swing_joint) use a separate subscriber
+        # on /sim/arm_joint_states so that the 60Hz wheel command stream does not
+        # overwrite slow arm position commands on every tick.
+        def OmniGraphNode "subscribe_arm_joint_state" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            custom uint64 inputs:context
+            prepend uint64 inputs:context.connect = </World/ROS2_ActionGraph/ros2_context.outputs:context>
+            custom uint inputs:execIn (
+                customData = { bool isExecution = 1 }
+            )
+            prepend uint inputs:execIn.connect = </World/ROS2_ActionGraph/on_playback_tick.outputs:tick>
+            custom string inputs:topicName = "sim/arm_joint_states"
+            custom token[] outputs:jointNames
+            custom double[] outputs:positionCommand
+            custom double[] outputs:velocityCommand
+            custom double[] outputs:effortCommand
+            token node:type = "isaacsim.ros2.bridge.ROS2SubscribeJointState"
+            int node:typeVersion = 1
+            uniform float2 ui:nodegraph:node:pos = (360, 540)
+        }
+
+        def OmniGraphNode "arm_articulation_controller" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            custom uint inputs:execIn (
+                customData = { bool isExecution = 1 }
+            )
+            prepend uint inputs:execIn.connect = </World/ROS2_ActionGraph/on_playback_tick.outputs:tick>
+            rel inputs:targetPrim = </World/robot_sim/base_footprint>
+            custom string inputs:robotPath = ""
+            custom token[] inputs:jointNames
+            prepend token[] inputs:jointNames.connect = </World/ROS2_ActionGraph/subscribe_arm_joint_state.outputs:jointNames>
+            custom double[] inputs:positionCommand
+            prepend double[] inputs:positionCommand.connect = </World/ROS2_ActionGraph/subscribe_arm_joint_state.outputs:positionCommand>
+            custom double[] inputs:velocityCommand
+            prepend double[] inputs:velocityCommand.connect = </World/ROS2_ActionGraph/subscribe_arm_joint_state.outputs:velocityCommand>
+            custom double[] inputs:effortCommand
+            prepend double[] inputs:effortCommand.connect = </World/ROS2_ActionGraph/subscribe_arm_joint_state.outputs:effortCommand>
+            token node:type = "isaacsim.core.nodes.IsaacArticulationController"
+            int node:typeVersion = 1
+            uniform float2 ui:nodegraph:node:pos = (720, 540)
         }
 
     }
