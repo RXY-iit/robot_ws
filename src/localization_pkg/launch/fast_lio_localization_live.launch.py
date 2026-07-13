@@ -20,11 +20,11 @@ def generate_launch_description():
     args = [
         DeclareLaunchArgument(
             "map",
-            default_value="/home/ruan-x/robot_ws/maps/sim_factory_mid360_like_gpu_trueimu_011_nav2.yaml",
+            default_value="/home/ruan-x/robot_ws/maps/sim_factory_mid360_like_gpu_trueimu_011/nav2.yaml",
         ),
         DeclareLaunchArgument(
             "pcd_map",
-            default_value="/home/ruan-x/robot_ws/maps/sim_factory_mid360_like_gpu_trueimu_011_3d.ply",
+            default_value="/home/ruan-x/robot_ws/maps/sim_factory_mid360_like_gpu_trueimu_011/map_3d.ply",
         ),
         DeclareLaunchArgument("initial_x", default_value="0.0"),
         DeclareLaunchArgument("initial_y", default_value="0.0"),

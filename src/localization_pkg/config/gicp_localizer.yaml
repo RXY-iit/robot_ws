@@ -4,7 +4,7 @@ gicp_localizer:
     # ── Map ──────────────────────────────────────────────────────────────────
     # Path to the 3D PLY map exported from GLIM.
     # This map is fixed (prior map); the localizer does NOT modify it.
-    map_path: "/home/ruan-x/robot_ws/maps/sim_factory_mid360_like_gpu_trueimu_011_3d.ply"
+    map_path: "/home/ruan-x/robot_ws/maps/sim_factory_mid360_like_gpu_trueimu_011/map_3d.ply"
 
     # ── Downsampling ─────────────────────────────────────────────────────────
     # map_voxel_size: voxel grid applied once at startup to reduce map size.
@@ -23,8 +23,10 @@ gicp_localizer:
     max_correspondence_distance: 1.5
 
     # fitness_score_threshold: INLIER RMSE above this → localization rejected,
-    #   previous TF is rebroadcast unchanged.  Tune after first run.
-    fitness_score_threshold: 0.5
+    #   previous TF is rebroadcast unchanged. The sim warehouse map has repeated
+    #   shelf geometry and dynamic objects, so a wider threshold is used here.
+    #   Real robot launches should use a stricter profile.
+    fitness_score_threshold: 0.50
 
     # normal_search_radius: KD-tree radius for normal estimation (m).
     #   ~3-4× voxel_size is a good starting point.

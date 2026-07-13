@@ -14,8 +14,8 @@ set -euo pipefail
 
 WS="${WS:-/home/ruan-x/robot_ws}"
 ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-20}"
-MAP="${MAP:-$WS/maps/sim_factory_mid360_like_gpu_trueimu_011_nav2.yaml}"
-PCD_MAP="${PCD_MAP:-$WS/maps/sim_factory_mid360_like_gpu_trueimu_011_3d.ply}"
+MAP="${MAP:-$WS/maps/sim_factory_mid360_like_gpu_trueimu_011/nav2.yaml}"
+PCD_MAP="${PCD_MAP:-$WS/maps/sim_factory_mid360_like_gpu_trueimu_011/map_3d.ply}"
 RVIZ_CONFIG="${RVIZ_CONFIG:-$WS/rviz/sim_gicp_nav2.rviz}"
 JOY_DEV="${JOY_DEV:-/dev/input/js0}"
 ROS_LOG_DIR="${ROS_LOG_DIR:-$WS/debug-output/sim_fast_lio2_loc_$(date +%Y%m%d_%H%M%S)/ros-log}"

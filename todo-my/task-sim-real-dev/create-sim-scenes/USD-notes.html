@@ -1,0 +1,1038 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>USD 学習ノート — Isaac Sim × ロボット研究</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{
+  font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",Arial,sans-serif;
+  font-size:15px;line-height:1.7;color:#1d1d1f;background:#f5f5f7;
+  -webkit-font-smoothing:antialiased;
+}
+
+/* ── HEADER ── */
+.site-header{
+  position:fixed;top:0;left:0;right:0;z-index:100;
+  background:rgba(255,255,255,0.88);
+  backdrop-filter:saturate(180%) blur(20px);
+  -webkit-backdrop-filter:saturate(180%) blur(20px);
+  border-bottom:1px solid rgba(0,0,0,0.08);
+}
+.header-inner{max-width:1240px;margin:0 auto;padding:14px 28px 0;}
+.site-title{font-size:17px;font-weight:700;letter-spacing:-.4px;color:#1d1d1f;}
+.site-sub{font-size:12px;color:#86868b;margin-top:2px;}
+.tab-bar{display:flex;justify-content:center;padding:10px 28px 12px;}
+.tab-ctrl{display:inline-flex;background:#e8e8ed;border-radius:11px;padding:3px;gap:2px;}
+.tab-btn{
+  border:none;background:transparent;padding:7px 22px;border-radius:9px;
+  font-size:13px;font-weight:500;color:#6e6e73;cursor:pointer;
+  transition:all .2s;font-family:inherit;white-space:nowrap;
+}
+.tab-btn.active{
+  background:#fff;color:#1d1d1f;
+  box-shadow:0 1px 4px rgba(0,0,0,0.13),0 1px 2px rgba(0,0,0,0.07);
+}
+
+/* ── LAYOUT ── */
+.layout{display:flex;max-width:1240px;margin:0 auto;padding-top:114px;min-height:100vh;}
+
+/* ── SIDEBAR ── */
+.sidebar{width:216px;flex-shrink:0;padding:24px 0 40px 24px;}
+.sidebar-inner{
+  position:sticky;top:128px;
+  max-height:calc(100vh - 148px);overflow-y:auto;
+}
+.sidebar-inner::-webkit-scrollbar{width:4px;}
+.sidebar-inner::-webkit-scrollbar-thumb{background:#d2d2d7;border-radius:2px;}
+.toc-label{
+  font-size:10.5px;font-weight:700;text-transform:uppercase;
+  letter-spacing:.7px;color:#86868b;padding:0 10px 10px;
+}
+.toc-list{list-style:none;}
+.toc-item a{
+  display:block;padding:5px 10px;font-size:12.5px;color:#6e6e73;
+  text-decoration:none;border-radius:7px;transition:all .15s;
+  border-left:2px solid transparent;line-height:1.45;
+}
+.toc-item a:hover{color:#1d1d1f;background:rgba(0,0,0,0.04);}
+.toc-item.active a{color:#0071e3;font-weight:600;border-left-color:#0071e3;background:rgba(0,113,227,0.07);}
+
+/* ── CONTENT ── */
+.content{flex:1;padding:24px 28px 80px 28px;min-width:0;}
+.tab-panel{display:none;}
+.tab-panel.active{display:block;}
+
+/* ── SECTION CARD ── */
+.sec{
+  background:#fff;border-radius:18px;padding:30px 32px;margin-bottom:18px;
+  box-shadow:0 1px 3px rgba(0,0,0,0.06),0 1px 2px rgba(0,0,0,0.04);
+  scroll-margin-top:130px;
+}
+h2.sh{
+  font-size:19px;font-weight:700;letter-spacing:-.3px;color:#1d1d1f;
+  margin-bottom:16px;padding-bottom:12px;border-bottom:1px solid #f0f0f5;
+}
+h3.ssh{font-size:14px;font-weight:600;color:#1d1d1f;margin:20px 0 8px;}
+p{color:#3a3a3c;margin-bottom:12px;line-height:1.72;}
+a{color:#0071e3;text-decoration:none;}
+a:hover{text-decoration:underline;}
+
+/* ── BLOCKQUOTE ── */
+blockquote{
+  background:#f0f7ff;border-left:3px solid #0071e3;border-radius:0 10px 10px 0;
+  padding:12px 16px;margin:14px 0;font-size:14px;color:#0055cc;line-height:1.6;
+}
+
+/* ── TABLE ── */
+.tw{overflow-x:auto;margin:14px 0;border-radius:11px;border:1px solid #e5e5ea;}
+table{width:100%;border-collapse:collapse;font-size:13.5px;}
+thead th{
+  background:#f5f5f7;padding:10px 14px;text-align:left;
+  font-size:11.5px;font-weight:700;color:#6e6e73;
+  text-transform:uppercase;letter-spacing:.5px;border-bottom:1px solid #e5e5ea;
+}
+tbody td{padding:10px 14px;border-bottom:1px solid #f0f0f5;vertical-align:top;color:#3a3a3c;}
+tbody tr:last-child td{border-bottom:none;}
+tbody tr:hover td{background:#fafafa;}
+
+/* ── CODE ── */
+pre{
+  background:#1c1c1e;border-radius:11px;padding:18px 20px;
+  overflow-x:auto;margin:14px 0;font-size:12.5px;line-height:1.65;
+}
+code{font-family:"SF Mono","Fira Code","JetBrains Mono",Consolas,monospace;font-size:12.5px;}
+pre code{color:#e0e0e5;}
+.kw{color:#fc8eac;} .str{color:#fc6a5d;} .num{color:#d9c97c;}
+.cmt{color:#6c7986;} .typ{color:#5dd8ff;} .key{color:#67b7a4;}
+.path{color:#ffa14f;} .op{color:#a6acb9;}
+code.ic{background:#f0f0f5;color:#c0392b;padding:2px 6px;border-radius:5px;font-size:12px;}
+
+/* ── TREE ── */
+.tree{
+  background:#1c1c1e;border-radius:11px;padding:18px 20px;margin:14px 0;
+  font-family:"SF Mono","Fira Code",Consolas,monospace;font-size:12.5px;
+  color:#e0e0e5;line-height:1.75;overflow-x:auto;white-space:pre;
+}
+.tr{color:#5dd8ff;font-weight:700;}
+.tb{color:#555f6e;}
+.tl{color:#e0e0e5;}
+.tc{color:#6c7986;}
+.th{color:#fc8eac;}
+
+/* ── BADGES ── */
+.badge{display:inline-block;padding:2px 9px;border-radius:20px;font-size:11.5px;font-weight:600;margin:2px;}
+.b-blue{background:#e8f0fe;color:#0055cc;}
+.b-orange{background:#fff3e0;color:#b25000;}
+.b-green{background:#e8f5e9;color:#1a7434;}
+.b-gray{background:#f0f0f5;color:#6e6e73;}
+
+/* ── CALLOUT ── */
+.callout{
+  display:flex;gap:10px;align-items:flex-start;
+  background:#f0f7ff;border:1px solid #c5deff;border-radius:11px;
+  padding:13px 16px;margin:14px 0;font-size:13.5px;color:#0055cc;line-height:1.6;
+}
+.callout.warn{background:#fff8ec;border-color:#ffd580;color:#7a4f00;}
+.ci{font-size:15px;flex-shrink:0;margin-top:1px;}
+
+/* ── CONCEPT GRID ── */
+.cgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px;margin:14px 0;}
+.ccard{background:#f5f5f7;border-radius:10px;padding:13px 15px;border:1px solid #e5e5ea;}
+.ccard .term{font-size:13px;font-weight:600;color:#1d1d1f;margin-bottom:3px;}
+.ccard .desc{font-size:11.5px;color:#6e6e73;line-height:1.5;}
+
+/* ── FLOWCHART ── */
+.flowchart{display:flex;flex-direction:column;align-items:center;margin:20px auto;max-width:480px;}
+.fstep{
+  width:100%;background:#fff;border:1.5px solid #d2d2d7;border-radius:12px;
+  padding:13px 20px;font-size:13.5px;font-weight:500;color:#1d1d1f;text-align:center;
+}
+.fstep.hl{border-color:#0071e3;background:rgba(0,113,227,0.05);color:#0055cc;}
+.fstep small{display:block;font-size:12px;font-weight:400;margin-top:3px;}
+.farr{display:flex;flex-direction:column;align-items:center;padding:2px 0;}
+.farr::before{content:'';width:1.5px;height:18px;background:#d2d2d7;}
+.farr::after{content:'▾';font-size:11px;color:#86868b;margin-top:-2px;}
+
+/* ── CHECKLIST ── */
+.chk{list-style:none;margin:10px 0;}
+.chk li{
+  padding:7px 0 7px 28px;position:relative;
+  border-bottom:1px solid #f5f5f7;font-size:13.5px;color:#3a3a3c;
+}
+.chk li:last-child{border-bottom:none;}
+.chk li::before{
+  content:'';position:absolute;left:0;top:12px;
+  width:15px;height:15px;border:1.5px solid #d2d2d7;border-radius:4px;background:#fff;
+}
+
+/* ── LINK LIST ── */
+.llist{list-style:none;margin:8px 0;}
+.llist li{padding:5px 0;border-bottom:1px solid #f5f5f7;font-size:13.5px;}
+.llist li:last-child{border-bottom:none;}
+.llist a::before{content:'↗ ';font-size:11px;color:#0071e3;}
+
+/* ── PRIORITY ── */
+.p5 td:first-child{color:#ff9f0a;}
+.p4 td:first-child{color:#ff9500;}
+.p3 td:first-child{color:#8e8e93;}
+
+/* ── ARC PRIORITY ── */
+.arc{display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid #f5f5f7;font-size:13.5px;}
+.arc:last-child{border-bottom:none;}
+.arc-n{
+  width:26px;height:26px;border-radius:50%;display:flex;align-items:center;
+  justify-content:center;font-size:11px;font-weight:700;flex-shrink:0;
+}
+.arc-note{font-size:11.5px;color:#86868b;margin-left:auto;}
+
+/* ── RESOURCE GRID ── */
+.rgrid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:10px 0;}
+
+@media(max-width:760px){
+  .layout{flex-direction:column;}
+  .sidebar{width:100%;padding:12px 16px;}
+  .sidebar-inner{position:static;max-height:none;}
+  .rgrid{grid-template-columns:1fr;}
+  .cgrid{grid-template-columns:repeat(2,1fr);}
+}
+</style>
+</head>
+<body>
+
+<header class="site-header">
+  <div class="header-inner">
+    <div class="site-title">USD 学習ノート</div>
+    <div class="site-sub">Universal Scene Description — Isaac Sim × ロボット研究</div>
+  </div>
+  <div class="tab-bar">
+    <div class="tab-ctrl">
+      <button class="tab-btn active" data-tab="tab1">① USDとは</button>
+      <button class="tab-btn" data-tab="tab2">② コア概念</button>
+      <button class="tab-btn" data-tab="tab3">③ シーン構築</button>
+    </div>
+  </div>
+</header>
+
+<div class="layout">
+  <nav class="sidebar">
+    <div class="sidebar-inner">
+      <div class="toc-label">目次</div>
+      <ul class="toc-list" id="toc"></ul>
+    </div>
+  </nav>
+
+  <main class="content">
+
+    <!-- ══════════════════════ TAB 1 ══════════════════════ -->
+    <div class="tab-panel active" id="tab1">
+
+      <div class="sec" id="s1-what">
+        <h2 class="sh">USDとは何か？</h2>
+        <p>USD（Universal Scene Description）は <strong>Pixarが開発した3Dシーン記述システム</strong>です。単なる「3Dファイル形式」ではなく、以下のすべてを一元管理するデータ構造＋ファイル形式＋ワークフローです。</p>
+        <blockquote>USD = 3Dワールド全体を管理するデータ構造 ＋ ファイル形式 ＋ Pipeline</blockquote>
+        <div class="cgrid">
+          <div class="ccard"><div class="term">Geometry</div><div class="desc">ジオメトリ（メッシュ）</div></div>
+          <div class="ccard"><div class="term">Material / Texture</div><div class="desc">マテリアルとテクスチャ</div></div>
+          <div class="ccard"><div class="term">Light / Camera</div><div class="desc">ライトとカメラ</div></div>
+          <div class="ccard"><div class="term">Animation / Rig</div><div class="desc">アニメーションとリグ</div></div>
+          <div class="ccard"><div class="term">Physics</div><div class="desc">物理属性</div></div>
+          <div class="ccard"><div class="term">Scene Graph</div><div class="desc">シーン階層構造</div></div>
+          <div class="ccard"><div class="term">Reference</div><div class="desc">参照関係</div></div>
+          <div class="ccard"><div class="term">Collaboration</div><div class="desc">多人数協業</div></div>
+        </div>
+        <div class="callout"><span class="ci">💡</span><span>USDが記述するのは「モデル1つ」ではなく、<strong>シーン全体</strong>です。</span></div>
+      </div>
+
+      <div class="sec" id="s1-problem">
+        <h2 class="sh">従来ワークフローの課題</h2>
+        <p>FBXは「一括パッケージ」型で、zipアーカイブに近い構造です。1箇所変えるだけでファイル全体を再エクスポートしなければならず、チームではファイルの上書き事故が頻発します。</p>
+        <div class="tw">
+          <table>
+            <thead><tr><th>特性</th><th>FBX</th><th>USD</th></tr></thead>
+            <tbody>
+              <tr><td>部分更新</td><td>❌ 全体を再エクスポート</td><td>✅ 該当レイヤーのみ変更</td></tr>
+              <tr><td>チーム協業</td><td>❌ ファイルを上書き共有</td><td>✅ レイヤー分担・非破壊</td></tr>
+              <tr><td>大型シーン</td><td>❌ すべてロード</td><td>✅ Payloadで必要箇所のみ</td></tr>
+              <tr><td>モデル再利用</td><td>❌ コピー＆ペースト</td><td>✅ Referenceで参照</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>従来のパイプライン：</p>
+        <pre><code>モデリング（Maya）→ FBXエクスポート → アニメーション → FBXエクスポート → レンダラー → 再インポート</code></pre>
+        <p>結果として <code class="ic">chair_final_final_new.fbx</code> のようなファイルが氾濫し、誰が最新版かわからなくなります。</p>
+      </div>
+
+      <div class="sec" id="s1-film">
+        <h2 class="sh">映像制作でのUSD活用</h2>
+        <p>Pixar映画の1ショットにはキャラクター・建物・ライト・カメラ・煙・物理シミュレーションが混在します。USDは各部門が<strong>自分の担当レイヤーだけを管理</strong>し、最終的にComposeで合成するアプローチです。</p>
+        <div class="tw">
+          <table>
+            <thead><tr><th>部門</th><th>作業内容</th><th>触らない領域</th></tr></thead>
+            <tbody>
+              <tr><td>Lighting</td><td>ライト調整</td><td>キャラクターモデル</td></tr>
+              <tr><td>Animation</td><td>動作付け</td><td>マテリアル</td></tr>
+              <tr><td>Model</td><td>モデル修正</td><td>カメラ</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="sec" id="s1-strength">
+        <h2 class="sh">USDの主な強み</h2>
+
+        <h3 class="ssh">① Layer（レイヤー分層）</h3>
+        <div class="tree"><span class="tr">Scene</span>
+<span class="tb">├──</span> <span class="tl">base.usd</span>
+<span class="tb">├──</span> <span class="tl">lighting.usd</span>
+<span class="tb">├──</span> <span class="tl">camera.usd</span>
+<span class="tb">├──</span> <span class="tl">animation.usd</span>
+<span class="tb">└──</span> <span class="tl">physics.usd</span>
+      <span class="tb">↓ Compose</span>
+      <span class="th">最終シーン</span></div>
+        <p><code class="ic">lighting.usd</code> を変更しても <code class="ic">base.usd</code> には触れません。各レイヤーが独立して管理できます。</p>
+
+        <h3 class="ssh">② Reference（参照）</h3>
+        <p>モデルをコピーせず参照だけします。<code class="ic">robot.usd</code> を更新すると、参照するすべてのシーンに自動反映されます。</p>
+
+        <h3 class="ssh">③ Non-destructive Override（非破壊上書き）</h3>
+        <p>元ファイルを変更せず、Layerで特定属性だけをオーバーライドします。例：ロボットの色だけ青に変えたい→元モデルを触らずに上位レイヤーで色だけ上書き。</p>
+
+        <h3 class="ssh">④ Instancing（インスタンシング）</h3>
+        <p>工場内の1000脚の椅子を 1 Mesh + 1000 Instance で表現します。メモリとGPU効率が大幅に向上します。</p>
+
+        <h3 class="ssh">⑤ 大規模シーンの遅延ロード（Payload）</h3>
+        <p>Payloadにより現在のカメラ周囲だけをロードします。都市・工場・病院など大規模シーンのロード時間を劇的に削減できます。</p>
+      </div>
+
+      <div class="sec" id="s1-formats">
+        <h2 class="sh">USDファイル形式</h2>
+        <div class="tw">
+          <table>
+            <thead><tr><th>形式</th><th>拡張子</th><th>特徴</th><th>用途</th></tr></thead>
+            <tbody>
+              <tr><td><strong>USDA</strong></td><td><code class="ic">.usda</code></td><td>ASCIIテキスト・人間が読める</td><td>デバッグ・Git管理・手動編集</td></tr>
+              <tr><td><strong>USDC</strong></td><td><code class="ic">.usdc</code></td><td>バイナリ（Crate形式）</td><td>本番プロジェクト・最速</td></tr>
+              <tr><td><strong>USDZ</strong></td><td><code class="ic">.usdz</code></td><td>無圧縮ZIP封入</td><td>配布・Apple AR Quick Look・iOS</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <pre><code><span class="kw">def</span> <span class="typ">Xform</span> <span class="str">"Robot"</span>
+{
+    <span class="typ">double3</span> <span class="key">xformOp:translate</span> = (<span class="num">0</span>, <span class="num">0</span>, <span class="num">0</span>)
+}</code></pre>
+        <p>参考：<a href="https://openusd.org/release/spec_usdz.html" target="_blank">USDZ形式仕様</a> ｜ <a href="https://developer.apple.com/videos/play/wwdc2022/10129/" target="_blank">Apple WWDC22：USDの基礎（動画）</a></p>
+      </div>
+
+      <div class="sec" id="s1-limits">
+        <h2 class="sh">課題と学習コスト</h2>
+        <p>USDは万能ではありません。初学者がつまずきやすい概念：</p>
+        <div style="margin:10px 0 14px;">
+          <span class="badge b-orange">Layer / Sublayer</span>
+          <span class="badge b-orange">Reference</span>
+          <span class="badge b-orange">Variant</span>
+          <span class="badge b-orange">Payload</span>
+          <span class="badge b-orange">Override</span>
+          <span class="badge b-orange">Composition Arc</span>
+        </div>
+        <p>また、DCC ソフト（Maya・Blender・Houdini・Unreal・Unity）のUSDプラグインの成熟度にばらつきがあり、クロスソフトのワークフローで互換問題が生じる場合があります。</p>
+      </div>
+
+      <div class="sec" id="s1-isaacsim">
+        <h2 class="sh">Isaac Simプロジェクトとの対応</h2>
+        <p>Isaac Sim + Robot + Warehouse + Navigation + Semantic + Physicsの構成はUSDのレイヤー管理と非常に相性が良いです：</p>
+        <div class="tree"><span class="tr">warehouse.usd</span>
+<span class="tb">│</span>
+<span class="tb">├──</span> <span class="tl">robot.usd</span>        <span class="tc">← ロボットモデルと関節</span>
+<span class="tb">├──</span> <span class="tl">shelf.usd</span>        <span class="tc">← 棚</span>
+<span class="tb">├──</span> <span class="tl">elevator.usd</span>     <span class="tc">← エレベーター</span>
+<span class="tb">├──</span> <span class="tl">door.usd</span>         <span class="tc">← ドア（Variant: open / closed）</span>
+<span class="tb">├──</span> <span class="tl">lighting.usd</span>     <span class="tc">← 照明</span>
+<span class="tb">├──</span> <span class="tl">materials.usd</span>    <span class="tc">← マテリアルライブラリ</span>
+<span class="tb">├──</span> <span class="tl">physics.usd</span>      <span class="tc">← 衝突・質量・摩擦</span>
+<span class="tb">├──</span> <span class="tl">semantic.usd</span>     <span class="tc">← AI認識用セマンティックラベル</span>
+<span class="tb">└──</span> <span class="tl">sensors.usd</span>      <span class="tc">← LiDAR・カメラ</span></div>
+        <p><code class="ic">door.usd</code> を修正すると工場全体のすべてのシーンのドアが自動更新され、ロボットには一切影響しません。</p>
+      </div>
+
+      <div class="sec" id="s1-priority">
+        <h2 class="sh">学習優先度（Isaac Sim研究向け）</h2>
+        <div class="tw">
+          <table>
+            <thead><tr><th>優先度</th><th>USD機能</th><th>重要な理由</th></tr></thead>
+            <tbody>
+              <tr class="p5"><td>⭐⭐⭐⭐⭐</td><td><strong>Layer</strong></td><td>環境・ロボット・センサー・物理を分離管理</td></tr>
+              <tr class="p5"><td>⭐⭐⭐⭐⭐</td><td><strong>Reference</strong></td><td>1つのモデルを複数シーンで再利用、更新が全体に反映</td></tr>
+              <tr class="p5"><td>⭐⭐⭐⭐⭐</td><td><strong>Composition</strong></td><td>Isaac SimがUSDファイルを合成する仕組みを理解する</td></tr>
+              <tr class="p4"><td>⭐⭐⭐⭐</td><td><strong>Variant</strong></td><td>レイアウト・ドア開閉・昼夜をワンクリックで切り替え</td></tr>
+              <tr class="p4"><td>⭐⭐⭐⭐</td><td><strong>Payload</strong></td><td>大型工場・病院シーンをエリアごとにロード</td></tr>
+              <tr class="p3"><td>⭐⭐⭐</td><td><strong>Instancing</strong></td><td>大量の棚・机・箱のメモリ削減</td></tr>
+              <tr class="p3"><td>⭐⭐⭐</td><td><strong>Physics Schema</strong></td><td>ロボット・ドア・エレベーターに衝突・質量・関節を付与</td></tr>
+              <tr><td>⭐⭐</td><td><strong>USDA テキスト編集</strong></td><td>Gitバージョン管理・自動シーン生成</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="sec" id="s1-awesome">
+        <h2 class="sh">awesome-openUSDとは？</h2>
+        <p><a href="https://github.com/matiascodesal/awesome-openusd" target="_blank">awesome-openusd</a> は GitHub の「精選リソース集」（awesome list）です。awesome-python や awesome-react と同じ形式で、コミュニティが維持するUSD関連の索引です。</p>
+        <div class="tw">
+          <table>
+            <thead><tr><th>カテゴリ</th><th>内容</th></tr></thead>
+            <tbody>
+              <tr><td><strong>Libraries &amp; Tools</strong></td><td>エディタ・コンバータ・Hydraレンダープラグイン・テキストエディタ拡張</td></tr>
+              <tr><td><strong>Sample Assets</strong></td><td>Kitchen Set・Moana・Warehouseなどのダウンロード可能なサンプルシーン</td></tr>
+              <tr><td><strong>Learning</strong></td><td>動画チュートリアル・Book of USD・認定資格</td></tr>
+              <tr><td><strong>References</strong></td><td>APIドキュメント・USD Cookbook・Working Group資料</td></tr>
+              <tr><td><strong>Integrations</strong></td><td>Maya・Blender・Houdini等各DCCソフトとの統合状況</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="sec" id="s1-assets">
+        <h2 class="sh">オープンソースUSDアセット</h2>
+        <div class="callout warn">
+          <span class="ci">⚠️</span>
+          <span><strong>映像向けUSDシーン ≠ そのままロボットシミュレーション可能</strong><br>Disney Moana・Pixar Kitchen Setなどは Physics属性（コライダー・質量・摩擦）がないため、Isaac Simで開いてもロボットが貫通します。<strong>SimReadyアセット</strong>を使うか、Physics Schemaを手動で追加する必要があります。</span>
+        </div>
+        <h3 class="ssh">✅ Isaac Simで直接使えるアセット（SimReady）</h3>
+        <div class="tw">
+          <table>
+            <thead><tr><th>リソース</th><th>内容</th><th>リンク</th></tr></thead>
+            <tbody>
+              <tr><td><strong>Isaac Sim 内蔵アセット</strong></td><td>50以上のロボット・20以上のセンサー・倉庫環境</td><td><a href="https://docs.isaacsim.omniverse.nvidia.com/5.0.0/assets/usd_assets_overview.html" target="_blank">ドキュメント</a></td></tr>
+              <tr><td><strong>NVIDIA Warehouse Scene</strong></td><td>763種の倉庫アセット（棚・コンベア・パレット等）</td><td><a href="https://docs.isaacsim.omniverse.nvidia.com/4.2.0/features/warehouse_logistics/tutorial_static_assets.html" target="_blank">チュートリアル</a></td></tr>
+              <tr><td><strong>NVIDIA Asset Packs</strong></td><td>SimReady Pack（194種工業オブジェクト）無料</td><td><a href="https://docs.omniverse.nvidia.com/usd/latest/usd_content_samples/downloadable_packs.html" target="_blank">ダウンロード</a></td></tr>
+              <tr><td><strong>agilebot_isaac_usd_assets</strong></td><td>協働ロボットUSDアセット・Isaac Sim/Lab専用</td><td><a href="https://github.com/sh-agilebot/agilebot_isaac_usd_assets" target="_blank">GitHub</a></td></tr>
+              <tr><td><strong>ASWF USD WG Assets</strong></td><td>標準テストアセット・アセット構造規範</td><td><a href="https://github.com/usd-wg/assets" target="_blank">GitHub</a></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <h3 class="ssh">📦 Physics追加が必要なアセット</h3>
+        <div class="tw">
+          <table>
+            <thead><tr><th>リソース</th><th>内容</th><th>リンク</th></tr></thead>
+            <tbody>
+              <tr><td><strong>Pixar Sample Assets</strong></td><td>Kitchen Set・City Set・構造的に規範</td><td><a href="https://openusd.org/release/dl_downloads.html#assets" target="_blank">ダウンロード</a></td></tr>
+              <tr><td><strong>Disney Moana Island</strong></td><td>映画「モアナ」の完全島シーン</td><td><a href="https://www.disneyanimation.com/resources/moana-island-scene/" target="_blank">公式</a></td></tr>
+              <tr><td><strong>Animal Logic USD ALab</strong></td><td>高品質VFX制作レベルシーン・構造学習に最適</td><td><a href="https://animallogic.com/usd/alab/" target="_blank">ALab</a></td></tr>
+              <tr><td><strong>Lowe's Open Builder</strong></td><td>500以上の家具USDZモデル</td><td><a href="https://www.lowesopenbuilder.com/" target="_blank">公式</a></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="callout"><span class="ci">🚀</span><span>まずは <strong>Isaac Sim内蔵シーン + NVIDIA SimReady アセットパック</strong> から。設定不要でそのままロボットを走らせられます。</span></div>
+      </div>
+
+      <div class="sec" id="s1-refs">
+        <h2 class="sh">参考リソース</h2>
+        <div class="rgrid">
+          <div>
+            <h3 class="ssh">📚 公式ドキュメント</h3>
+            <ul class="llist">
+              <li><a href="https://openusd.org/" target="_blank">OpenUSD 公式サイト</a></li>
+              <li><a href="https://openusd.org/release/glossary.html" target="_blank">OpenUSD 用語集</a></li>
+              <li><a href="https://openusd.org/release/spec_usdz.html" target="_blank">USDZ形式仕様</a></li>
+            </ul>
+            <h3 class="ssh">🎓 学習リソース</h3>
+            <ul class="llist">
+              <li><a href="https://remedy-entertainment.github.io/USDBook/" target="_blank">Book of USD</a></li>
+              <li><a href="https://docs.omniverse.nvidia.com/usd/latest/learn-openusd/independent-learning.html" target="_blank">NVIDIA Learn OpenUSD</a></li>
+              <li><a href="https://lucascheller.github.io/VFX-UsdSurvivalGuide/introduction/overview.html" target="_blank">USD Survival Guide</a></li>
+              <li><a href="https://openusd.org/release/tut_usd_tutorials.html" target="_blank">Pixar USD Tutorials</a></li>
+            </ul>
+          </div>
+          <div>
+            <h3 class="ssh">🐙 GitHub</h3>
+            <ul class="llist">
+              <li><a href="https://github.com/PixarAnimationStudios/OpenUSD" target="_blank">PixarAnimationStudios/OpenUSD</a></li>
+              <li><a href="https://github.com/matiascodesal/awesome-openusd" target="_blank">matiascodesal/awesome-openusd</a></li>
+              <li><a href="https://github.com/isaac-sim/IsaacSim" target="_blank">isaac-sim/IsaacSim</a></li>
+              <li><a href="https://github.com/ColinKennedy/USD-Cookbook" target="_blank">ColinKennedy/USD-Cookbook</a></li>
+            </ul>
+            <h3 class="ssh">🍎 Apple WWDC</h3>
+            <ul class="llist">
+              <li><a href="https://developer.apple.com/videos/play/wwdc2022/10129/" target="_blank">Understand USD fundamentals — WWDC22</a></li>
+              <li><a href="https://developer.apple.com/videos/play/wwdc2019/602/" target="_blank">Working with USD — WWDC19</a></li>
+              <li><a href="https://developer.apple.com/videos/play/wwdc2021/10077/" target="_blank">3D workflows with USD — WWDC21</a></li>
+            </ul>
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /tab1 -->
+
+
+    <!-- ══════════════════════ TAB 2 ══════════════════════ -->
+    <div class="tab-panel" id="tab2">
+
+      <div class="sec" id="s2-overview">
+        <h2 class="sh">概念クイックリファレンス</h2>
+        <div class="tw">
+          <table>
+            <thead><tr><th>概念</th><th>一言で</th><th>類比</th></tr></thead>
+            <tbody>
+              <tr><td><strong>Stage</strong></td><td>USDワールド全体</td><td>Photoshopプロジェクト</td></tr>
+              <tr><td><strong>Prim</strong></td><td>シーン内の1オブジェクト</td><td>Unity GameObject / ROS Node</td></tr>
+              <tr><td><strong>Attribute</strong></td><td>Primのデータフィールド</td><td>インスペクターの変数</td></tr>
+              <tr><td><strong>Time Samples</strong></td><td>時間ごとのAttributeの値</td><td>キーフレーム</td></tr>
+              <tr><td><strong>Schema</strong></td><td>Primの能力定義</td><td>クラス（Class）</td></tr>
+              <tr><td><strong>Layer</strong></td><td>データレイヤー</td><td>Photoshopレイヤー</td></tr>
+              <tr><td><strong>Composition</strong></td><td>Layerを合成して最終シーンに</td><td>Git Merge</td></tr>
+              <tr><td><strong>Opinions</strong></td><td>複数Layer衝突時の優先ルール</td><td>CSSカスケード</td></tr>
+              <tr><td><strong>Variant</strong></td><td>同一Primの複数設定</td><td>設定ファイルの切り替え</td></tr>
+              <tr><td><strong>Reference</strong></td><td>外部USDファイルを参照</td><td><code class="ic">#include</code> / <code class="ic">import</code></td></tr>
+              <tr><td><strong>Payload</strong></td><td>Referenceの遅延ロード版</td><td>Lazy Load</td></tr>
+              <tr><td><strong>Inherits</strong></td><td>属性を継承</td><td>OOP継承</td></tr>
+              <tr><td><strong>Instancing</strong></td><td>1 Meshを何度も再利用</td><td>GPU Instancing</td></tr>
+              <tr><td><strong>LOD</strong></td><td>距離で精度を切り替え</td><td>ゲームのLOD</td></tr>
+              <tr><td><strong>Hydra</strong></td><td>USDレンダリングフレームワーク</td><td>GPU Renderer</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="sec" id="s2-structure">
+        <h2 class="sh">全体構造</h2>
+        <div class="tree"><span class="tr">Stage</span>
+<span class="tb">├──</span> <span class="th">Prim</span>（オブジェクト）
+<span class="tb">│     ├──</span> <span class="tl">Attribute</span>（データ）
+<span class="tb">│     ├──</span> <span class="tl">Schema</span>（能力）
+<span class="tb">│     └──</span> <span class="tl">Time Samples</span>（アニメーション）
+<span class="tb">│</span>
+<span class="tb">├──</span> <span class="th">Layer</span>（レイヤー）
+<span class="tb">│</span>
+<span class="tb">├──</span> <span class="th">Composition</span>（合成エンジン）
+<span class="tb">│     ├──</span> <span class="tl">Opinions</span>（衝突優先度）
+<span class="tb">│     ├──</span> <span class="tl">Reference</span>（参照）
+<span class="tb">│     ├──</span> <span class="tl">Payload</span>（遅延ロード）
+<span class="tb">│     ├──</span> <span class="tl">Inherits</span>（継承）
+<span class="tb">│     └──</span> <span class="tl">Variant</span>（多設定）
+<span class="tb">│</span>
+<span class="tb">├──</span> <span class="tl">Instancing</span>
+<span class="tb">├──</span> <span class="tl">LOD</span>
+<span class="tb">└──</span> <span class="tl">Hydra</span>（レンダリング）</div>
+        <blockquote>Stage = すべてのPrim ＋ Compositionで処理された複数Layer = 完成したワールド</blockquote>
+      </div>
+
+      <div class="sec" id="s2-stage">
+        <h2 class="sh">Stage</h2>
+        <p>USDシーン全体のコンテナです。<code class="ic">warehouse.usd</code> を開くとStageを開いたことになり、ロボット・ドア・エレベーター・ライトすべてがここに属します。すべての操作は <code class="ic">Stage → Prim → Attribute</code> の流れで行います。</p>
+        <p>📎 <a href="https://openusd.org/release/glossary.html#usdglossary-stage" target="_blank">USD Glossary: Stage</a></p>
+      </div>
+
+      <div class="sec" id="s2-prim">
+        <h2 class="sh">Prim（プリミティブ）</h2>
+        <p>USDではほぼすべてのオブジェクトがPrimです。Mesh・Camera・Light・Joint・Materialを問わずすべてPrimです。Primはパスで木構造に整理されます：</p>
+        <pre><code><span class="path">/World</span>
+<span class="path">/World/Robot</span>
+<span class="path">/World/Robot/Arm</span>
+<span class="path">/World/Door</span>
+<span class="path">/World/Elevator</span></code></pre>
+        <p>📎 <a href="https://openusd.org/release/glossary.html#usdglossary-prim" target="_blank">USD Glossary: Prim</a></p>
+      </div>
+
+      <div class="sec" id="s2-attribute">
+        <h2 class="sh">Attribute（アトリビュート）</h2>
+        <p>Primのデータフィールドです。位置・回転・色・質量などの具体的な値を保持します：</p>
+        <pre><code><span class="kw">def</span> <span class="typ">Xform</span> <span class="str">"Robot"</span> {
+    <span class="typ">double3</span> <span class="key">xformOp:translate</span> = (<span class="num">1.0</span>, <span class="num">0.0</span>, <span class="num">0.0</span>)
+    <span class="typ">float</span>   <span class="key">mass</span>               = <span class="num">20.0</span>
+}</code></pre>
+        <p>📎 <a href="https://openusd.org/release/glossary.html#usdglossary-attribute" target="_blank">USD Glossary: Attribute</a></p>
+      </div>
+
+      <div class="sec" id="s2-timesamples">
+        <h2 class="sh">Time Samples（タイムサンプル）</h2>
+        <p>各時刻のAttributeの値で、アニメーションを構成します。ロボットの移動軌跡・アームの動き・カメラパスはすべてTime Samplesで実現されます：</p>
+        <pre><code><span class="typ">double3</span> <span class="key">xformOp:translate</span>.timeSamples = {
+    <span class="num">0</span>: (<span class="num">0</span>, <span class="num">0</span>, <span class="num">0</span>),
+    <span class="num">1</span>: (<span class="num">1</span>, <span class="num">0</span>, <span class="num">0</span>),
+    <span class="num">2</span>: (<span class="num">2</span>, <span class="num">0</span>, <span class="num">0</span>),
+}</code></pre>
+      </div>
+
+      <div class="sec" id="s2-schema">
+        <h2 class="sh">Schema（スキーマ）</h2>
+        <p>Primに「何ができるか」を定義します。2種類あります：</p>
+        <div class="tw">
+          <table>
+            <thead><tr><th>種類</th><th>役割</th><th>特性</th></tr></thead>
+            <tbody>
+              <tr><td><strong>IsA Schema</strong></td><td>Primのタイプを決定（Mesh・Camera・Lightなど）</td><td>1 Primに1つのみ</td></tr>
+              <tr><td><strong>API Schema</strong></td><td>Primに追加能力を付与（Physics・Collisionなど）</td><td>複数重ねて適用可能</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>Isaac Simでの例：</p>
+        <pre><code>Cube + RigidBodyAPI + CollisionAPI  →  落下・衝突する物理ブロック</code></pre>
+        <p>主なPhysics API Schema：</p>
+        <div style="margin:8px 0 12px;">
+          <span class="badge b-blue">RigidBodyAPI</span>
+          <span class="badge b-blue">CollisionAPI</span>
+          <span class="badge b-blue">PhysicsDriveAPI</span>
+          <span class="badge b-blue">PhysicsJointAPI</span>
+        </div>
+        <p>📎 <a href="https://openusd.org/release/glossary.html#usdglossary-schema" target="_blank">USD Glossary: Schema</a> ｜ <a href="https://docs.isaacsim.omniverse.nvidia.com/latest/physics/physics_overview.html" target="_blank">Isaac Sim Physics Schema</a></p>
+      </div>
+
+      <div class="sec" id="s2-layer">
+        <h2 class="sh">Layer（レイヤー）</h2>
+        <p>データレイヤーであり、各 <code class="ic">.usd</code> ファイルが1つのLayerです。役割ごとにLayerを分割し、互いに干渉しないようにします：</p>
+        <div class="tree"><span class="tl">structure.usd</span>   <span class="tc">← 壁・床・天井（静的・ほぼ変更なし）</span>
+<span class="tl">robot.usd</span>        <span class="tc">← ロボット</span>
+<span class="tl">lighting.usd</span>     <span class="tc">← 照明</span>
+<span class="tl">physics.usd</span>      <span class="tc">← 物理属性オーバーライド</span></div>
+        <p>📎 <a href="https://openusd.org/release/glossary.html#usdglossary-layer" target="_blank">USD Glossary: Layer</a></p>
+      </div>
+
+      <div class="sec" id="s2-composition">
+        <h2 class="sh">Composition &amp; Opinions</h2>
+        <p><strong>Composition</strong> はUSDのコアエンジンで、複数のLayerを最終シーンへ合成します。<strong>Opinions</strong> は複数のLayerが同じAttributeを変更する際の優先順位ルールです。</p>
+        <p>Composition Arc（合成弧）の優先順位（高 → 低）：</p>
+        <div style="margin:14px 0;">
+          <div class="arc"><div class="arc-n" style="background:#e8f0fe;color:#0055cc">1</div><strong>Local</strong><span class="arc-note">最高優先度</span></div>
+          <div class="arc"><div class="arc-n" style="background:#e8f5e9;color:#1a7434">2</div><strong>Reference</strong></div>
+          <div class="arc"><div class="arc-n" style="background:#f3e8fd;color:#6a0dad">3</div><strong>Payload</strong></div>
+          <div class="arc"><div class="arc-n" style="background:#fff8e1;color:#7a4f00">4</div><strong>Inherits</strong></div>
+          <div class="arc"><div class="arc-n" style="background:#fce4ec;color:#880e4f">5</div><strong>Variant</strong></div>
+          <div class="arc"><div class="arc-n" style="background:#f5f5f7;color:#6e6e73">6</div><strong>Sublayer</strong><span class="arc-note">最低優先度</span></div>
+        </div>
+        <p>📎 <a href="https://docs.omniverse.nvidia.com/usd/latest/learn-openusd/independent/modularity-guide/content-reuse.html" target="_blank">Composition Arcs詳解</a> ｜ <a href="https://openusd.org/release/glossary.html#usdglossary-compositionarcs" target="_blank">USD Glossary: Composition</a></p>
+      </div>
+
+      <div class="sec" id="s2-variant">
+        <h2 class="sh">Variant（バリアント）</h2>
+        <p>同一Primに複数の設定セットを持たせ、1クリックで切り替えられます。複数のモデルファイルは不要です：</p>
+        <pre><code>Door
+├── VariantSet: state
+│     ├── open
+│     └── closed
+
+Robot
+├── VariantSet: sensor_config
+│     ├── lidar_only
+│     ├── camera_only
+│     └── dual_sensor</code></pre>
+        <p>応用例：病院シーンの「昼 / 夜 / 雨 / 停電」をVariantで切り替え。</p>
+        <p>📎 <a href="https://openusd.org/release/glossary.html#usdglossary-variantset" target="_blank">USD Glossary: VariantSet</a></p>
+      </div>
+
+      <div class="sec" id="s2-reference">
+        <h2 class="sh">Reference（リファレンス）</h2>
+        <p>別のUSDファイルを参照します。データをコピーしないため、<code class="ic">robot.usd</code> を更新すると参照するすべてのシーンが自動更新されます：</p>
+        <pre><code><span class="kw">def</span> <span class="typ">Xform</span> <span class="str">"Robot"</span> (
+    references = @./robot.usd@
+) {}</code></pre>
+        <p>📎 <a href="https://openusd.org/release/glossary.html#usdglossary-references" target="_blank">USD Glossary: Reference</a></p>
+      </div>
+
+      <div class="sec" id="s2-payload">
+        <h2 class="sh">Payload（ペイロード）</h2>
+        <p>Referenceの上位版で、必要な時だけロードします。大型シーンに最適です：</p>
+        <pre><code>Hospital
+├── Wing_A.usd  <span class="cmt">← Payload（現在ロード中）</span>
+├── Wing_B.usd  <span class="cmt">← Payload（未ロード）</span>
+└── Wing_C.usd  <span class="cmt">← Payload（未ロード）</span></code></pre>
+        <p>📎 <a href="https://openusd.org/release/glossary.html#usdglossary-payload" target="_blank">USD Glossary: Payload</a></p>
+      </div>
+
+      <div class="sec" id="s2-inherits">
+        <h2 class="sh">Inherits（インヘリッツ）</h2>
+        <p>複数のPrimが同じ属性セットを共有します。親Primを変更すると継承しているすべてのPrimが自動更新されます。OOPのclass継承に相当します。</p>
+        <p>活用例：すべての机が同じ木目マテリアルを継承 → 1箇所変更で全机に反映。</p>
+        <p>📎 <a href="https://openusd.org/release/glossary.html#usdglossary-inherits" target="_blank">USD Glossary: Inherits</a></p>
+      </div>
+
+      <div class="sec" id="s2-instancing">
+        <h2 class="sh">Instancing（インスタンシング）</h2>
+        <p>1つのMeshをシーン内で何度も再利用します。GPUには1つ分のデータしか保存されません。</p>
+        <p><strong>1000個の棚 = 1 Mesh ＋ 1000 Instance</strong> → メモリとレンダリングコストを大幅削減。</p>
+        <p>📎 <a href="https://openusd.org/release/glossary.html#usdglossary-instancing" target="_blank">USD Glossary: Instancing</a></p>
+      </div>
+
+      <div class="sec" id="s2-lod">
+        <h2 class="sh">LOD（Level of Detail）</h2>
+        <p>カメラからの距離に応じてモデルの精度を自動切り替えします。遠距離では低ポリゴン、近距離では高ポリゴンを使用します。大型工場や屋外シーンで大幅なパフォーマンス向上が期待できます。</p>
+      </div>
+
+      <div class="sec" id="s2-hydra">
+        <h2 class="sh">Hydra（ハイドラ）</h2>
+        <p>USDのレンダリングフレームワークです。USDがシーンを記述し、Hydraがそれを表示します。レンダラーをいつでも交換可能（RTX・Storm・Arnold・RenderMan…）。</p>
+        <p>📎 <a href="https://openusd.org/release/api/hd_page_front.html" target="_blank">Hydraドキュメント</a></p>
+      </div>
+
+      <div class="sec" id="s2-mapping">
+        <h2 class="sh">Isaac Simプロジェクトへのマッピング</h2>
+        <div class="tw">
+          <table>
+            <thead><tr><th>プロジェクト要素</th><th>USD概念</th><th>例</th></tr></thead>
+            <tbody>
+              <tr><td>工場環境全体</td><td><strong>Stage</strong></td><td><code class="ic">factory.usd</code></td></tr>
+              <tr><td>ロボット・ドア・エレベーター</td><td><strong>Prim</strong></td><td><code class="ic">/World/Robot</code>, <code class="ic">/World/Elevator</code></td></tr>
+              <tr><td>位置・関節角度・質量</td><td><strong>Attribute</strong></td><td><code class="ic">translate</code>, <code class="ic">jointPosition</code>, <code class="ic">mass</code></td></tr>
+              <tr><td>ロボットの移動軌跡</td><td><strong>Time Samples</strong></td><td>各時刻の位姿</td></tr>
+              <tr><td>コライダー・剛体・関節</td><td><strong>API Schema</strong></td><td><code class="ic">RigidBodyAPI</code>, <code class="ic">CollisionAPI</code></td></tr>
+              <tr><td>環境/ロボット/照明を分担管理</td><td><strong>Layer</strong></td><td><code class="ic">structure.usd + robot.usd + lighting.usd</code></td></tr>
+              <tr><td>最終シミュレーション世界</td><td><strong>Composition</strong></td><td>複数USDファイルを合成</td></tr>
+              <tr><td>ドア開閉・昼夜切り替え</td><td><strong>Variant</strong></td><td>ワンクリックでシーン設定切り替え</td></tr>
+              <tr><td>大量の棚・机・箱</td><td><strong>Instancing</strong></td><td>1モデルを数百回インスタンス化</td></tr>
+              <tr><td>大型病院・工場</td><td><strong>Payload</strong></td><td>エリアに入ったときにロード</td></tr>
+              <tr><td>RTXリアルタイム表示</td><td><strong>Hydra</strong></td><td>Isaac Simのリアルタイムレンダリングパイプライン</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="sec" id="s2-priority">
+        <h2 class="sh">学習優先度（Isaac Sim研究方向）</h2>
+        <div class="tw">
+          <table>
+            <thead><tr><th>優先度</th><th>概念</th><th>理由</th></tr></thead>
+            <tbody>
+              <tr class="p5"><td>⭐⭐⭐⭐⭐</td><td><strong>Prim + Attribute</strong></td><td>USDワールドのあらゆるオブジェクトとデータの基礎</td></tr>
+              <tr class="p5"><td>⭐⭐⭐⭐⭐</td><td><strong>Schema（特にAPI Schema）</strong></td><td>物体が衝突・質量・関節・センサー能力を持つ理由を理解</td></tr>
+              <tr class="p5"><td>⭐⭐⭐⭐⭐</td><td><strong>Layer + Composition</strong></td><td>USDの最核心設計思想・多人数協業とシーン構成の基礎</td></tr>
+              <tr class="p4"><td>⭐⭐⭐⭐</td><td><strong>Reference + Payload</strong></td><td>再利用・拡張可能な大規模デジタルツインシーンの構築</td></tr>
+              <tr class="p4"><td>⭐⭐⭐⭐</td><td><strong>Variant + Instancing</strong></td><td>シーン設定の即切り替えと大量重複アセットの効率管理</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+    </div><!-- /tab2 -->
+
+
+    <!-- ══════════════════════ TAB 3 ══════════════════════ -->
+    <div class="tab-panel" id="tab3">
+
+      <div class="sec" id="s3-intro">
+        <h2 class="sh">目標</h2>
+        <blockquote>研究室・廊下・エレベーターを現実に十分近いUSDシーンとして構築し、Isaac Simでのロボットナビゲーション・シミュレーションに活用する。</blockquote>
+      </div>
+
+      <div class="sec" id="s3-geometry">
+        <h2 class="sh">① ジオメトリ構造</h2>
+        <p>最も基礎的な部分で、シーンの物理的骨格を決定します。</p>
+        <div class="tw">
+          <table>
+            <thead><tr><th>要素</th><th>注目点</th></tr></thead>
+            <tbody>
+              <tr><td>床・壁・天井</td><td>寸法精度（誤差 ±2cm 以内を推奨）</td></tr>
+              <tr><td>ドア</td><td>幅・開閉方向・自動ドアか・回転軸の位置</td></tr>
+              <tr><td>廊下</td><td>有効幅（ロボットの通過可否に直結）・コーナー半径</td></tr>
+              <tr><td>エレベーター</td><td>かご内寸法・ドア幅・階高・停止階数</td></tr>
+              <tr><td>障害物</td><td>固定家具（机・椅子・棚）の位置と外形</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="callout"><span class="ci">💡</span><span>ロボットナビゲーションが気にするのは外観の細部ではなく、<strong>通行可能空間の形状</strong>です。ジオメトリ精度がナビゲーション結果に直接影響します。</span></div>
+      </div>
+
+      <div class="sec" id="s3-physics">
+        <h2 class="sh">② 物理属性（Physics Schema）</h2>
+        <p>シミュレーション内でロボットとシーンが正しくインタラクションするために必要です。</p>
+        <div class="tw">
+          <table>
+            <thead><tr><th>要素</th><th>パラメータ</th></tr></thead>
+            <tbody>
+              <tr><td>床の摩擦係数</td><td>車輪型ロボットのスリップ度（タイル ≠ カーペット）</td></tr>
+              <tr><td>コライダー（Collider）</td><td>各物体に簡略化コリジョンメッシュが必要（レンダリングメッシュそのままはNG）</td></tr>
+              <tr><td>ドアのヒンジ関節</td><td>回転軸位置・開閉角度制限・スプリング復帰の有無</td></tr>
+              <tr><td>エレベーターの動作</td><td>垂直変位・加速度・ドア開閉タイムライン</td></tr>
+              <tr><td>床の平坦度</td><td>スロープの有無・敷居の高さ（車輪の乗り越えに影響）</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="sec" id="s3-sensor">
+        <h2 class="sh">③ センサー環境（Sensor-ready）</h2>
+        <p>ロボットはセンサーで世界を認識するため、シーンはセンサーに対しても「リアル」である必要があります：</p>
+        <div class="tw">
+          <table>
+            <thead><tr><th>センサー</th><th>シーンへの要件</th></tr></thead>
+            <tbody>
+              <tr><td><strong>LiDAR</strong></td><td>壁・ドア・柱のジオメトリ精度；ガラスは特殊マテリアル処理が必要</td></tr>
+              <tr><td><strong>RGBカメラ</strong></td><td>テクスチャ（床柄・壁色・サイン）・照明条件</td></tr>
+              <tr><td><strong>深度カメラ</strong></td><td>マテリアルの反射率（鏡面反射で深度情報が失われる）</td></tr>
+              <tr><td><strong>IMU</strong></td><td>床の傾斜・振動（主にIsaac Simレイヤーで処理）</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="sec" id="s3-semantic">
+        <h2 class="sh">④ セマンティックラベル</h2>
+        <p>AI認識トレーニング（セグメンテーション・物体検出）に使用します。</p>
+        <ul style="margin:10px 0 0 20px;line-height:2.1;color:#3a3a3c;font-size:13.5px;">
+          <li>各クラスにセマンティックラベルを設定：<code class="ic">door</code>・<code class="ic">wall</code>・<code class="ic">elevator</code>・<code class="ic">person</code></li>
+          <li>エレベーターボタン・ドアノブなどの細部を個別ラベル付けするかはタスク次第</li>
+        </ul>
+      </div>
+
+      <div class="sec" id="s3-layer-design">
+        <h2 class="sh">⑤ USDレイヤー設計</h2>
+        <p>適切なレイヤー設計によりシーンの保守性・拡張性が大幅に向上します：</p>
+        <div class="tree"><span class="tr">building.usd</span>
+<span class="tb">├──</span> <span class="tl">structure.usd</span>   <span class="tc">← 壁・床・天井（静的・ほぼ変更なし）</span>
+<span class="tb">├──</span> <span class="tl">furniture.usd</span>   <span class="tc">← 机・椅子・棚（静的障害物）</span>
+<span class="tb">├──</span> <span class="tl">doors.usd</span>       <span class="tc">← 全ドア（Variant: open / closed）</span>
+<span class="tb">├──</span> <span class="tl">elevator.usd</span>    <span class="tc">← エレベーター（アニメーション・物理）</span>
+<span class="tb">├──</span> <span class="tl">lighting.usd</span>    <span class="tc">← 照明配置</span>
+<span class="tb">├──</span> <span class="tl">materials.usd</span>   <span class="tc">← マテリアルライブラリ</span>
+<span class="tb">├──</span> <span class="tl">physics.usd</span>     <span class="tc">← 物理属性オーバーライドレイヤー</span>
+<span class="tb">└──</span> <span class="tl">semantic.usd</span>    <span class="tc">← セマンティックラベルオーバーライドレイヤー</span></div>
+        <div class="callout"><span class="ci">💡</span><span><strong>ドアの開閉状態</strong>と<strong>エレベーターの現在階</strong>は <code class="ic">VariantSet</code> として設計すると、シーン設定をワンクリックで切り替えられます。</span></div>
+      </div>
+
+      <div class="sec" id="s3-data">
+        <h2 class="sh">準備するデータ</h2>
+
+        <h3 class="ssh">① 現地計測データ（必須）</h3>
+        <p>メジャーまたはレーザー距離計で採寸し、以下のJSONテンプレートに記録します：</p>
+        <pre><code>{
+  <span class="key">"lab"</span>: {
+    <span class="key">"floor_area_m"</span>: [<span class="num">9.5</span>, <span class="num">7.2</span>],
+    <span class="key">"ceiling_height_m"</span>: <span class="num">2.7</span>,
+    <span class="key">"doors"</span>: [{
+      <span class="key">"id"</span>: <span class="str">"lab_main_door"</span>,
+      <span class="key">"width_m"</span>: <span class="num">0.9</span>,
+      <span class="key">"height_m"</span>: <span class="num">2.1</span>,
+      <span class="key">"type"</span>: <span class="str">"swing"</span>,
+      <span class="key">"swing_direction"</span>: <span class="str">"inward"</span>,
+      <span class="key">"hinge_side"</span>: <span class="str">"right"</span>,
+      <span class="key">"threshold_height_m"</span>: <span class="num">0.01</span>
+    }],
+    <span class="key">"floor_material"</span>: <span class="str">"tile"</span>
+  },
+  <span class="key">"corridor"</span>: {
+    <span class="key">"length_m"</span>: <span class="num">32.0</span>,
+    <span class="key">"width_m"</span>: <span class="num">2.4</span>,
+    <span class="key">"ceiling_height_m"</span>: <span class="num">2.6</span>,
+    <span class="key">"corners"</span>: [{<span class="key">"position_m"</span>: [<span class="num">15.0</span>, <span class="num">0.0</span>], <span class="key">"turn_angle_deg"</span>: <span class="num">90</span>}]
+  },
+  <span class="key">"elevator"</span>: {
+    <span class="key">"cabin_interior_m"</span>: [<span class="num">1.4</span>, <span class="num">1.6</span>, <span class="num">2.3</span>],
+    <span class="key">"door_width_m"</span>: <span class="num">0.9</span>,
+    <span class="key">"door_type"</span>: <span class="str">"sliding_double"</span>,
+    <span class="key">"floors"</span>: [<span class="num">1</span>, <span class="num">2</span>, <span class="num">3</span>],
+    <span class="key">"travel_speed_m_s"</span>: <span class="num">1.0</span>,
+    <span class="key">"door_open_time_s"</span>: <span class="num">3.0</span>
+  }
+}</code></pre>
+
+        <h3 class="ssh">② 写真・テクスチャ参考（推奨）</h3>
+        <div class="tw">
+          <table>
+            <thead><tr><th>撮影対象</th><th>用途</th></tr></thead>
+            <tbody>
+              <tr><td>床の真上からの写真</td><td>床PBRテクスチャの生成</td></tr>
+              <tr><td>壁面のアップ</td><td>壁マテリアル</td></tr>
+              <tr><td>廊下の全景（魚眼または広角）</td><td>ジオメトリ比率の検証</td></tr>
+              <tr><td>エレベーター内部（4隅から）</td><td>かごマテリアルと寸法確認</td></tr>
+              <tr><td>ドアノブ・エレベーターボタンのアップ</td><td>細部セマンティックラベル参考</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3 class="ssh">③ 平面図</h3>
+        <ul style="margin:8px 0 14px 20px;line-height:2.1;color:#3a3a3c;font-size:13.5px;">
+          <li>CADファイル（.dwg / .dxf）が最優先</li>
+          <li>建物管理部署に申請、または廊下の消防避難図を活用</li>
+          <li>なければ：レーザー距離計 ＋ 手書きスケッチ → モデリング</li>
+        </ul>
+
+        <h3 class="ssh">④ 物理パラメータ参考値</h3>
+        <div class="tw">
+          <table>
+            <thead><tr><th>床材質</th><th>静摩擦係数 μs</th><th>動摩擦係数 μk</th></tr></thead>
+            <tbody>
+              <tr><td>タイル（乾燥）</td><td>0.5</td><td>0.4</td></tr>
+              <tr><td>タイル（湿潤）</td><td>0.2</td><td>0.15</td></tr>
+              <tr><td>カーペット</td><td>0.6</td><td>0.5</td></tr>
+              <tr><td>コンクリート</td><td>0.6</td><td>0.5</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="sec" id="s3-tests">
+        <h2 class="sh">テスト項目</h2>
+
+        <h3 class="ssh">① ジオメトリ検証</h3>
+        <ul class="chk">
+          <li>usdviewでシーンを開き、スケールが現実と一致するか目視確認</li>
+          <li>ロボットを配置後、床に正しく立っている（貫通なし・浮きなし）</li>
+          <li>廊下の有効幅がロボット通過に十分か（≥ 0.5m のマージン推奨）</li>
+        </ul>
+
+        <h3 class="ssh">② 物理シミュレーション</h3>
+        <ul class="chk">
+          <li>ロボットが床を走行してもスリップ・振動が起きない</li>
+          <li>ドアをロボットが押せる、またはプログラムで開閉制御できる</li>
+          <li>エレベータードア開閉タイムラインが正確で、かごの上下移動に貫通なし</li>
+          <li>ロボットのエレベーター乗降時にドア枠・敷居との衝突なし</li>
+        </ul>
+
+        <h3 class="ssh">③ ナビゲーション</h3>
+        <ul class="chk">
+          <li>NavMeshを生成し、廊下・研究室・エレベーター内部がすべてナビ可能と確認</li>
+          <li>研究室 → 廊下 → エレベーターの完全なパスプランニングが成功する</li>
+          <li>ドア閉時にナビゲーションが通行不可と正しくマークされる</li>
+        </ul>
+
+        <h3 class="ssh">④ センサー</h3>
+        <ul class="chk">
+          <li>廊下でのLiDAR点群の形状が正確（壁面が平行、ドア開口部が明確）</li>
+          <li>カメラ映像と現実の写真を比較（色・照明がおおよそ一致）</li>
+          <li>ガラス・鏡面エリアでLiDARに特殊マテリアル設定が必要かを確認</li>
+        </ul>
+
+        <h3 class="ssh">⑤ パフォーマンス</h3>
+        <ul class="chk">
+          <li>シーン全体のロード時間 &lt; 10秒（超える場合はPayloadによる分割を検討）</li>
+          <li>ロボット動作中の物理ステップが安定（目標 ≥ 60Hz）</li>
+        </ul>
+      </div>
+
+      <div class="sec" id="s3-order">
+        <h2 class="sh">推奨構築順序</h2>
+        <p style="margin-bottom:18px;color:#6e6e73;font-size:13.5px;">各ステップ完了後に個別保存してテストしてください。すべて完成してからまとめてテストするのは避けましょう。</p>
+        <div class="flowchart">
+          <div class="fstep hl">① データ収集<small>計測 ＋ 写真撮影 ＋ 平面図</small></div>
+          <div class="farr"></div>
+          <div class="fstep">② 構造レイヤーのモデリング（structure.usd）<small>床・壁・天井</small></div>
+          <div class="farr"></div>
+          <div class="fstep">③ 物理属性の追加（physics.usd）<small>まずロボットが床に立てるか確認</small></div>
+          <div class="farr"></div>
+          <div class="fstep">④ ドアとエレベーターの追加<small>doors.usd + elevator.usd（アニメーション・関節含む）</small></div>
+          <div class="farr"></div>
+          <div class="fstep">⑤ 家具・障害物の追加（furniture.usd）</div>
+          <div class="farr"></div>
+          <div class="fstep">⑥ マテリアルと照明の追加<small>materials.usd + lighting.usd</small></div>
+          <div class="farr"></div>
+          <div class="fstep">⑦ セマンティックラベルの追加（semantic.usd）</div>
+          <div class="farr"></div>
+          <div class="fstep hl">⑧ 全フローのテスト（テスト項目①〜⑤）</div>
+        </div>
+      </div>
+
+    </div><!-- /tab3 -->
+
+  </main>
+</div>
+
+<script>
+const TAB_DATA = {
+  tab1: [
+    {id:'s1-what',    label:'USDとは何か？'},
+    {id:'s1-problem', label:'従来ワークフローの課題'},
+    {id:'s1-film',    label:'映像制作での活用'},
+    {id:'s1-strength',label:'USDの主な強み'},
+    {id:'s1-formats', label:'ファイル形式'},
+    {id:'s1-limits',  label:'課題と学習コスト'},
+    {id:'s1-isaacsim',label:'Isaac Simとの対応'},
+    {id:'s1-priority',label:'学習優先度'},
+    {id:'s1-awesome', label:'awesome-openUSD'},
+    {id:'s1-assets',  label:'オープンソースアセット'},
+    {id:'s1-refs',    label:'参考リソース'},
+  ],
+  tab2: [
+    {id:'s2-overview',    label:'概念クイックリファレンス'},
+    {id:'s2-structure',   label:'全体構造'},
+    {id:'s2-stage',       label:'Stage'},
+    {id:'s2-prim',        label:'Prim'},
+    {id:'s2-attribute',   label:'Attribute'},
+    {id:'s2-timesamples', label:'Time Samples'},
+    {id:'s2-schema',      label:'Schema'},
+    {id:'s2-layer',       label:'Layer'},
+    {id:'s2-composition', label:'Composition & Opinions'},
+    {id:'s2-variant',     label:'Variant'},
+    {id:'s2-reference',   label:'Reference'},
+    {id:'s2-payload',     label:'Payload'},
+    {id:'s2-inherits',    label:'Inherits'},
+    {id:'s2-instancing',  label:'Instancing'},
+    {id:'s2-lod',         label:'LOD'},
+    {id:'s2-hydra',       label:'Hydra'},
+    {id:'s2-mapping',     label:'Isaac Simへのマッピング'},
+    {id:'s2-priority',    label:'学習優先度'},
+  ],
+  tab3: [
+    {id:'s3-intro',        label:'目標'},
+    {id:'s3-geometry',     label:'① ジオメトリ構造'},
+    {id:'s3-physics',      label:'② 物理属性'},
+    {id:'s3-sensor',       label:'③ センサー環境'},
+    {id:'s3-semantic',     label:'④ セマンティックラベル'},
+    {id:'s3-layer-design', label:'⑤ USDレイヤー設計'},
+    {id:'s3-data',         label:'準備するデータ'},
+    {id:'s3-tests',        label:'テスト項目'},
+    {id:'s3-order',        label:'推奨構築順序'},
+  ],
+};
+
+let currentTab = 'tab1';
+let observer = null;
+
+function buildToc(tabId) {
+  const toc = document.getElementById('toc');
+  toc.innerHTML = '';
+  TAB_DATA[tabId].forEach(item => {
+    const li = document.createElement('li');
+    li.className = 'toc-item';
+    li.dataset.id = item.id;
+    li.innerHTML = `<a href="#${item.id}">${item.label}</a>`;
+    li.querySelector('a').addEventListener('click', e => {
+      e.preventDefault();
+      const el = document.getElementById(item.id);
+      if (el) el.scrollIntoView({behavior:'smooth', block:'start'});
+    });
+    toc.appendChild(li);
+  });
+}
+
+function setActive(id) {
+  document.querySelectorAll('.toc-item').forEach(el =>
+    el.classList.toggle('active', el.dataset.id === id)
+  );
+}
+
+function setupObserver(tabId) {
+  if (observer) observer.disconnect();
+  const ids = TAB_DATA[tabId].map(i => i.id);
+  const sections = ids.map(id => document.getElementById(id)).filter(Boolean);
+
+  observer = new IntersectionObserver(entries => {
+    const visible = entries
+      .filter(e => e.isIntersecting)
+      .sort((a,b) => a.boundingClientRect.top - b.boundingClientRect.top);
+    if (visible.length > 0) setActive(visible[0].target.id);
+  }, { rootMargin: '-110px 0px -55% 0px', threshold: 0 });
+
+  sections.forEach(s => observer.observe(s));
+}
+
+function switchTab(tabId) {
+  document.querySelectorAll('.tab-btn').forEach(b =>
+    b.classList.toggle('active', b.dataset.tab === tabId)
+  );
+  document.querySelectorAll('.tab-panel').forEach(p =>
+    p.classList.toggle('active', p.id === tabId)
+  );
+  currentTab = tabId;
+  buildToc(tabId);
+  window.scrollTo({top:0, behavior:'smooth'});
+  setTimeout(() => setupObserver(tabId), 400);
+}
+
+document.querySelectorAll('.tab-btn').forEach(btn =>
+  btn.addEventListener('click', () => switchTab(btn.dataset.tab))
+);
+
+buildToc('tab1');
+setupObserver('tab1');
+</script>
+</body>
+</html>

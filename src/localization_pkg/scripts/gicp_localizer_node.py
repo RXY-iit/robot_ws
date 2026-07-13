@@ -48,6 +48,7 @@ from rclpy.qos import (
     QoSProfile,
     ReliabilityPolicy,
 )
+from rcl_interfaces.msg import SetParametersResult
 from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, TransformStamped
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import PointCloud2
@@ -238,7 +239,7 @@ class GicpLocalizer(Node):
         self.declare_parameter("map_voxel_size", 0.25)
         self.declare_parameter("scan_voxel_size", 0.20)
         self.declare_parameter("max_correspondence_distance", 1.5)
-        self.declare_parameter("fitness_score_threshold", 0.5)
+        self.declare_parameter("fitness_score_threshold", 0.25)
         self.declare_parameter("normal_search_radius", 0.8)
         self.declare_parameter("localize_period", 0.5)
         self.declare_parameter("tf_broadcast_period", 1.0 / 30.0)
@@ -265,6 +266,7 @@ class GicpLocalizer(Node):
         self._odom_frame = p("odom_frame").value
         self._base_frame = p("base_frame").value
         self._lidar_frame = p("lidar_frame").value
+        self.add_on_set_parameters_callback(self._on_parameter_update)
 
         # Initial T_map_odom from 2-D startup pose params
         x   = p("initial_x").value
@@ -340,6 +342,21 @@ class GicpLocalizer(Node):
             f"tf_period={self._tf_period}s  "
             f"map_voxel={self._map_voxel}m  scan_voxel={self._scan_voxel}m"
         )
+
+    def _on_parameter_update(self, params):
+        for param in params:
+            if param.name == "fitness_score_threshold":
+                value = float(param.value)
+                if value <= 0.0:
+                    return SetParametersResult(
+                        successful=False,
+                        reason="fitness_score_threshold must be positive",
+                    )
+                self._fit_thr = value
+                self.get_logger().info(
+                    f"[gicp_localizer] fitness_score_threshold updated to {self._fit_thr:.3f}"
+                )
+        return SetParametersResult(successful=True)
 
     # ── map loading ───────────────────────────────────────────────────────────
 

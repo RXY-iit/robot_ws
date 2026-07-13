@@ -16,8 +16,9 @@ controller_server:
       movement_time_allowance: 20.0
 
     goal_checker:
-      plugin: "nav2_controller::PositionGoalChecker"
+      plugin: "nav2_controller::SimpleGoalChecker"
       xy_goal_tolerance: 0.10
+      yaw_goal_tolerance: 0.20
       stateful: true
 
     # Primary controller: MPPI (holonomic, uses linear_y for omni motion)
@@ -26,17 +27,18 @@ controller_server:
       time_steps: 56
       model_dt: 0.10
       batch_size: 1000
-      # Sim speed-up test: velocity limits are doubled while keeping vy_std
-      # close to vy_max so lateral samples do not mostly clip.
+      # Real-lab omni tuning round 1 baseline:
+      # keep forward-dominant motion for the front depth camera, while allowing
+      # moderate left-front / right-front corrections in narrow lab aisles.
       vx_std: 0.28
-      vy_std: 0.02
+      vy_std: 0.08
       wz_std: 0.18
       vx_max: 0.24
-      # [改善2] vx_min を -vx_max にして直退 (vx<0) を有効化。
-      # 後方ゴールに対して旋転せず直接後退できる。
-      vx_min: -0.24
-      vy_max: 0.05
-      vy_min: -0.05
+      # Real-lab round 3: keep reverse only as a small recovery/positioning
+      # motion. Larger negative vx made MPPI choose long backward traversals.
+      vx_min: -0.08
+      vy_max: 0.12
+      vy_min: -0.12
       wz_max: 0.40
       wz_min: -0.40
       ax_max: 0.5
@@ -49,7 +51,7 @@ controller_server:
       temperature: 0.3
       gamma: 0.015
       motion_model: "Omni"
-      visualize: true
+      visualize: false
       retry_attempt_limit: 1
       critics: [
         "ConstraintCritic", "CostCritic", "GoalCritic",
@@ -81,7 +83,8 @@ controller_server:
       PathAlignCritic:
         enabled: true
         cost_power: 1
-        # [改善3] 経路追従強化 (14 → 18)。直進バイアスを高める。
+        # Real-lab round 2: reduce strict path hugging so MPPI can choose
+        # safer lateral offsets around table legs and carts.
         cost_weight: 18.0
         max_path_occupancy_ratio: 0.05
         trajectory_point_step: 3
@@ -97,8 +100,8 @@ controller_server:
       PathAngleCritic:
         enabled: true
         cost_power: 1
-        # [改善4] forward_preference=true で進行方向への整列を優先。
-        # weight を 2.0→1.5 に下げて障害物回避時の柔軟性を維持。
+        # Keep forward preference because local costmap is front-camera driven,
+        # but leave enough freedom for diagonal omni motion in tight aisles.
         cost_weight: 1.5
         offset_from_furthest: 4
         threshold_to_consider: 0.4
@@ -237,10 +240,10 @@ local_costmap:
           raytrace_min_range: 0.0
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        cost_scaling_factor: 3.0
-        # FIXED: was 0.10 which is smaller than robot inscribed radius (0.353).
-        # Now 0.40 to ensure safe clearance around robot body.
-        inflation_radius: 0.40
+        cost_scaling_factor: 2.5
+        # Real-lab round 1: slightly wider and smoother local clearance field.
+        # Keep this close to robot size so narrow passages do not disappear.
+        inflation_radius: 0.45
       always_send_full_costmap: true
 
 global_costmap:
@@ -262,8 +265,9 @@ global_costmap:
         map_subscribe_transient_local: true
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        cost_scaling_factor: 3.0
-        # FIXED: was 0.30 which is smaller than robot inscribed radius (0.353).
-        # Now 0.50 to give global planner adequate clearance margin.
-        inflation_radius: 0.50
+        cost_scaling_factor: 5.0
+        # Real-lab narrow-passage test: keep global inflation small so the
+        # planner can propose paths through tight gaps, then let local costmap
+        # and MPPI decide whether the robot can actually pass safely.
+        inflation_radius: 0.20
       always_send_full_costmap: true

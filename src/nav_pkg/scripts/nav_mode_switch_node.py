@@ -61,6 +61,9 @@ class NavModeSwitchNode(Node):
         self.declare_parameter('finish_max_wz', 0.25)
         self.declare_parameter('reverse_distance_m', 0.45)
         self.declare_parameter('reverse_lateral_window_m', 0.35)
+        self.declare_parameter('near_back_distance_m', 1.5)
+        self.declare_parameter('near_back_angle_rad', 1.0472)
+        self.declare_parameter('near_back_lateral_scale', 0.15)
         self.declare_parameter('policy_lookahead_m', 0.8)
         self.declare_parameter('lateral_scale', 0.25)
         self.declare_parameter('lateral_to_yaw_gain', 1.0)
@@ -83,6 +86,9 @@ class NavModeSwitchNode(Node):
         self.finish_max_wz = float(self.get_parameter('finish_max_wz').value)
         self.reverse_distance = float(self.get_parameter('reverse_distance_m').value)
         self.reverse_lateral_window = float(self.get_parameter('reverse_lateral_window_m').value)
+        self.near_back_distance = float(self.get_parameter('near_back_distance_m').value)
+        self.near_back_angle = float(self.get_parameter('near_back_angle_rad').value)
+        self.near_back_lateral_scale = float(self.get_parameter('near_back_lateral_scale').value)
         self.policy_lookahead = float(self.get_parameter('policy_lookahead_m').value)
         self.lateral_scale = float(self.get_parameter('lateral_scale').value)
         self.lateral_to_yaw_gain = float(self.get_parameter('lateral_to_yaw_gain').value)
@@ -202,6 +208,22 @@ class NavModeSwitchNode(Node):
 
         target_x, target_y, target_distance, goal_x, goal_y, goal_distance, goal_yaw = path_target
         target_angle = math.atan2(target_y, target_x)
+        goal_angle = math.atan2(goal_y, goal_x)
+
+        # Bounded close-range policy only: keep long-range obstacle avoidance and
+        # path selection inside Nav2/MPPI, but avoid wasteful turn-around when the
+        # remaining goal is clearly behind the robot and nearby.
+        if self._is_near_back_goal(goal_angle, goal_distance):
+            out = Twist()
+            out.linear.x = -min(self.max_reverse_vx, max(0.03, goal_distance * 0.35))
+            out.linear.y = self._clamp(
+                goal_y * self.near_back_lateral_scale,
+                -self.reverse_lateral_window,
+                self.reverse_lateral_window,
+            )
+            out.angular.z = self._clamp(-self.reverse_yaw_gain * goal_y,
+                                        -self.max_align_wz, self.max_align_wz)
+            return out, 'NEAR_BACK_REVERSE'
 
         if (
             goal_distance <= self.reverse_distance
@@ -235,6 +257,12 @@ class NavModeSwitchNode(Node):
             return out, 'ALIGN_THEN_FORWARD'
 
         return self._reduce_lateral_motion(msg), 'FORWARD_TRACK'
+
+    def _is_near_back_goal(self, goal_angle, goal_distance):
+        if goal_distance > self.near_back_distance:
+            return False
+        back_error = abs(self._normalize_angle(goal_angle - math.pi))
+        return back_error <= self.near_back_angle
 
     def _path_target_in_base_frame(self):
         if self.latest_path is None or not self.latest_path.poses:

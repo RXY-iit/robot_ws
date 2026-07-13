@@ -1,0 +1,4 @@
+auto_mode_policy: human_confirm_required
+contact_actions_enabled: false
+cloud_vlm_can_authorize_motion: false
+real_supported_manipulation_lite: false

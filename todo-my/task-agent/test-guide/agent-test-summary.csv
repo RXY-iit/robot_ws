@@ -1,0 +1,47 @@
+id,time,mission_id,command,parser_layer,intent,target,object_query,plan_steps,key_events,recovery_ran,tolerance_adjusted,final_status,modified_or_action
+1,2026-06-24T08:40:51.521890+00:00,be9aa9b3e32c,检查06架子有没有红色箱子,deterministic,search_object_near_place,06架子,红色箱子,24,"detect OK: Found ""红色箱子"".",no,no,mission_done,needs improvement: box detector/model
+2,2026-06-24T09:06:49.468190+00:00,7b80637a94e7,检查06架子有没有红色箱子,deterministic,search_object_near_place,06架子,红色箱子,22,"nav final error xy=0.088m yaw=0.132rad; detect OK: Found ""红色箱子"".",no,no,mission_done,needs improvement: box detector/model
+3,2026-06-24T09:07:47.157898+00:00,d915c509b5b9,检查06架子有没有红色箱子,deterministic,search_object_near_place,06架子,红色箱子,22,"nav final error xy=0.097m yaw=0.131rad; detect OK: Found ""红色箱子"".",no,no,mission_done,needs improvement: box detector/model
+4,2026-06-24T09:18:57.070548+00:00,6d7081bb9b16,06棚に赤い箱がありますか,deterministic,search_object_near_place,06棚,赤い箱,23,"nav final error xy=0.095m yaw=0.127rad; detect OK: Found ""赤い箱"".",no,no,mission_done,needs improvement: box detector/model
+5,2026-06-24T12:29:04.250126+00:00,a4213fa9127c,06棚に赤い箱がありますか,deterministic,search_object_near_place,06棚,赤い箱,24,"nav final error xy=0.111m yaw=0.139rad; detect OK: Found ""赤い箱"".",no,no,mission_done,needs improvement: box detector/model
+6,2026-06-24T12:31:58.222479+00:00,d91b60f7274b,06棚に赤い箱がありますか,deterministic,search_object_near_place,06棚,赤い箱,24,"nav final error xy=0.117m yaw=0.139rad; detect OK: Found ""赤い箱"".",no,no,mission_done,needs improvement: box detector/model
+7,2026-06-24T13:13:15.259012+00:00,21703ce431d7,06棚に行って,deterministic,navigate_to_object,06棚,,24,"health/localization recovery ran; nav final error xy=0.124m yaw=0.185rad; detect OK: Found ""06数字"".",yes,no,mission_done,fixed/working: health recovery
+8,2026-06-24T13:18:08.561027+00:00,b2f164289da2,04-05棚に赤い箱がありますか,deterministic,search_object_near_place,04-05棚,赤い箱,24,health/localization recovery ran,yes,no,mission_needs_human,needs improvement: box detector/model
+9,2026-06-24T13:30:30.642809+00:00,2fcc9dea8fad,06棚に赤い箱がありますか,deterministic,search_object_near_place,06棚,赤い箱,24,"nav final error xy=0.115m yaw=0.197rad; detect OK: Found ""赤い箱"".",no,no,mission_done,needs improvement: box detector/model
+10,2026-06-24T13:53:44.532844+00:00,6c8fc6ed9b54,06棚に車がありますか,deterministic,search_object_near_place,06棚,車,24,health/localization recovery ran,yes,no,mission_needs_human,fixed/working: health recovery
+11,2026-06-24T14:31:14.787426+00:00,5a91f40e0625,boxがありますか,deterministic,search_object_here,,box,20,"detect OK: Found ""box"".",no,no,mission_done,needs improvement: box detector/model
+12,2026-06-25T06:49:05.365430+00:00,d3dd948853f0,check box,deterministic,search_object_here,,box,20,"detect NEEDS_HUMAN: No confident match for ""box"" in captured observations.",no,no,mission_needs_human,needs improvement: box detector/model
+13,2026-07-02T03:50:44.582153+00:00,8837f2aeec6a,06棚に行って,deterministic,navigate_to_object,06棚,,24,health/localization recovery ran,yes,no,mission_needs_human,fixed/working: health recovery
+14,2026-07-02T03:53:03.745162+00:00,c45edbb67a66,06棚に行,embedding,navigate_to_object,06棚に行,,24,,no,no,mission_needs_human,observed
+15,2026-07-02T03:53:12.985035+00:00,f92a908cfb7b,06棚に赤い箱がありますか,deterministic,search_object_near_place,06棚,赤い箱,24,health/localization recovery ran,yes,no,mission_needs_human,needs improvement: box detector/model
+16,2026-07-02T03:54:21.554759+00:00,828f94c65a6a,知っている場所を教えて,deterministic,list_known_targets,,,1,,no,no,mission_done,observed
+17,2026-07-02T03:54:25.587015+00:00,656450cb39f4,前進少し,deterministic,move_relative,,,3,health/localization recovery ran,yes,no,mission_needs_human,fixed/working: health recovery
+18,2026-07-02T03:57:25.079425+00:00,1d8283852c52,キャンセル,deterministic,cancel,,,1,,no,no,mission_done,observed
+19,2026-07-02T03:59:59.659293+00:00,5b13ac38b7ea,前進少し,deterministic,move_relative,,,3,,no,no,mission_needs_human,observed
+20,2026-07-02T04:00:33.643881+00:00,728ba5cb08e6,前進少し,deterministic,move_relative,,,3,,no,no,mission_done,observed
+21,2026-07-02T04:00:40.612136+00:00,eaf1daf2862e,左を見て,deterministic,look_direction,,,3,,no,no,mission_done,observed
+22,2026-07-02T04:01:01.405049+00:00,c91c269cb4e5,see front,embedding,look_direction,,,3,,no,no,mission_done,observed
+23,2026-07-02T04:01:11.228675+00:00,cfd822bcd26f,see front up,embedding,look_direction,,,3,,no,no,mission_done,observed
+24,2026-07-02T04:01:16.756662+00:00,66a5c1f784c1,see front center,embedding,ask_human,,,0,,no,no,mission_needs_human,observed
+25,2026-07-02T04:01:23.341315+00:00,04a4881a9d0c,see  center,embedding,search_object_here,,center,20,"detect NEEDS_HUMAN: No confident match for ""center"" in captured observations.",no,no,mission_needs_human,observed
+26,2026-07-02T04:01:31.429676+00:00,04c67e15c846,see up center,embedding,look_direction,,,3,,no,no,mission_done,observed
+27,2026-07-02T04:05:08.554507+00:00,a1dac4059330,turn around,deterministic,rotate_relative,,,3,,no,no,mission_done,observed
+28,2026-07-02T04:05:46.267938+00:00,6645b33d2e8d,turn right,deterministic,rotate_relative,,,3,,no,no,mission_done,observed
+29,2026-07-02T04:06:02.116605+00:00,75bb804ab5ce,go ahead 1.5m,embedding,move_relative,,,3,,no,no,mission_done,observed
+30,2026-07-02T04:06:32.053218+00:00,4fd47398b21c,go right side 1.15m,deterministic,move_relative,,,3,,no,no,mission_done,observed
+31,2026-07-02T04:13:07.375939+00:00,80fb1ab7ca29,06棚に行って,Deterministic,navigate_to_object,06棚,,24,health/localization recovery ran,yes,no,mission_failed,fixed/working: health recovery
+32,2026-07-02T04:27:00.564141+00:00,446351ebcce8,go back a little,Deterministic,move_relative,,,3,,no,no,mission_done,observed
+33,2026-07-02T04:27:18.580035+00:00,67d9779eb3c1,go back a little please,Deterministic,move_relative,,,3,,no,no,mission_done,observed
+34,2026-07-02T04:27:51.245324+00:00,f77d1505d84e,go back 1m,Deterministic,move_relative,,,3,health/localization recovery ran,yes,no,mission_needs_human,fixed/working: health recovery
+35,2026-07-02T05:11:23.173457+00:00,3b5fe150d784,06棚に行って,Deterministic,navigate_to_object,06棚,,24,"nav final error xy=0.249m yaw=0.254rad; detect OK: Found ""06番号"".",no,no,mission_done,observed
+36,2026-07-02T05:12:44.262836+00:00,19f2c9612374,05棚に行ってflaj,Embedding,navigate_to_object,05棚に行ってflaj,,24,,no,no,mission_needs_human,observed
+37,2026-07-02T05:19:02.360023+00:00,7d82d9439867,05棚に行ってflajsdfsdf fearfea,embedding,ask_human,,,0,,no,no,mission_needs_human,observed
+38,2026-07-02T05:19:37.857179+00:00,d63377b5df4c,i want go to 05棚 can you lead me there?,LLM Fallback,navigate_to_object,05棚,,24,,no,no,mission_needs_human,observed
+39,2026-07-02T05:20:09.193804+00:00,c84369a21ed3,go to shelf_05_06_region,Deterministic,navigate_to_object,shelf_05_06_region,,24,"health/localization recovery ran; navigation was canceled then retried; nav final error xy=0.037m yaw=0.316rad; detect OK: Found ""05番号 06番号"".",yes,no,mission_done,fixed/working: health recovery
+40,2026-07-02T05:24:32.767980+00:00,ec86b140ef50,see left,Embedding,look_direction,,,3,,no,no,mission_done,observed
+41,2026-07-02T05:24:50.200658+00:00,b931824c1c23,see left up side,LLM Fallback,look_direction,,,3,,no,no,mission_done,observed
+42,2026-07-02T05:25:18.545288+00:00,ed3b4228d8fd,"see left up side, is there any box?",LLM Fallback,search_object_here,,box,20,"detect NEEDS_HUMAN: No confident match for ""box"" in captured observations.",no,no,mission_needs_human,needs improvement: box detector/model
+43,2026-07-02T05:31:44.074487+00:00,a03d8ca080c2,06棚に行ってsdfsdf,Embedding,navigate_to_object,06棚,,24,"target normalized: 06棚に行ってsdfsdf -> 06棚; health/localization recovery ran; navigation was canceled then retried; nav final error xy=0.075m yaw=0.197rad; detect OK: Found ""06番号"".",yes,no,mission_done,fixed/working: health recovery
+44,2026-07-02T05:42:52.500133+00:00,eb42daf75340,有红色的东西吗？,LLM Fallback,search_object_here,,红色,20,"detect NEEDS_HUMAN: No confident match for ""红色"" in captured observations.",no,no,mission_needs_human,observed
+45,2026-07-02T05:43:53.236063+00:00,db88aa62ce77,what is red in shelf?,LLM Fallback,search_object_here,,red,20,"detect NEEDS_HUMAN: No confident match for ""red"" in captured observations.",no,no,mission_needs_human,observed
+46,2026-07-02T05:55:00+00:00,latest_goto_pose_observed,06棚に行って,Deterministic,navigate_to_object,06棚,,24,"goto_pose OK; final error xy=0.110m yaw=0.194rad; shelf approach tolerance acceptable.",no,yes,mission_done,fixed/working: dynamic tolerance visible in dashboard

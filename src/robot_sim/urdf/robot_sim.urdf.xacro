@@ -33,8 +33,8 @@
   <xacro:property name="col_height" value="${livox_z - chassis_top}"/>
   <xacro:property name="col_cz" value="${chassis_top + col_height/2}"/>
 
-  <xacro:property name="camera_x" value="0.320"/>
-  <xacro:property name="camera_y" value="0.000"/>
+  <xacro:property name="camera_x" value="0.340"/>
+  <xacro:property name="camera_y" value="0.010"/>
   <xacro:property name="camera_z" value="0.6375"/>
   <xacro:property name="camera_pitch" value="0.7330"/>
 

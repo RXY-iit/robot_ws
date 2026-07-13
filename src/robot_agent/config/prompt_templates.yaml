@@ -1,0 +1,3 @@
+templates:
+  command_parser: |
+    Return only typed mission JSON. Never output ROS topic names or raw control commands.

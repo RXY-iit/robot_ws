@@ -1,0 +1,206 @@
+# 真实研究室 USD 场景测量模板
+#
+# 填写规则：
+# - 单位统一用米。
+# - 不确定的值写 null，并在 notes 里说明。
+# - position_m 暂时可以先留空，等原点和坐标轴确定后再补。
+# - bbox_m 使用 [length_x, width_y, height_z]。
+# - 第一版只需要主要结构和会影响机器人通行的障碍物。
+
+metadata:
+  site_name: real_lab
+  measured_by: null
+  measured_date: "2026-07-03"
+  priority:
+    - navigation_and_obstacle_avoidance
+    - lidar_localization_and_mapping
+    - rgbd_visual_recognition
+    - detection_or_segmentation_training
+    - visual_demo
+  coordinate_frame:
+    origin_description: null
+    x_axis_description: null
+    y_axis_description: null
+    z_axis_description: up
+    notes: "User will specify origin and axes later."
+
+room:
+  id: lab_main_room
+  dimensions_m:
+    length_x: 7.3
+    width_y: 14.2
+    ceiling_height_z: 2.7
+  floor:
+    material: "vinyl_or_tile"
+    surface_condition: "dry"
+    static_friction_guess: 0.5
+    dynamic_friction_guess: 0.4
+    notes: "Adjust after robot driving test."
+  walls:
+    thickness_guess_m: 0.1
+    material: painted_wall
+    notes: null
+  ceiling:
+    type: acoustic_tile_with_lights_and_cable_trays
+    notes: "First version can use simple ceiling plane plus approximate lights."
+
+openings:
+  doors:
+    - id: lab_main_door
+      type: swing
+      position_m: null
+      width_m: 1.7
+      height_m: 2.3
+      thickness_m: null
+      opens_to: null
+      hinge_side: null
+      open_angle_deg: null
+      threshold_height_m: null
+      first_version_behavior: static_closed_or_open_gap
+      notes: null
+  windows:
+    - id: window_wall_01
+      position_m: null
+      bbox_m: [0.05, 1.5, 2.85]
+      sill_height_m: null
+      material: glass_with_blinds
+      first_version_behavior: wall_visual_detail_only
+      notes: null
+
+fixed_structure:
+  columns_or_pillars:
+    - id: pillar_01
+      position_m: null
+      bbox_m: null
+      notes: null
+  wall_mounted_units:
+    - id: air_conditioner_01
+      position_m: null
+      bbox_m: null
+      asset_preference: isaac_or_omniverse_sample_if_available
+      collision_required: false
+      notes: "High wall object; not important for ground navigation."
+  ceiling_objects:
+    - id: fluorescent_light_row_01
+      position_m: null
+      bbox_m: null
+      asset_preference: isaac_or_omniverse_sample_if_available
+      collision_required: false
+      notes: "Use sample tube/rect light if available; otherwise simple area light."
+    - id: cable_tray_01
+      position_m: null
+      bbox_m: null
+      asset_preference: simple_geometry
+      collision_required: false
+      notes: "Visual/LiDAR relevance is low unless sensor sees ceiling."
+
+major_obstacles:
+  desks:
+    - id: center_desk_group
+      position_m: null
+      bbox_m: [2.4, 1.6, 0.7]
+      asset_preference: isaac_or_omniverse_sample_if_available
+      collision_shape: box_or_convex_simplified
+      fixed: true
+      notes: "Measure as one combined obstacle first."
+    - id: side_desk_01
+      position_m: null
+      bbox_m: [1.2, 0.8, 0.7]
+      asset_preference: isaac_or_omniverse_sample_if_available
+      collision_shape: box_or_convex_simplified
+      fixed: true
+      notes: null
+  cabinets_and_shelves:
+    - id: left_shelf_wall
+      position_m: null
+      bbox_m: [0.4, 1.8, 1.73]
+      asset_preference: isaac_or_omniverse_sample_if_available
+      collision_shape: box
+      fixed: true
+      notes: "Can be one long shelf/cabinet block in first version."
+    - id: right_cabinet_wall
+      position_m: null
+      bbox_m: [0.4, 1.8, 1.73]
+      asset_preference: isaac_or_omniverse_sample_if_available
+      collision_shape: box
+      fixed: true
+      notes: null
+    - id: book_shelf_back_wall
+      position_m: null
+      bbox_m: [1.8, 0.4, 1.73]
+      asset_preference: isaac_or_omniverse_sample_if_available
+      collision_shape: box
+      fixed: true
+      notes: null
+  chairs:
+    - id: chair_01
+      position_m: null
+      bbox_m: null
+      asset_preference: isaac_or_omniverse_sample_if_available
+      collision_shape: simplified_box_or_convex
+      fixed: false
+      first_version_behavior: static_obstacle
+      notes: "Only include chairs that affect robot paths."
+  whiteboards_or_panels:
+    - id: whiteboard_01
+      position_m: null
+      bbox_m: null
+      asset_preference: simple_geometry
+      collision_shape: box
+      fixed: true
+      notes: null
+  storage_boxes:
+    - id: box_group_01
+      position_m: null
+      bbox_m: null
+      asset_preference: isaac_or_omniverse_sample_if_available
+      collision_shape: box
+      fixed: true
+      first_version_behavior: static_obstacle
+      notes: "Group small boxes into a few bbox blocks."
+  robot_or_equipment_areas:
+    - id: robot_storage_area_01
+      position_m: null
+      bbox_m: null
+      asset_preference: simple_geometry_or_existing_robot_assets
+      collision_shape: simplified_box_or_convex
+      fixed: true
+      notes: "Measure if it blocks the robot path."
+
+navigation:
+  important_routes:
+    - id: main_room_entry_to_center
+      path_description: null
+      min_clear_width_m: null
+      notes: null
+    - id: center_to_robot_storage
+      path_description: null
+      min_clear_width_m: null
+      notes: null
+  keepout_zones:
+    - id: cable_or_clutter_zone_01
+      position_m: null
+      bbox_m: null
+      reason: clutter_or_cables
+      notes: null
+
+photos:
+  overview:
+    - IMG_9271.jpg
+    - IMG_9272.jpg
+    - IMG_9273.jpg
+    - IMG_9274.jpg
+  requested_next_photos:
+    - "Floor close-up from above for material reference."
+    - "Each wall photographed straight-on if possible."
+    - "Door and threshold close-up."
+    - "Main path from robot height."
+
+asset_policy:
+  prefer_official_isaac_or_omniverse_assets: true
+  acceptable_similarity: approximate_visual_match
+  size_priority: "physical footprint and collision must match real room better than appearance."
+  fallback: simple_usd_geometry
+
+notes:
+  freeform: "2026-07-03 sketch: room 7.3m x 14.2m; shelf 1.8m x 1.73m x 0.4m; table 1.2m x 0.8m x 0.7m; door 1.7m x 2.3m; window 1.5m x 2.85m. Exact origin and object coordinates are still approximate."

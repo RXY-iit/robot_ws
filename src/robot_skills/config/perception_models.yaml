@@ -1,0 +1,22 @@
+camera:
+  color_topic: /camera/camera/color/image_raw
+  artifact_root: debug-output/perception
+  capture_wait_sec: 1.5
+
+providers:
+  yolo11s_ocr:
+    detector: ultralytics
+    weights: models/perception/yolo11s.pt
+    device: auto
+    image_size: 640
+    min_confidence: 0.5
+    ocr_backend: auto
+    shelf_label_classes: [label, sign, shelf_label, number]
+  yolo11s:
+    detector: ultralytics
+    weights: models/perception/yolo11s.pt
+    device: auto
+    image_size: 640
+    min_confidence: 0.5
+  stub:
+    detector: none

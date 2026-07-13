@@ -1,758 +1,467 @@
-# L2 Skill Layer Guidance
+# L2 Skill Layer 当前设计总结
 
-> Date: 2026-06-23
-> Workspace: `/home/ruan-x/robot_ws`
-> Goal: turn the existing ROS2 robot platform into a typed, testable Skill API.
+更新日: 2026-07-11
 
-## Decisions
+范围: `/home/ruan-x/robot_ws/src/robot_skills`
 
-Current decisions:
+这份文档用于后续 review，记录当前 real lab sim2real 环境下 L2 skill layer 的职责、设计理由、主要逻辑和仍需继续观察的问题。旧版内容已经过时，这里以当前实现为准。
 
-```text
-Implementation form: ROS2 package from the start
-L2 package name: src/robot_skills
-Perception/model policy: hybrid
-Control-critical perception: local deterministic/model output
-Cloud VLM/API: allowed for non-contact confirmation, explanation, and reports only
-AUTO mode: human presses A / confirms; Skills should not silently switch real robot to AUTO
-```
+## 1. L2 的定位
 
-## Position In Robot Harness
-
-L2 is the boundary between "robot can move" and "agent can ask robot to do work".
+L2 Skill Layer 是 L3 Agent 可以安全调用的 typed robot API。
 
 ```text
-L3 Agent / planner
-  -> typed Skill call
+L3 Agent / MissionAgent
+  -> SkillCall
   -> L2 Skill executor
-  -> ROS2 action/service/topic wrapper
-  -> L1 platform packages
+  -> ROS2 action / topic / service
+  -> Nav2 / safety layer / camera / perception / localization / sim bridge
+  -> SkillResult
 ```
 
-Hard rule:
+L2 的边界:
+
+- Agent 不直接 publish raw `/cmd_vel`。
+- Agent 不直接调用 Nav2 action。
+- Agent 只表达 intent 和 SkillCall，低层执行由 Skill 负责。
+- Skill 负责参数校验、precheck、timeout、recovery metrics、debug topic。
+- 所有结果用 `SkillResult` 返回，L3 根据 `success/code/metrics` 决策。
+
+这样设计的原因:
+
+- 同一套 Agent 要能在 warehouse / real lab / sim / real 间复用。
+- 低层失败必须可复盘，不能只靠 dashboard 现场观察。
+- parser/LLM 不能直接驱动底盘。
+- navigation、perception、health recovery 的失败语义不同，需要统一结果格式但保留细节。
+
+## 2. 主要文件
+
+核心数据:
+
+- `src/robot_skills/robot_skills/schemas.py`
+- `src/robot_skills/robot_skills/result_codes.py`
+- `src/robot_skills/robot_skills/semantic_map.py`
+
+Skill executors:
+
+- `src/robot_skills/robot_skills/executors/navigation.py`
+- `src/robot_skills/robot_skills/executors/system.py`
+- `src/robot_skills/robot_skills/executors/localization.py`
+- `src/robot_skills/robot_skills/executors/perception.py`
+- `src/robot_skills/robot_skills/executors/camera.py`
+- `src/robot_skills/robot_skills/executors/lift.py`
+- `src/robot_skills/robot_skills/executors/semantic.py`
+
+Map / marker tools:
+
+- `src/robot_skills/robot_skills/nodes/semantic_map_marker_node.py`
+- `src/robot_skills/robot_skills/nodes/navigation_annotation_tool.py`
+- `src/robot_skills/robot_skills/nodes/segmentation_tool.py`
+
+当前主要 map bundle:
+
+- `maps/sim_real_lab_001/metadata.yaml`
+- `maps/sim_real_lab_001/nav2.yaml`
+- `maps/sim_real_lab_001/nav2.pgm`
+- `maps/sim_real_lab_001/map_3d.ply`
+- `maps/sim_real_lab_001/semantic_map.yaml`
+- `maps/sim_real_lab_001/semantic_segments.yaml`
+- `maps/sim_real_lab_001/navigation_annotations.yaml`
+- `maps/sim_real_lab_001/dashboard_examples.yaml`
+
+## 3. Map Bundle 设计
+
+map bundle 是当前系统的重要边界。Nav2 map、3D map、semantic map、segment map、navigation annotation、dashboard examples 都跟随同一个 `map_id`。
+
+目标:
+
+- 不再覆盖同一个 `semantic_map.yaml` 来切换地图。
+- warehouse 和 real lab 可以并存。
+- 代码通过 `ROBOT_MAP_ID` 加载对应地图数据。
+- Agent/Skill 逻辑不写死房间结构。
+
+关键思想:
+
+- `semantic_map.yaml` 是地图基础信息，不属于 agent package。
+- `navigation_annotations.yaml` 是导航辅助信息，不属于 segmentation object。
+- `dashboard_examples.yaml` 是 UI 示例来源，不应该写死在 dashboard code。
+
+## 4. SkillResult 契约
+
+代表性类型:
 
 ```text
-LLM / Agent never publishes raw /cmd_vel, raw joint trajectory, arbitrary ROS topic names,
-or free-form /mission_command strings.
-```
-
-The agent may choose a Skill. The Skill owns validation, prechecks, execution, timeout, retry,
-result formatting, and logging.
-
-## Current Workspace Mapping
-
-These packages already provide the L1 backend that L2 should wrap:
-
-| Area | Existing module | Current role | L2 usage |
-| --- | --- | --- | --- |
-| Robot bringup | `src/robot_bringup` | Real robot TF, Livox MID360, RealSense D435/D455-style camera launch | Health precheck and sensor availability |
-| Simulation | `src/robot_sim` | Isaac Sim bridge, omni drive command, simulated lift/camera swing, sensor helpers | Primary regression backend for Skills |
-| Navigation | `src/nav_pkg` | Nav2 launch, MPPI/RPP, mode switch, camera costmap | Navigation execution backend |
-| Localization | `src/localization_pkg` | map server, AMCL, GICP/FAST-LIO related localization launch files | Pose and localization health |
-| Safety | `src/safety_layer` | `/cmd_vel_raw` watchdog/clamp/estop -> `/cmd_vel` | Required motion safety gate |
-| Mission legacy | `src/mission_manager` | String command mission executor using BasicNavigator | Useful reference; should be wrapped or replaced by typed Skills |
-| Base driver | `src/omni_base_driver` | Real omni base motor/odom interface | L1 only; L2 must not talk directly to motors |
-| Manipulation-lite | `src/serial_transciever` | lift, camera pan/tilt, relay/manual motor nodes | First manipulation Skills should target these narrow controls |
-| Perception inputs | `src/realsense-ros`, `src/livox_ros_driver2` | Camera and LiDAR drivers | Observation source for perception Skills |
-| Debug tools | `tools/nav2_debug_recorder.py`, `tools/nav2_debug_monitor.py`, `tools/record_semantic_bag.sh` | Navigation and semantic data capture | Skill evaluation and failure replay |
-
-## Recommended Folder Layout
-
-Create a new package instead of mixing L2 into `nav_pkg`:
-
-```text
-src/robot_skills/
-  package.xml
-  setup.py
-  setup.cfg
-  resource/robot_skills
-  robot_skills/
-    __init__.py
-    schemas.py
-    result_codes.py
-    registry.py
-    health.py
-    ros_utils.py
-    semantic_map.py
-    executors/
-      __init__.py
-      base.py
-      navigation.py
-      perception.py
-      camera.py
-      lift.py
-      safety.py
-    nodes/
-      skill_server_node.py
-      semantic_map_marker_node.py
-  config/
-    skill_registry.yaml
-    semantic_map.yaml
-    agent_skill_policy.yaml
-  test/
-    test_schemas.py
-    test_semantic_map.py
-    test_skill_policy.py
-```
-
-Keep prototypes that do not need ROS in:
-
-```text
-tools/agent/
-  dry_run_skill_call.py
-  validate_skill_registry.py
-```
-
-Logs:
-
-```text
-debug-output/agent/YYYYMMDD_HHMMSS/
-  mission.json
-  skill_events.jsonl
-  nav2_debug/
-  screenshots/
-  rosbag/
-```
-
-## Data Contracts
-
-All Skills should use Python dataclasses or Pydantic models at the boundary.
-Use Pydantic when the caller can be an LLM/agent and schema validation matters.
-
-### Core Models
-
-```python
-class Pose2D:
-    frame_id: str = "map"
-    x: float
-    y: float
-    yaw: float
-
-class SkillContext:
-    run_id: str
-    mode: str              # "dry_run" | "sim" | "real"
-    robot_mode: str        # "AUTO" | "MANUAL" | "UNKNOWN"
-    require_human_confirm: bool
-    max_duration_sec: float
-
-class SkillResult:
-    skill_name: str
-    success: bool
-    code: str
-    message: str
-    started_at: str
-    ended_at: str
-    metrics: dict
-    observations: list
-    artifacts: list
-```
-
-### Result Codes
-
-Use stable result codes so L3 can reason without parsing prose:
-
-```text
-OK
-DRY_RUN_OK
-FAILED_SCHEMA
-FAILED_PRECHECK
-FAILED_LOCALIZATION
-FAILED_NAV2_INACTIVE
-FAILED_SAFETY
-FAILED_TIMEOUT
-FAILED_NAVIGATION
-FAILED_PERCEPTION
-FAILED_UNSUPPORTED
-NEEDS_HUMAN
-CANCELLED
-ABORTED
-```
-
-## Skill Registry Schema
-
-`config/skill_registry.yaml` should be the source of truth for agent-visible Skills:
-
-```yaml
-skills:
-  - name: goto_pose
-    version: 0.1.0
-    description: >
-      Navigate the mobile base to a validated map-frame pose using Nav2 NavigateToPose.
-      Use when the target pose is already known.
-    executor: robot_skills.executors.navigation:GotoPoseSkill
-    input_schema: GotoPoseInput
-    output_schema: SkillResult
-    safety_level: navigation
-    allowed_modes: [sim, real, dry_run]
-    requires_human_confirm: false
-    timeout_sec: 120
-    retry_policy:
-      max_attempts: 1
-      clear_costmaps_between_attempts: false
-    preconditions:
-      - robot_mode_auto
-      - safety_status_ok_or_watchdog
-      - localization_healthy
-      - nav2_active
-      - target_pose_in_map
-    side_effects:
-      - sends_nav2_goal
-    forbidden_effects:
-      - publish_cmd_vel
-      - publish_raw_motor_command
-      - modify_map
-    sim_supported: true
-    real_supported: true
-    metrics:
-      - success
-      - duration_sec
-      - final_pose_error_m
-      - final_yaw_error_rad
-      - recoveries
-```
-
-## Skill Groups
-
-### Group A: System And Safety Skills
-
-These Skills do not move the robot. They are always allowed before mission execution.
-
-#### `get_robot_status`
-
-Purpose: collect current platform state.
-
-Inputs:
-
-```text
-none
-```
-
-Reads:
-
-```text
-/robot_mode
-/safety_status
-/clock if sim
-TF map->base_footprint or odom->base_footprint
-Nav2 lifecycle state
-camera/LiDAR topic availability
-```
-
-Output metrics:
-
-```text
-robot_mode
-safety_status
-localization_ok
-nav2_active
-camera_ok
-lidar_ok
-use_sim_time
-```
-
-Acceptance:
-
-```text
-returns within 1.0 sec in dry-run/mock
-returns within 3.0 sec against ROS
-never changes robot state
-```
-
-#### `await_robot_auto_mode`
-
-Purpose: wait for operator-confirmed AUTO mode before motion.
-
-Backend:
-
-```text
-publish/request a human-facing prompt if UI is available
-operator presses A or otherwise confirms AUTO outside the Skill
-confirm /robot_mode == AUTO
-```
-
-Preconditions:
-
-```text
-safety_status != ESTOP
-nav_mode_switch_node exists
-```
-
-Forbidden:
-
-```text
-do not bypass nav_mode_switch_node
-do not silently publish AUTO in real mode
-```
-
-Metrics:
-
-```text
-auto_confirmation_latency_sec
-confirmed_robot_mode
-```
-
-#### `cancel_motion`
-
-Purpose: cancel active base motion and return to a safe non-moving state.
-
-Backend:
-
-```text
-call /navigate_to_pose/_action/cancel_goal or BasicNavigator cancelTask
-publish MANUAL to /nav_mode/command when requested
-verify /cmd_vel is zero or watchdog
-```
-
-This Skill must be callable from every L3 state.
-
-### Group B: Semantic Map Skills
-
-The current `mission_manager/config/waypoint_map.yaml` is a waypoint map, not a semantic map.
-L2 should introduce a separate semantic map that can reference waypoints.
-
-Recommended file:
-
-```text
-src/robot_skills/config/semantic_map.yaml
-```
-
-Example:
-
-```yaml
-map_id: l402_v0
-frame_id: map
-objects:
-  - id: shelf_a
-    names: ["shelf a", "A shelf", "架子A", "A棚"]
-    category: shelf
-    static: true
-    pose: {x: 0.0, y: 0.0, yaw: 1.5708}
-    approach_poses:
-      - id: front
-        pose: {x: 0.0, y: 0.0, yaw: 1.5708}
-        clearance_mode: narrow
-        speed_profile: cautious
-    affordances: ["navigate_near", "inspect"]
-    safety_zone_m: 0.5
-    confidence: 1.0
-places:
-  - id: home
-    names: ["home", "origin", "起点", "ホーム"]
-    waypoint_id: home
-```
-
-#### `resolve_semantic_target`
-
-Purpose: convert natural-language target name and relation into a candidate `Pose2D`.
-
-Inputs:
-
-```text
-target_name: str
-relation: "near" | "front" | "left" | "right" | "inside_area" | "at"
-allowed_categories: list[str] | None
-```
-
-Output:
-
-```text
-object_id
-canonical_name
-category
-pose
-approach_pose_id
-confidence
-needs_clarification
-alternatives
-```
-
-Acceptance:
-
-```text
-known aliases resolve deterministically
-unknown names return NEEDS_HUMAN, not hallucinated coordinates
-all output poses are map-frame unless explicitly marked otherwise
-```
-
-#### `list_known_targets`
-
-Purpose: expose available semantic objects to UI or agent.
-
-Use when the user asks "你知道哪些地方".
-
-### Group C: Navigation Skills
-
-Current backend:
-
-```text
-Nav2 NavigateToPose action
-/nav2/cmd_vel -> nav_mode_switch_node -> /cmd_vel_raw -> cmd_vel_safety_node -> /cmd_vel
-```
-
-Do not use `/goal_pose` as the formal Skill interface.
-
-#### `goto_pose`
-
-Inputs:
-
-```text
-pose: Pose2D
-position_tolerance_m: float = 0.30
-yaw_tolerance_rad: float = 0.50
-speed_profile: "normal" | "cautious" = "normal"
-```
-
-Prechecks:
-
-```text
-frame_id == "map"
-robot_mode == AUTO
-safety_status in ["OK", "WATCHDOG"]
-Nav2 lifecycle active
-TF map->base_footprint available
-map server active
-```
-
-Backend:
-
-```text
-nav2_msgs/action/NavigateToPose
-```
-
-Metrics:
-
-```text
-duration_sec
-path_length_m if available
-final_pose_error_m
-final_yaw_error_rad
-recoveries
-nav2_result
-```
-
-Acceptance:
-
-```text
-sim success rate >= 90% for 10 known reachable goals
-does not publish /cmd_vel directly
-cancel works within 1.0 sec
-failure returns structured code, not exception text only
-```
-
-#### `goto_named_place`
-
-Inputs:
-
-```text
-place_id_or_name: str
-relation: "at" | "near" | "front" = "at"
-```
-
-Flow:
-
-```text
-resolve_semantic_target
-goto_pose
-```
-
-Acceptance:
-
-```text
-known waypoints and semantic aliases work in dry-run
-unknown target returns NEEDS_HUMAN
-```
-
-#### `goto_object_nearby`
-
-Inputs:
-
-```text
-object_name: str
-relation: "near" | "front" | "left" | "right" = "near"
-```
-
-This is the first user-facing navigation Skill for commands like:
-
-```text
-去叉车旁边
-去6号架子前
-到电梯门口
-```
-
-### Group D: Inspection And Perception Skills
-
-Perception should start narrow. Do not begin with a general "understand scene" Skill.
-
-Model choices:
-
-```text
-v0 local deterministic: color threshold, fiducial marker, known object detector
-v1 local GPU: YOLO/RT-DETR style fixed detector for boxes/buttons/tools
-v2 local open-vocabulary: Grounding DINO + SAM/SAM2 or equivalent
-v3 cloud VLM: GPT-4.1/4o class model for image confirmation and natural-language reporting
-```
-
-Default for this workspace:
-
-```text
-Hybrid perception.
-Use v0/v1 local perception for robot-control decisions.
-Use cloud VLM/API only for non-contact confirmation, explanation, ambiguity handling, and reports.
-Cloud VLM/API output cannot authorize contact actions or override local safety gates.
-```
-
-#### `capture_observation`
-
-Purpose: collect synchronized camera/LiDAR/pose metadata for a mission step.
-
-Reads:
-
-```text
-camera color image
-camera depth image or /camera/depth/points
-TF camera->base->map
-robot pose
-```
-
-Output:
-
-```text
-artifact paths
-timestamp
-camera frame ids
-robot pose
-```
-
-Acceptance:
-
-```text
-stores image artifact
-records frame_id and timestamp
-does not block Nav2 longer than timeout
-```
-
-#### `detect_known_object`
-
-Inputs:
-
-```text
-query: str
-region_hint: str | None
-min_confidence: float = 0.5
-```
-
-Output:
-
-```text
-detections:
-  label
-  confidence
-  bbox
+Pose2D:
   frame_id
-  estimated_3d_position optional
+  x
+  y
+  yaw
+
+SkillContext:
+  run_id
+  mode
+  robot_mode
+  max_duration_sec
+
+SkillResult:
+  skill_name
+  success
+  code
+  message
+  started_at
+  ended_at
+  metrics
+  observations
+  artifacts
 ```
 
-Contact-gating:
+常用 result code:
+
+- `OK`
+- `DRY_RUN_OK`
+- `FAILED_SCHEMA`
+- `FAILED_PRECHECK`
+- `FAILED_LOCALIZATION`
+- `FAILED_NAV2_INACTIVE`
+- `FAILED_SAFETY`
+- `FAILED_TIMEOUT`
+- `FAILED_NAVIGATION`
+- `FAILED_PERCEPTION`
+- `FAILED_UNSUPPORTED`
+- `NEEDS_HUMAN`
+- `CANCELLED`
+
+设计理由:
+
+- L3 不需要 parse 自然语言错误消息。
+- dashboard、JSONL、dry-run test、mission recovery 都能读同一份结构。
+- `CANCELLED`、`FAILED_TIMEOUT`、`FAILED_NAVIGATION`、`NEEDS_HUMAN` 语义必须分开。
+
+## 5. Semantic Skills
+
+主要文件:
+
+- `src/robot_skills/robot_skills/semantic_map.py`
+- `src/robot_skills/robot_skills/executors/semantic.py`
+
+职责:
+
+- 加载当前 `ROBOT_MAP_ID` 的 map bundle。
+- resolve `sofa`, `tool_box`, `front_door`, `back_door`, desks 等 semantic target。
+- 返回 final pose、approach candidates、approach policy。
+
+当前原则:
+
+- parser 不再用 warehouse target 白名单决定 `go to **` 是否可执行。
+- target 是否存在交给 semantic map。
+- region target 和 fixed point target 的 recovery policy 不同。
+
+重要区别:
+
+- region target: `sofa`, table area 等，可以 relaxed tolerance，也可以重新选择 alternate approach。
+- fixed point target: `front_door`, `back_door` 等，final goal 不应被替换；但可以插入临时避障 waypoint 后再回到原 fixed goal。
+
+## 6. Navigation Skills 总览
+
+主要文件:
+
+- `src/robot_skills/robot_skills/executors/navigation.py`
+
+主要 skill:
+
+- `goto_pose`
+- `move_relative`
+- `move_relative_xy`
+- `rotate_relative`
+- `cancel_navigation`
+
+`goto_pose` 不是简单 Nav2 wrapper。当前它承担 real lab 狭窄环境中的执行级导航策略:
 
 ```text
-confidence >= 0.80 required before any manipulation pre-action
-confidence >= 0.90 plus human confirmation required before contact
+validate pose
+  -> wait/check Nav2 action server
+  -> get current map pose
+  -> compute global path
+  -> apply map-level navigation annotations if needed
+  -> publish runtime route state
+  -> run alignment / waypoint / final goal
+  -> progress watchdog
+  -> near-goal micro adjust
+  -> relaxed tolerance if allowed
+  -> local-costmap-aware alternate / escape waypoint if allowed
+  -> structured SkillResult
 ```
 
-#### `inspect_target`
+这样设计的原因:
 
-Flow:
+- real lab 里桌脚、椅子、柜子、临时物品很多，单纯依赖 Nav2 有时会贴边或卡住。
+- 机器人是全向移动，但 camera/depth 主要看前方，因此长距离移动更希望车头朝前。
+- 人用 joycon 时会自然做斜前、横向、微退、微转，这些需要逐步抽象成 skill-level recovery。
+- 这些策略属于执行层，不能放到 parser 或 MissionAgent 里硬写。
+
+## 7. Navigation Annotation
+
+定义文件:
+
+- `maps/sim_real_lab_001/navigation_annotations.yaml`
+
+当前结构:
+
+- `narrow_passages`
+- `entry`
+- `exit`
+- `centerline`
+- `alignment_zones`
+- `waypoint`
+- `trigger_policy`
+- `traversal_policy`
+
+作用:
+
+- 如果 global plan 穿过某个 narrow passage，则插入 alignment 和 passage waypoint。
+- 如果 plan 不穿过 passage，则跳过，不强行绕路。
+- entry / exit 附近标注 open area，用于转身对齐。
+
+最新约束:
+
+- narrow path 通过前必须正对 passage。
+- alignment yaw tolerance 运行时强制收紧到 `±5 deg`。
+- waypoint yaw tolerance 运行时也强制收紧到 `±5 deg`。
+- 即使 robot 已经在入口附近，只要 yaw 不满足，也不能跳过 alignment，会执行短旋转。
+- xy tolerance 可以较宽，yaw 必须严格，因为通过狭窄通道时朝向很关键。
+
+为什么不用 segmentation object 表示这些区域:
+
+- segmentation map 表示 user/agent 可引用的语义对象或区域。
+- navigation annotation 是功能性参考区域，不应该被 parser 当成可导航对象。
+- 例如 alignment zone 是“通过 passage 的辅助区域”，不是用户说 “go to alignment zone” 的目标。
+
+## 8. Runtime Route State / RViz Marker
+
+当前 publish:
+
+- `/agent/navigation_route_state` (`std_msgs/String`, JSON)
+- `/agent/navigation_progress` (`std_msgs/String`, JSON)
+- `/robot_skills/navigation_route_markers` (`visualization_msgs/MarkerArray`)
+
+`/agent/navigation_route_state` 是 runtime route 的 source of truth。
+
+它表达:
+
+- alignment
+- waypoint
+- final_goal
+- obstacle_escape waypoint
+- local-costmap alternate goal
+- reached / active / failed / accepted_relaxed / canceled 状态
+
+为什么不用 CSV 作为控制源:
+
+- route 是运行时动态生成的。
+- 控制源如果变成 CSV，会和 ROS runtime state 二重管理。
+- CSV 更适合作为 recorder/debug mirror。
+- dashboard 和 RViz 应该订阅 runtime topic，而不是读静态文件。
+
+RViz marker 目标:
+
+- 所有 runtime route item 都能显示。
+- 通过后的非 final waypoint 应清除或变为 reached。
+- final goal 如果 relaxed tolerance 成功，应保留并显示 `accepted_relaxed`。
+- marker 不应使用过粗线条遮挡 costmap，主要用小箭头和 tolerance circle。
+
+## 9. Progress Watchdog / Timeout
+
+当前原则:
+
+- timeout 不是惩罚“任务时间长”，而是检测“卡住不动”。
+- 正常移动或取得 progress 时应 reset stuck counter。
+- progress check interval 当前为较短周期，用于更快发现 stuck。
+
+当前恢复阶段:
 
 ```text
-capture_observation
-detect_known_object or visual confirm
-return observation summary
+timeout 1/3:
+  near-goal micro adjust if close enough
+
+timeout 2/3:
+  relaxed tolerance check if target policy allows
+
+timeout full:
+  alternate goal / escape waypoint / fail
 ```
 
-Example commands:
+重要点:
 
-```text
-看一下电梯按钮在不在视野里
-确认架子前有没有红色箱子
-```
+- 微调开始后，如果仍没有超过 reset 条件，计时不会因为“尝试了微调”而清零。
+- 三档逻辑互不冲突，后续阶段仍可触发。
+- dashboard 通过 `/agent/navigation_progress` 显示 watchdog / stuck / timeout 信息。
 
-### Group E: Manipulation-Lite Skills
+## 10. Local Costmap Aware Recovery
 
-Current workspace has lift and camera pan/tilt control. Treat these as the first operation Skills.
+当前思路:
 
-Do not define general `pick_object` as executable until there is a real MoveIt/controller backend.
+- 重点参考 robot 前方可信区域。
+- 典型扇区: front `±80 deg`，距离约 `0.3-1.8m`。
+- 不过度相信背后未 clear 的 local costmap。
+- 在 blocked 或 near-goal timeout 时，可以采样 front open area 作为 alternate/escape waypoint。
 
-#### `look_at`
+使用场景:
 
-Purpose: move camera pan/tilt or base yaw to observe a target.
+- region target 无法到达时，找附近可通行 approach。
+- fixed point target 被障碍物挡住时，先插入 escape waypoint，再回到原 fixed goal。
+- sofa area 等目标接近但被局部障碍挡住时，重新选择合理 approach。
 
-Backend options:
+设计理由:
 
-```text
-camera pan topic: /chokudomotor/target_angle
-camera tilt topic: /cameraswingmotor/target_angle
-optional base rotate via Nav2 spin behavior
-```
+- camera/depth 主要看前方。
+- local costmap 中背后或旧障碍可能误导路径。
+- 全向移动能力有用，但不应该长期背对未知区域运动。
 
-Inputs:
+仍需观察:
 
-```text
-target: semantic object id or direction
-mode: "camera_only" | "base_only" | "base_then_camera"
-```
+- MPPI 是否足够早地避开障碍。
+- local planner 和 skill-level waypoint recovery 的边界是否清晰。
+- local costmap 与 USD collider/collision proxy 是否一致。
 
-Preconditions:
+## 11. Local Planner Health
 
-```text
-base stopped for camera motor movement in real mode unless tested otherwise
-angle limits known
-```
+主要文件:
 
-Metrics:
+- `src/robot_skills/robot_skills/executors/system.py`
+- `src/robot_agent/robot_agent/nodes/agent_node.py`
+- `src/robot_agent/robot_agent/agents/mission_agent.py`
 
-```text
-pan_target_deg
-tilt_target_deg
-angle_reached if feedback available
-```
+最新能力:
 
-#### `set_camera_pose`
+- AgentNode 订阅 `/nav2/cmd_vel`。
+- AgentNode 非阻塞查询 `/controller_server/get_state`。
+- SystemSkills 在 `/agent/health_state` 中新增 `components.local_planner`。
+- Dashboard Robot Health 显示 `Local Planner`。
+- 只有当前 active skill 是 `goto_pose` 时，local planner 不可用才判为 BAD。
+- idle 或 perception 阶段不会因为 local planner 没有输出速度而误报。
 
-Inputs:
+health metrics:
 
-```text
-pan_deg: float
-tilt_deg: float
-```
+- `required`
+- `required_reason`
+- `controller_state`
+- `controller_state_age_sec`
+- `nav2_cmd_age_sec`
+- `nav2_cmd_speed`
+- `summary`
 
-Hard limits should come from config, not prompt:
+恢复策略:
 
-```text
-pan lower/upper
-tilt lower/upper
-max step per command
-```
+- mission 中 local planner BAD 会 cancel active motion。
+- MissionAgent 进入 `PAUSED_HEALTH`。
+- 等待 controller 恢复，恢复后 retry 当前 navigation step。
+- 如果超时仍未恢复，进入 `NEEDS_HUMAN`。
 
-#### `move_lift`
+注意:
 
-Purpose: controlled lift movement.
+- 当前实现是监视和暂停等待恢复。
+- 如果 `controller_server` 进程级 crash，是否自动 respawn 取决于 launch/lifecycle manager。
+- 后续若确认需要进程级重启，再补专门 restart mechanism。
 
-Backend today:
+## 12. System / Localization Skills
 
-```text
-/lift/command: "UP" | "DOWN" | "STOP"
-sim bridge: sim_lift_command_node
-```
+主要 skill:
 
-Recommended Skill interface:
+- `get_robot_status`
+- `check_localization_health`
+- `recover_localization_spin`
+- `await_robot_auto_mode`
+- `await_robot_stationary`
 
-```text
-move_lift(direction, duration_sec)
-move_lift_to_named_pose("low" | "middle" | "high")
-stop_lift()
-```
+SystemSkills 追踪:
 
-Do not expose unbounded `UP`/`DOWN` to L3.
+- robot mode
+- safety status
+- `/cmd_vel`
+- `/nav2/cmd_vel`
+- odom/localization pose
+- GICP score
+- stationary drift
+- local planner lifecycle state
 
-Preconditions:
+设计理由:
 
-```text
-base stopped
-robot not navigating
-duration_sec <= configured max
-real_supported only after limit switches/position feedback are confirmed
-```
+- navigation 前需要确认 AUTO 和 localization。
+- perception 前需要确认 stationary。
+- localization BAD 和 local planner BAD 是不同 health failure，恢复策略不同。
+- health cancel 不应被误认为“目标点不可达”。
 
-### Group F: Future Contact Skills
+## 13. Perception Skills
 
-These are planned, not executable in the current workspace:
+主要文件:
 
-```text
-move_arm_named_pose
-move_arm_to_pregrasp
-press_button
-toggle_switch
-grasp_object
-place_object
-```
+- `src/robot_skills/robot_skills/executors/perception.py`
+- `src/robot_skills/robot_skills/executors/camera.py`
+- `src/robot_skills/config/perception_models.yaml`
+- `src/robot_skills/config/perception_targets.yaml`
 
-Required before enabling:
+当前原则:
 
-```text
-MoveIt 2 or chosen arm controller
-joint state feedback
-collision scene
-workspace limits
-force/travel/velocity limits
-human confirmation path
-sim-first validation
-physical estop
-```
+- parser 只负责把 query 分解为 color/object/text 等约束。
+- 能检测什么由 L2 capability matrix 和模型决定。
+- `red bird` 这类 composite query 需要分别报告:
+  - color found
+  - object found
+  - both found
+- partial known query 也要尝试可检测部分，然后按需要 `NEEDS_HUMAN`。
+- 完全 unknown query 不应浪费 9 pose scan。
 
-## Model/API Policy For L2
+Dashboard 显示目标:
 
-L2 should be mostly deterministic.
+- 优先显示有 bounding box / match 的结果图。
+- 减少重复无效图。
+- 图片每行更大，便于检查。
 
-Allowed:
+## 14. Relative Motion Skills
 
-```text
-Pydantic validation
-ROS2 actions/services/topics
-local perception models
-optional cloud VLM for observation labeling/reporting
-```
+目标:
 
-Not allowed:
+- 支持人类 joycon 类似的短距离微调。
+- 用于前进、横移、斜向移动、短角度旋转。
+- 不替代长距离 `goto_pose`。
 
-```text
-LLM-generated ROS topic names
-LLM-generated coordinates without semantic map or perception grounding
-LLM-generated joint trajectory
-LLM deciding safety status from prose
-```
+重要原则:
 
-Recommended stack:
+- Agent 不直接发 raw motion。
+- Skill 执行 bounded motion。
+- 仍需经过 robot mode / health / safety。
 
-```text
-Python 3.10
-rclpy
-Pydantic v2 if available, otherwise dataclasses + manual validation
-Nav2 action client or nav2_simple_commander for first implementation
-OpenCV for v0 perception
-ONNX/TensorRT/PyTorch local detector later
-```
+当前观察:
 
-## Evaluation Matrix
+- 狭窄空间里斜前 / 横向移动有价值。
+- 长距离移动仍应优先朝前，避免 camera 看不到障碍。
+- 前轮同步策略曾降低避障能力，暂时回退，后续单独研究底盘控制。
 
-Each Skill should have a small measurable scorecard.
+## 15. 当前已知问题
 
-| Skill | Primary metric | Target before L3 use |
-| --- | --- | --- |
-| `get_robot_status` | response latency | p95 < 3 sec |
-| `resolve_semantic_target` | known alias accuracy | 100% on registry aliases |
-| `goto_pose` | sim navigation success | >= 90% on 10 reachable goals |
-| `goto_named_place` | semantic + nav success | >= 90% for measured places |
-| `cancel_motion` | cancel latency | < 1 sec to zero command |
-| `capture_observation` | artifact completeness | image + pose + frame_id present |
-| `detect_known_object` | precision on demo objects | >= 90% before manipulation gating |
-| `set_camera_pose` | command bounds | 100% rejects out-of-range |
-| `move_lift` | bounded actuation | no unbounded motion commands |
+Navigation:
 
-## First Implementation Order
+- MPPI/local planner 有时不会足够早避开明显障碍。
+- local costmap 与 global path 的关系仍需调优。
+- route marker 可视化仍需继续清理粗线/旧 marker。
+- narrow path 策略已可用，但入口/出口标注精度会明显影响效果。
 
-1. Create `src/robot_skills` as a ROS2 Python package.
-2. Add `schemas.py`, `result_codes.py`, `skill_registry.yaml`.
-3. Add `semantic_map.yaml` and `resolve_semantic_target`.
-4. Add `get_robot_status`, `await_robot_auto_mode`, `cancel_motion`, and human-confirmation-aware AUTO checks.
-5. Add `goto_pose` and `goto_named_place` with dry-run mode, then sim Nav2 execution.
-6. Add JSONL skill event logging.
-7. Add `capture_observation`.
-8. Add hybrid perception hooks: local detector/stub first, cloud VLM confirmation as non-contact report only.
-9. Add `set_camera_pose` and bounded `move_lift` in sim only.
+Map / USD:
 
-## Open Questions To Discuss
+- USD collider / invisible proxy / visual mesh 的边界不一致会影响 costmap 和碰撞。
+- 地面物品应尽量有合理 collider。
+- 手动移动 USD prim 后要确认 override 保存到工作 layer。
 
-1. Should `src/mission_manager` be retired, or kept as a simple executor behind the new typed Skill API?
-2. For real robot operation, do lift/camera motors have reliable feedback and limit switches, or should they remain manual/sim-only Skills for now?
-3. What is the first demo scene vocabulary: L402 lab places, warehouse objects, elevator/buttons, or shelves/boxes?
-4. Which concrete cloud provider/model should be used for non-contact VLM confirmation and reports?
+Perception:
+
+- capability matrix 需要持续和实际模型 class list 对齐。
+- composite query 的 dry-run case 需要继续扩充。
+
+Review 重点:
+
+1. `goto_pose` 是否承担过多策略。
+2. local planner health 和 localization health 是否分离清楚。
+3. fixed point / region target recovery policy 是否正确。
+4. runtime route state 是否成为 dashboard/RViz/log 的统一来源。
+5. narrow path `±5 deg` 是否过严或正好。
+6. perception capability 是否还残留 parser-side hardcode。

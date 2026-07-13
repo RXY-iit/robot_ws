@@ -1,6 +1,6 @@
 Panels:
   - Class: rviz_common/Displays
-    Help Height: 70
+    Help Height: 0
     Name: Displays
     Property Tree Widget:
       Expanded:
@@ -16,8 +16,10 @@ Panels:
         - /Sim GICP PLY Map1
         - /Livox PC2 Relay1
         - /Camera RGB1
+        - /Marker1
+        - /Navigation Goal Markers1
       Splitter Ratio: 0.550000011920929
-    Tree Height: 524
+    Tree Height: 322
   - Class: rviz_common/Views
     Expanded:
       - /Current View1
@@ -289,7 +291,7 @@ Visualization Manager:
         Value: /local_plan
       Value: true
     - Class: rviz_default_plugins/MarkerArray
-      Enabled: true
+      Enabled: false
       Name: MPPI Trajectories
       Namespaces:
         {}
@@ -299,7 +301,7 @@ Visualization Manager:
         History Policy: Keep Last
         Reliability Policy: Reliable
         Value: /FollowPath/trajectories
-      Value: true
+      Value: false
     - Alpha: 1
       Class: rviz_default_plugins/Polygon
       Color: 255; 255; 0
@@ -331,7 +333,7 @@ Visualization Manager:
           Value: true
         Value: false
       Enabled: true
-      Keep: 50
+      Keep: 1
       Name: Odometry
       Position Tolerance: 0.10000000149011612
       Shape:
@@ -389,8 +391,8 @@ Visualization Manager:
     - Alpha: 1
       Autocompute Intensity Bounds: true
       Autocompute Value Bounds:
-        Max Value: 8.418532371520996
-        Min Value: -1.9828866720199585
+        Max Value: 1.384203314781189
+        Min Value: -1.6747217178344727
         Value: true
       Axis: Z
       Channel Name: intensity
@@ -448,6 +450,35 @@ Visualization Manager:
         Reliability Policy: Reliable
         Value: /camera/camera/depth/image_rect_raw
       Value: true
+    - Class: rviz_default_plugins/Marker
+      Enabled: true
+      Name: Marker
+      Namespaces:
+        {}
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        Filter size: 10
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /semantic_map/markers
+      Value: true
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: Navigation Goal Markers
+      Namespaces:
+        navigation_route: true
+        navigation_route_global_path: true
+        navigation_route_label: true
+        navigation_route_sequence: true
+        navigation_route_tolerance: true
+      Topic:
+        Depth: 5
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /robot_skills/navigation_route_markers
+      Value: true
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48
@@ -486,39 +517,39 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 29.550094604492188
+      Distance: 12.694208145141602
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
         Swap Stereo Eyes: false
         Value: false
       Focal Point:
-        X: 3.1828057765960693
-        Y: 6.010633945465088
-        Z: 1.4748750925064087
+        X: 0.07102750986814499
+        Y: -0.8158963322639465
+        Z: 1.4685535430908203
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.809796929359436
+      Pitch: 1.5697963237762451
       Target Frame: map
       Value: Orbit (rviz)
-      Yaw: 4.875016212463379
+      Yaw: 4.855015754699707
     Saved: ~
 Window Geometry:
   Camera RGB:
     collapsed: false
   Displays:
     collapsed: false
-  Height: 1596
+  Height: 1513
   Hide Left Dock: false
   Hide Right Dock: false
   Image:
     collapsed: false
-  QMainWindow State: 000000ff00000000fd00000001000000000000021c000005e2fc0200000004fb000000100044006900730070006c006100790073010000003d0000028f000000c900fffffffb0000000a0056006900650077007301000002d200000124000000a400fffffffb0000001400430061006d006500720061002000520047004201000003fc000000fa0000002800fffffffb0000000a0049006d00610067006501000004fc000001230000002800ffffff00000682000005e200000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
+  QMainWindow State: 000000ff00000000fd0000000100000000000002fa0000058ffc0200000004fb000000100044006900730070006c006100790073010000003d0000017f000000c900fffffffb0000000a0056006900650077007300000002d200000124000000a400fffffffb0000001400430061006d006500720061002000520047004201000001c2000001f40000002800fffffffb0000000a0049006d00610067006501000003bc000002100000002800ffffff000004f10000058f00000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
   Views:
     collapsed: false
-  Width: 2212
-  X: 3371
-  Y: 130
+  Width: 2033
+  X: 2007
+  Y: 264

@@ -50,9 +50,9 @@ from launch_ros.actions import Node
 def generate_launch_description():
     pkg_share = get_package_share_directory("localization_pkg")
 
-    default_2d_map = "/home/ruan-x/robot_ws/maps/sim_factory_mid360_like_gpu_trueimu_011_nav2.yaml"
+    default_2d_map = "/home/ruan-x/robot_ws/maps/sim_factory_mid360_like_gpu_trueimu_011/nav2.yaml"
     default_pcd_map = (
-        "/home/ruan-x/robot_ws/maps/sim_factory_mid360_like_gpu_trueimu_011_3d.ply"
+        "/home/ruan-x/robot_ws/maps/sim_factory_mid360_like_gpu_trueimu_011/map_3d.ply"
     )
     default_gicp_params = os.path.join(pkg_share, "config", "gicp_localizer.yaml")
 

@@ -34,6 +34,7 @@ class SimOmniDriveCommandNode(Node):
         self.declare_parameter('steer_rate_limit_rad_s', 1.2)
         self.declare_parameter('wheel_speed_deadband_m_s', 0.035)
         self.declare_parameter('drive_disable_steer_error_rad', 0.35)
+        self.declare_parameter('steer_neutral_after_stop_sec', 0.4)
 
         self._timeout = float(self.get_parameter('cmd_vel_timeout').value)
         self._rate = float(self.get_parameter('publish_rate').value)
@@ -44,8 +45,11 @@ class SimOmniDriveCommandNode(Node):
         self._wheel_speed_deadband = float(self.get_parameter('wheel_speed_deadband_m_s').value)
         self._drive_disable_steer_error = float(
             self.get_parameter('drive_disable_steer_error_rad').value)
+        self._steer_neutral_after_stop = float(
+            self.get_parameter('steer_neutral_after_stop_sec').value)
 
         self._last_cmd_time = self.get_clock().now()
+        self._last_motion_cmd_time = self.get_clock().now()
         self._last_publish_time = self.get_clock().now()
         self._has_cmd = False
         self._drive_vel = [0.0, 0.0, 0.0]
@@ -74,6 +78,7 @@ class SimOmniDriveCommandNode(Node):
             self._target_drive_vel = [0.0, 0.0, 0.0]
             self._target_steer_phi = list(self._steer_phi)
             return
+        self._last_motion_cmd_time = self.get_clock().now()
         self._target_drive_vel = drive_vel
         self._target_steer_phi = steer_phi
 
@@ -86,7 +91,9 @@ class SimOmniDriveCommandNode(Node):
         if (not self._has_cmd or
                 (now - self._last_cmd_time).nanoseconds * 1e-9 > self._timeout):
             self._target_drive_vel = [0.0, 0.0, 0.0]
-            self._target_steer_phi = list(self._steer_phi)
+            self._target_steer_phi = self._neutral_steer_target(now)
+        elif max(abs(v) for v in self._target_drive_vel) < self._wheel_speed_deadband:
+            self._target_steer_phi = self._neutral_steer_target(now)
 
         steer_error = [
             target - current
@@ -148,6 +155,12 @@ class SimOmniDriveCommandNode(Node):
                 fallback_drive, fallback_steer = cmd_vel_to_wheels(vx, vy, wz)
                 return fallback_drive, fallback_steer
         return drive_vel, steer_phi
+
+    def _neutral_steer_target(self, now):
+        stopped_for = (now - self._last_motion_cmd_time).nanoseconds * 1e-9
+        if stopped_for >= self._steer_neutral_after_stop:
+            return [0.0, 0.0, 0.0]
+        return list(self._steer_phi)
 
     @staticmethod
     def _normalize_angle(angle):

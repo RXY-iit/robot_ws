@@ -1,0 +1,144 @@
+templates:
+  - id: navigate_to_object_near
+    examples:
+      - move to shelf 06
+      - go to shelf_04_05_region
+      - 06棚に行って
+      - 06番棚へ移動
+      - 04-05棚に行って
+    intent:
+      task_type: navigate_to_object
+
+  - id: navigate_to_place
+    examples:
+      - go to home
+      - go to entrance
+      - go to corridor
+      - ホームに戻って
+      - 入口へ移動
+      - 廊下へ移動
+    intent:
+      task_type: navigate_to_place
+
+  - id: search_object_near_place
+    examples:
+      - find red_box near shelf 06
+      - check shelf 06 for red_box
+      - go to shelf 06 and find shelf_label_06
+      - 06棚に赤い箱がありますか
+      - 06番棚で赤箱を探して
+      - 04-05棚にobject_carがありますか
+    intent:
+      task_type: search_object_near_place
+
+  - id: search_object_here
+    examples:
+      - check object_car
+      - find red_box
+      - look for shelf_label_06
+      - check text BOX
+      - check letter BOX
+      - object_carがありますか
+      - object_boxを探して
+      - 赤い箱が見える
+    intent:
+      task_type: search_object_here
+
+  - id: inspect_place
+    examples:
+      - inspect shelf 06
+      - check shelf_04_05_region
+      - inspect elevator panel
+      - 06棚を確認して
+      - 04-05棚を確認
+      - 06番棚を見て
+    intent:
+      task_type: inspect_place
+
+  - id: move_relative
+    examples:
+      - move forward 1m
+      - move left 50cm
+      - go back 30cm
+      - move forward a little
+      - 前進1メートル
+      - 左へ50センチ
+      - 後退30センチ
+      - 前進少し
+    intent:
+      task_type: move_relative
+
+  - id: move_relative_xy
+    examples:
+      - move front left a little
+      - move front right 50cm
+      - 左前方へ少し
+      - 右前方へ50センチ
+    intent:
+      task_type: move_relative_xy
+
+  - id: rotate_relative
+    examples:
+      - turn around
+      - turn left
+      - turn right
+      - 左を向いて
+      - 右を向いて
+      - 振り向いて
+    intent:
+      task_type: rotate_relative
+
+  - id: look_direction
+    examples:
+      - look left
+      - look right
+      - look front
+      - look up
+      - 左を見て
+      - 右を見て
+      - 前方を確認
+      - 右上を見て
+    intent:
+      task_type: look_direction
+
+  - id: robot_status
+    examples:
+      - status
+      - robot health
+      - robot status
+      - ロボット状態
+      - ロボットのステータス
+    intent:
+      task_type: robot_status
+
+  - id: list_known_targets
+    examples:
+      - list known targets
+      - known places
+      - what places do you know
+      - 知っている場所を教えて
+      - 場所一覧
+    intent:
+      task_type: list_known_targets
+
+  - id: cancel
+    examples:
+      - cancel
+      - stop task
+      - abort
+      - キャンセル
+      - タスクを停止
+    intent:
+      task_type: cancel
+
+  - id: move_lift_bounded
+    examples:
+      - lift up 10cm
+      - lift down 5cm
+      - lift up a little
+      - lift down a lot
+      - リフトを10センチ上げて
+      - リフトを少し下げて
+      - リフトを大きく下げて
+    intent:
+      task_type: move_lift_bounded

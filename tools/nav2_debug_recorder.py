@@ -209,6 +209,11 @@ class Nav2DebugRecorder(Node):
         if n:
             data["start"] = pose_dict(msg.poses[0])
             data["end"] = pose_dict(msg.poses[-1])
+            if self.goal is None:
+                self.goal = dict(data["end"])
+                self.goal["frame_id"] = msg.header.frame_id
+                self.goal["source"] = "inferred_from_plan_end"
+                self._event("goal_pose_inferred", self.goal)
         self.plan = data
         self._event("plan", data)
 
@@ -257,7 +262,7 @@ class Nav2DebugRecorder(Node):
         }
 
     def _compute_hint(self) -> str:
-        if self.goal is None:
+        if self.goal is None and self.status == "no_status" and self.plan is None:
             return "no goal received after recorder started; set a 2D Goal Pose in RViz"
         if self.status == "SUCCEEDED":
             return "goal succeeded; zero cmd_vel is expected"

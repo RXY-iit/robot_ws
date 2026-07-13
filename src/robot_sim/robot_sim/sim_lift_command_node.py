@@ -32,6 +32,7 @@ Parameters
   camera_upper_rad       float  Upper swing limit [rad] (default 132°)
   robot_cmd_vel_topic    str    Final velocity topic used to lock camera while moving
   robot_mode_topic       str    Mode topic used to lock camera during AUTO navigation
+  lock_camera_in_auto    bool   If true, force camera to neutral whenever robot is AUTO.
   stop_linear_threshold  float  Robot is stopped below this XY speed
   stop_angular_threshold float  Robot is stopped below this yaw speed
   cmd_vel_timeout_sec    float  Treat stale cmd_vel as stopped
@@ -69,6 +70,7 @@ class SimLiftCommandNode(Node):
         self.declare_parameter('camera_upper_rad', math.radians(132.0))
         self.declare_parameter('robot_cmd_vel_topic', '/cmd_vel')
         self.declare_parameter('robot_mode_topic', '/robot_mode')
+        self.declare_parameter('lock_camera_in_auto', False)
         self.declare_parameter('stop_linear_threshold', 0.01)
         self.declare_parameter('stop_angular_threshold', 0.02)
         self.declare_parameter('cmd_vel_timeout_sec', 0.5)
@@ -86,6 +88,7 @@ class SimLiftCommandNode(Node):
         self._cam_hi = float(self.get_parameter('camera_upper_rad').value)
         self._cmd_vel_topic = str(self.get_parameter('robot_cmd_vel_topic').value)
         self._robot_mode_topic = str(self.get_parameter('robot_mode_topic').value)
+        self._lock_camera_in_auto = bool(self.get_parameter('lock_camera_in_auto').value)
         self._stop_linear_threshold = float(self.get_parameter('stop_linear_threshold').value)
         self._stop_angular_threshold = float(self.get_parameter('stop_angular_threshold').value)
         self._cmd_vel_timeout = float(self.get_parameter('cmd_vel_timeout_sec').value)
@@ -105,6 +108,8 @@ class SimLiftCommandNode(Node):
         self.create_subscription(String, self._robot_mode_topic, self._robot_mode_cb, 10)
 
         self._pub = self.create_publisher(JointState, '/sim/arm_joint_states', 10)
+        self._pan_feedback_pub = self.create_publisher(Float32, '/chokudomotor/angle', 10)
+        self._swing_feedback_pub = self.create_publisher(Float32, '/cameraswingmotor/angle', 10)
 
         dt = 1.0 / max(rate, 1.0)
         self._dt = dt
@@ -118,7 +123,8 @@ class SimLiftCommandNode(Node):
             f'offset={math.degrees(self._cam_offset):.0f}°, '
             f'neutral={self._cam_neutral}°, '
             f'camera_lock_cmd_vel={self._cmd_vel_topic}, '
-            f'robot_mode_topic={self._robot_mode_topic})'
+            f'robot_mode_topic={self._robot_mode_topic}, '
+            f'lock_camera_in_auto={self._lock_camera_in_auto})'
         )
 
     # ---------------------------------------------------------------- callbacks
@@ -146,7 +152,7 @@ class SimLiftCommandNode(Node):
         self._robot_mode = msg.data.upper().strip()
 
     def _camera_locked(self):
-        return self._robot_mode == 'AUTO' or self._robot_is_moving()
+        return (self._lock_camera_in_auto and self._robot_mode == 'AUTO') or self._robot_is_moving()
 
     def _robot_is_moving(self):
         if self._last_cmd_vel_time is None:
@@ -184,6 +190,15 @@ class SimLiftCommandNode(Node):
         msg.velocity = [nan, nan, nan]
         msg.effort = [nan, nan, nan]
         self._pub.publish(msg)
+
+        self._pan_feedback_pub.publish(Float32(data=self._pan_deg_from_rad(pan_rad)))
+        self._swing_feedback_pub.publish(Float32(data=self._swing_deg_from_rad(swing_rad)))
+
+    def _pan_deg_from_rad(self, pan_rad):
+        return self._pan_neutral + math.degrees(pan_rad)
+
+    def _swing_deg_from_rad(self, swing_rad):
+        return self._cam_neutral + math.degrees(swing_rad - self._cam_offset)
 
 
 def main(args=None):

@@ -18,6 +18,11 @@ debug-output/
 debug-ouput/
 calib_bags/
 slam_bag/
+sim_bag/
+*.db3
+*.db3.zstd
+*.mcap
+*.bag
 
 # Python / editor noise
 __pycache__/
@@ -31,3 +36,9 @@ __pycache__/
 imgui.ini
 # map
 maps/
+
+# Large simulation assets kept outside normal source checkpoints
+models/
+omniverse_asset_packs/
+src/robot_sim/usd/scenes/real_lab/
+src/robot_sim/usd/scenes/robot_sim_real_lab.usd

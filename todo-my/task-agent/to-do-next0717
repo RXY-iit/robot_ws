@@ -1,0 +1,9 @@
+
+
+segmentation map
+地图修改
+桌子goal方向修改 固定
+
+robot health
+这版实现的是“local planner 掉线后任务停止/暂停，等待 controller_server 恢复 active 后继续”。真正的进程级重启仍依赖 Nav2 lifecycle/launch 机制；如果以后确认 controller_server 会直接 crash 而不是 lifecycle inactive，我们再加更强的 respawn/relaunch 逻辑。
+（添加了dashboard检测，没有添加自动重新localplanner 逻辑）

@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MissionIntent",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["task_type"],
+  "properties": {
+    "task_type": {
+      "type": "string",
+      "enum": [
+        "navigate_to_object",
+        "navigate_to_place",
+        "search_object_near_place",
+        "search_object_here",
+        "inspect_place",
+        "look_direction",
+        "robot_status",
+        "list_known_targets",
+        "cancel",
+        "move_lift_bounded",
+        "move_relative",
+        "move_relative_xy",
+        "rotate_relative",
+        "ask_human"
+      ]
+    },
+    "target": {
+      "type": ["string", "null"]
+    },
+    "relation": {
+      "type": ["string", "null"],
+      "enum": ["near", "front", null]
+    },
+    "object_query": {
+      "type": ["string", "null"]
+    },
+    "constraints": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "direction": {
+          "type": "string",
+          "enum": ["UP", "DOWN", "forward", "back", "left", "right", "front_left", "front_right"]
+        },
+        "distance_m": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 2.0
+        },
+        "dx_m": {
+          "type": "number",
+          "minimum": -2.0,
+          "maximum": 2.0
+        },
+        "dy_m": {
+          "type": "number",
+          "minimum": -2.0,
+          "maximum": 2.0
+        },
+        "yaw_deg": {
+          "type": "number",
+          "minimum": -180.0,
+          "maximum": 180.0
+        },
+        "band": {
+          "type": "string",
+          "enum": ["ground", "middle", "upper"]
+        },
+        "duration_sec": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 5.0
+        }
+      }
+    },
+    "requires_confirmation": {
+      "type": "boolean"
+    }
+  }
+}

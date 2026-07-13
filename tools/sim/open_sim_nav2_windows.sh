@@ -5,8 +5,8 @@ set -euo pipefail
 
 WS="${WS:-/home/ruan-x/robot_ws}"
 ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-20}"
-MAP="${MAP:-$WS/maps/sim_factory_mid360_like_gpu_trueimu_011_nav2.yaml}"
-PLY_MAP="${PLY_MAP:-$WS/maps/sim_factory_mid360_like_gpu_trueimu_011_3d.ply}"
+MAP="${MAP:-$WS/maps/sim_factory_mid360_like_gpu_trueimu_011/nav2.yaml}"
+PLY_MAP="${PLY_MAP:-$WS/maps/sim_factory_mid360_like_gpu_trueimu_011/map_3d.ply}"
 RVIZ_CONFIG="${RVIZ_CONFIG:-$WS/rviz/sim_nav2_navigation.rviz}"
 SIM_JOY_CONFIG="${SIM_JOY_CONFIG:-$WS/src/robot_sim/config/sim_joy_teleop.yaml}"
 JOY_DEV="${JOY_DEV:-/dev/input/js0}"
@@ -14,6 +14,7 @@ DEBUG_OUTPUT_ROOT="${DEBUG_OUTPUT_ROOT:-$WS/debug-output}"
 DEBUG_SESSION_DIR="${DEBUG_SESSION_DIR:-$DEBUG_OUTPUT_ROOT/sim_nav2_$(date +%Y%m%d_%H%M%S)}"
 CLEANUP="${CLEANUP:-false}"
 AUTO="${AUTO:-true}"
+ENABLE_MOTION_POLICY="${ENABLE_MOTION_POLICY:-false}"
 INITIAL_X="${INITIAL_X:-0.0}"
 INITIAL_Y="${INITIAL_Y:-0.0}"
 INITIAL_YAW="${INITIAL_YAW:-0.0}"
@@ -37,6 +38,9 @@ Options:
   --cleanup        Kill old sim Nav2/localization/debug/RViz processes first
   --auto           Switch nav_mode_switch to AUTO after startup (default)
   --no-auto        Keep nav_mode_switch in MANUAL after startup
+  --motion-policy  Enable nav_mode_switch motion policy
+  --no-motion-policy
+                   Disable nav_mode_switch motion policy and pass Nav2 MPPI cmd_vel through (default)
   -h, --help       Show this help
 
 Before running:
@@ -60,6 +64,8 @@ while [[ $# -gt 0 ]]; do
     --cleanup) CLEANUP=true; shift ;;
     --auto) AUTO=true; shift ;;
     --no-auto) AUTO=false; shift ;;
+    --motion-policy) ENABLE_MOTION_POLICY=true; shift ;;
+    --no-motion-policy) ENABLE_MOTION_POLICY=false; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown argument: $1" >&2; usage; exit 2 ;;
   esac
@@ -178,6 +184,7 @@ cat <<EOF
 [sim-nav2] joy_dev      : $JOY_DEV
 [sim-nav2] debug_output : $DEBUG_SESSION_DIR
 [sim-nav2] auto mode    : $AUTO
+[sim-nav2] motion policy: $ENABLE_MOTION_POLICY
 [sim-nav2] initial      : x=$INITIAL_X y=$INITIAL_Y yaw=$INITIAL_YAW
 
 Mapping-era reminders:
@@ -278,7 +285,8 @@ open_window "sim nav2 4 navigation" '
 sleep 5
 ros2 launch nav_pkg navigation.launch.py \
   use_sim_time:=true \
-  joy_estop_button:=-1'
+  joy_estop_button:=-1 \
+  enable_motion_policy:="'"$ENABLE_MOTION_POLICY"'"'
 
 sleep 1
 

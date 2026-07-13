@@ -40,6 +40,7 @@ private:
     rclcpp::Time last_cmd_vel_time;
     bool has_cmd_vel;
     const double cmd_vel_timeout_sec;
+    const double steer_neutral_after_stop_sec;
 };
 
 CmdvelToMotorNode::CmdvelToMotorNode() 
@@ -48,7 +49,8 @@ CmdvelToMotorNode::CmdvelToMotorNode()
     steer_phi{0.0, 0.0, 0.0},
     last_cmd_vel_time(0, 0, this->get_clock()->get_clock_type()),
     has_cmd_vel(false),
-    cmd_vel_timeout_sec(0.3)
+    cmd_vel_timeout_sec(0.3),
+    steer_neutral_after_stop_sec(0.4)
 {
     // Init subscriber
     cmd_vel_sub = this->create_subscription<geometry_msgs::msg::Twist>(
@@ -113,6 +115,7 @@ void CmdvelToMotorNode::enforceCmdVelTimeout()
         for (int i = 0; i < size; i++)
         {
             drive_vel[i] = 0.0;
+            steer_phi[i] = 0.0;
         }
         return;
     }
@@ -125,6 +128,10 @@ void CmdvelToMotorNode::enforceCmdVelTimeout()
     for (int i = 0; i < size; i++)
     {
         drive_vel[i] = 0.0;
+        if ((this->now() - last_cmd_vel_time).seconds() > steer_neutral_after_stop_sec)
+        {
+            steer_phi[i] = 0.0;
+        }
     }
 }
 

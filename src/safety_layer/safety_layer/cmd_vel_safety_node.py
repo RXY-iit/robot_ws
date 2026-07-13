@@ -4,7 +4,7 @@ cmd_vel_safety_node.py — Phase 3 safety layer between mode-switch and motors.
 
 Topic flow:
   /cmd_vel_raw  (nav_mode_switch_node output)
-    → this node applies: watchdog + speed clamp + emergency stop
+    → this node applies: watchdog + speed clamp + slew/jerk limit + emergency stop
   /cmd_vel      (omni_base_driver input)
 
 Emergency stop sources:
@@ -19,6 +19,12 @@ Parameters (ROS):
   max_vx:            float = 0.15  m/s
   max_vy:            float = 0.10  m/s
   max_wz:            float = 0.5   rad/s
+  max_accel_vx:      float = 0.30  m/s^2
+  max_accel_vy:      float = 0.20  m/s^2
+  max_accel_wz:      float = 0.80  rad/s^2
+  max_jerk_vx:       float = 1.00  m/s^3
+  max_jerk_vy:       float = 0.60  m/s^3
+  max_jerk_wz:       float = 2.00  rad/s^3
   joy_estop_button:  int   = 3     Joy button index for ESTOP toggle; -1 disables
 """
 import rclpy
@@ -41,15 +47,34 @@ class CmdVelSafetyNode(Node):
         self.declare_parameter('max_vx', 0.15)
         self.declare_parameter('max_vy', 0.10)
         self.declare_parameter('max_wz', 0.5)
+        self.declare_parameter('max_accel_vx', 0.30)
+        self.declare_parameter('max_accel_vy', 0.20)
+        self.declare_parameter('max_accel_wz', 0.80)
+        self.declare_parameter('max_jerk_vx', 1.00)
+        self.declare_parameter('max_jerk_vy', 0.60)
+        self.declare_parameter('max_jerk_wz', 2.00)
         self.declare_parameter('joy_estop_button', 3)
 
         self._timeout = self.get_parameter('watchdog_timeout').value
         self._max_vx = self.get_parameter('max_vx').value
         self._max_vy = self.get_parameter('max_vy').value
         self._max_wz = self.get_parameter('max_wz').value
+        self._max_accel = {
+            'vx': float(self.get_parameter('max_accel_vx').value),
+            'vy': float(self.get_parameter('max_accel_vy').value),
+            'wz': float(self.get_parameter('max_accel_wz').value),
+        }
+        self._max_jerk = {
+            'vx': float(self.get_parameter('max_jerk_vx').value),
+            'vy': float(self.get_parameter('max_jerk_vy').value),
+            'wz': float(self.get_parameter('max_jerk_wz').value),
+        }
         self._joy_estop_button = int(self.get_parameter('joy_estop_button').value)
 
         self._last_input_time = time.time()
+        self._last_output_time = self._last_input_time
+        self._last_output = Twist()
+        self._last_accel = {'vx': 0.0, 'vy': 0.0, 'wz': 0.0}
         self._estop = False
         self._last_status = self.STATUS_OK
         self._prev_joy_estop = 0  # for rising-edge detection
@@ -70,18 +95,29 @@ class CmdVelSafetyNode(Node):
             f'CmdVelSafetyNode ready. '
             f'watchdog={self._timeout}s '
             f'max vx={self._max_vx} vy={self._max_vy} wz={self._max_wz} '
+            f'accel vx={self._max_accel["vx"]} vy={self._max_accel["vy"]} wz={self._max_accel["wz"]} '
+            f'jerk vx={self._max_jerk["vx"]} vy={self._max_jerk["vy"]} wz={self._max_jerk["wz"]} '
             f'joy_estop_button={self._joy_estop_button}'
         )
 
     def _raw_cb(self, msg: Twist):
-        self._last_input_time = time.time()
+        now = time.time()
+        self._last_input_time = now
         if self._estop:
             self._publish_zero()
             return
+        target = Twist()
+        target.linear.x = self._clamp(msg.linear.x, -self._max_vx, self._max_vx)
+        target.linear.y = self._clamp(msg.linear.y, -self._max_vy, self._max_vy)
+        target.angular.z = self._clamp(msg.angular.z, -self._max_wz, self._max_wz)
+
+        dt = self._dt(now)
         out = Twist()
-        out.linear.x = self._clamp(msg.linear.x, -self._max_vx, self._max_vx)
-        out.linear.y = self._clamp(msg.linear.y, -self._max_vy, self._max_vy)
-        out.angular.z = self._clamp(msg.angular.z, -self._max_wz, self._max_wz)
+        out.linear.x = self._slew_component('vx', self._last_output.linear.x, target.linear.x, dt)
+        out.linear.y = self._slew_component('vy', self._last_output.linear.y, target.linear.y, dt)
+        out.angular.z = self._slew_component('wz', self._last_output.angular.z, target.angular.z, dt)
+        self._last_output = out
+        self._last_output_time = now
         self._cmd_pub.publish(out)
         self._set_status(self.STATUS_OK)
 
@@ -122,7 +158,11 @@ class CmdVelSafetyNode(Node):
             self._set_status(self.STATUS_WATCHDOG)
 
     def _publish_zero(self):
-        self._cmd_pub.publish(Twist())
+        out = Twist()
+        self._last_output = out
+        self._last_output_time = time.time()
+        self._last_accel = {'vx': 0.0, 'vy': 0.0, 'wz': 0.0}
+        self._cmd_pub.publish(out)
 
     def _set_status(self, s: str):
         self._last_status = s
@@ -135,6 +175,27 @@ class CmdVelSafetyNode(Node):
     @staticmethod
     def _clamp(val, lo, hi):
         return max(lo, min(hi, val))
+
+    def _dt(self, now):
+        return min(max(now - self._last_output_time, 0.01), 0.2)
+
+    def _slew_component(self, key, current, target, dt):
+        if dt <= 0.0:
+            return current
+        desired_accel = (target - current) / dt
+        prev_accel = self._last_accel[key]
+        jerk_step = max(0.0, self._max_jerk[key] * dt)
+        accel = self._clamp(desired_accel, prev_accel - jerk_step, prev_accel + jerk_step)
+        accel = self._clamp(accel, -self._max_accel[key], self._max_accel[key])
+        next_value = current + accel * dt
+
+        # Avoid tiny overshoot oscillations when ramping toward a fixed target.
+        if (target - current) * (target - next_value) <= 0.0:
+            next_value = target
+            accel = (next_value - current) / dt
+
+        self._last_accel[key] = accel
+        return next_value
 
 
 def main(args=None):
