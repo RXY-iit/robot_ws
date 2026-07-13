@@ -34,8 +34,10 @@ __pycache__/
 
 # Large/local visualization state
 imgui.ini
-# map
-maps/
+# map bundles are usually generated artifacts. Keep only selected reference maps.
+maps/*
+!maps/sim_real_lab_001/
+!maps/sim_real_lab_001/**
 
 # Large simulation assets kept outside normal source checkpoints
 models/

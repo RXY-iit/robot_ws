@@ -1,0 +1,254 @@
+map_id: sim_real_lab_001
+frame_id: map
+schema_version: 1
+narrow_passages:
+- id: sofa_bookshelf_passage
+  enabled: true
+  description: Narrow route between sofa / meeting area and right-side furniture.
+  tags:
+  - sofa
+  - bookshelf
+  - lab_center
+  entry:
+    x: -0.1921
+    y: 0.9906
+    yaw: 1.5333427179312135
+  exit:
+    x: -0.0649
+    y: 4.3848
+    yaw: 1.5333427179312135
+  centerline:
+  - x: -0.1921
+    y: 0.9906
+  - x: -0.0649
+    y: 4.3848
+  alignment_zones:
+  - id: sofa_bookshelf_entry_alignment
+    enabled: true
+    side: entry
+    type: navigation_alignment_zone
+    description: Open area before entering sofa/bookshelf passage from lab center
+      side.
+    polygon:
+    - x: -0.5795
+      y: 1.3318
+    - x: 0.2069
+      y: 1.3549
+    - x: 0.23
+      y: 0.6379
+    - x: -0.6257
+      y: 0.6379
+    pose:
+      x: -0.1921
+      y: 0.9906
+      yaw: 1.5707963267948966
+    xy_goal_tolerance_m: 0.45
+    yaw_goal_tolerance_rad: 0.34906585
+    timeout_sec: 16.0
+    use_policy:
+      skip_if_robot_near_pose_m: 0.12
+  - id: sofa_bookshelf_exit_alignment
+    enabled: true
+    side: exit
+    type: navigation_alignment_zone
+    description: Open area before entering sofa/bookshelf passage from sofa side.
+    polygon:
+    - x: -0.5332
+      y: 4.7085
+    - x: 0.415
+      y: 4.7548
+    - x: 0.3919
+      y: 4.0841
+    - x: -0.5332
+      y: 3.9916
+    pose:
+      x: -0.0649
+      y: 4.3848
+      yaw: -1.5707963267948966
+    xy_goal_tolerance_m: 0.45
+    yaw_goal_tolerance_rad: 0.34906585
+    timeout_sec: 16.0
+    use_policy:
+      skip_if_robot_near_pose_m: 0.12
+  expected_width_m: 0.85
+  waypoint:
+    use_opposite_side_as_waypoint: true
+    xy_goal_tolerance_m: 0.45
+    yaw_goal_tolerance_rad: 0.34906585
+    timeout_sec: 20
+  trigger_policy:
+    min_remaining_goal_distance_m: 0.8
+    skip_if_robot_near_exit_m: 0.45
+  traversal_policy:
+    preferred_motion: forward_dominant
+    allow_lateral_assist: true
+    max_speed_mps: 0.12
+    note: Face the passage centerline first, then move toward the exit before resuming
+      the original goal.
+- id: left_cabinet_toolbox_passage
+  enabled: true
+  description: Tight corridor near left wall cabinets, toolbox/cart, and table edges.
+  tags:
+  - tool_box
+  - wall_cabinet
+  - left_wall
+  entry:
+    x: -0.088
+    y: 0.3777
+    yaw: -1.5942987402563024
+  exit:
+    x: -0.169
+    y: -3.0684
+    yaw: -1.5942987402563024
+  centerline:
+  - x: -0.088
+    y: 0.3777
+  - x: -0.169
+    y: -3.0684
+  alignment_zones:
+  - id: left_cabinet_toolbox_entry_alignment
+    enabled: true
+    side: entry
+    type: navigation_alignment_zone
+    description: Open area before entering the left cabinet/toolbox passage from upper
+      side.
+    polygon:
+    - x: -0.487
+      y: 0.6379
+    - x: 0.3225
+      y: 0.6611
+    - x: 0.2763
+      y: 0.1523
+    - x: -0.4638
+      y: 0.0597
+    pose:
+      x: -0.088
+      y: 0.3777
+      yaw: -1.5707963267948966
+    xy_goal_tolerance_m: 0.45
+    yaw_goal_tolerance_rad: 0.34906585
+    timeout_sec: 16.0
+    use_policy:
+      skip_if_robot_near_pose_m: 0.12
+  - id: left_cabinet_toolbox_exit_alignment
+    enabled: true
+    side: exit
+    type: navigation_alignment_zone
+    description: Open area before entering the left cabinet/toolbox passage from lower
+      side.
+    polygon:
+    - x: -0.5101
+      y: -2.7157
+    - x: 0.23
+      y: -2.7157
+    - x: 0.2069
+      y: -3.3864
+    - x: -0.6026
+      y: -3.4558
+    pose:
+      x: -0.169
+      y: -3.0684
+      yaw: 1.5707963267948966
+    xy_goal_tolerance_m: 0.45
+    yaw_goal_tolerance_rad: 0.34906585
+    timeout_sec: 16.0
+    use_policy:
+      skip_if_robot_near_pose_m: 0.12
+  expected_width_m: 0.75
+  waypoint:
+    use_opposite_side_as_waypoint: true
+    xy_goal_tolerance_m: 0.45
+    yaw_goal_tolerance_rad: 0.34906585
+    timeout_sec: 20
+  trigger_policy:
+    min_remaining_goal_distance_m: 0.8
+    skip_if_robot_near_exit_m: 0.45
+  traversal_policy:
+    preferred_motion: forward_dominant
+    allow_lateral_assist: true
+    max_speed_mps: 0.1
+    note: Use this waypoint before trying to reach tool_box or desks behind the left-side
+      furniture cluster.
+- id: center_right_table_passage
+  enabled: true
+  description: Passage through the center-right table/chair cluster.
+  tags:
+  - desk_hyk
+  - desk_mkr
+  - desk_tks
+  - desk_ysd
+  entry:
+    x: -0.1921
+    y: 4.564
+    yaw: -3.098646084908407
+  exit:
+    x: -2.6148
+    y: 4.4599
+    yaw: -3.098646084908407
+  centerline:
+  - x: -0.1921
+    y: 4.564
+  - x: -2.6148
+    y: 4.4599
+  alignment_zones:
+  - id: center_right_table_entry_alignment
+    enabled: true
+    side: entry
+    type: navigation_alignment_zone
+    description: Open area before entering center-right table passage from upper side.
+    polygon:
+    - x: -0.5564
+      y: 4.9398
+    - x: 0.23
+      y: 4.9629
+    - x: 0.1606
+      y: 4.1766
+    - x: -0.6026
+      y: 4.1766
+    pose:
+      x: -0.1921
+      y: 4.564
+      yaw: 3.141592653589793
+    xy_goal_tolerance_m: 0.45
+    yaw_goal_tolerance_rad: 0.34906585
+    timeout_sec: 16.0
+    use_policy:
+      skip_if_robot_near_pose_m: 0.12
+  - id: center_right_table_exit_alignment
+    enabled: true
+    side: exit
+    type: navigation_alignment_zone
+    description: Open area before entering center-right table passage from lower side.
+    polygon:
+    - x: -3.0542
+      y: 4.801
+    - x: -2.2216
+      y: 4.9167
+    - x: -2.1753
+      y: 4.1303
+    - x: -3.008
+      y: 3.9916
+    pose:
+      x: -2.6148
+      y: 4.4599
+      yaw: 0.0
+    xy_goal_tolerance_m: 0.45
+    yaw_goal_tolerance_rad: 0.34906585
+    timeout_sec: 16.0
+    use_policy:
+      skip_if_robot_near_pose_m: 0.12
+  expected_width_m: 0.8
+  waypoint:
+    use_opposite_side_as_waypoint: true
+    xy_goal_tolerance_m: 0.45
+    yaw_goal_tolerance_rad: 0.34906585
+    timeout_sec: 24
+  trigger_policy:
+    min_remaining_goal_distance_m: 0.8
+    skip_if_robot_near_exit_m: 0.45
+  traversal_policy:
+    preferred_motion: forward_dominant
+    allow_lateral_assist: true
+    max_speed_mps: 0.1
+    note: Prefer exiting this passage before making a large heading correction toward
+      the final semantic target.

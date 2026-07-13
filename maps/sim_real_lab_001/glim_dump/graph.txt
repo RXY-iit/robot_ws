@@ -1,0 +1,4 @@
+num_submaps: 2
+num_all_frames: 1756
+num_matching_cost_factors: 1
+matching_cost vgicp_gpu 0 1

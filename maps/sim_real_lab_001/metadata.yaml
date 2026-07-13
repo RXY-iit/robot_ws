@@ -1,0 +1,21 @@
+map_id: sim_real_lab_001
+name: Isaac Sim Real Lab 001
+environment: real_lab
+kind: sim2real_lab
+frame_id: map
+status: in_progress
+created_from:
+  note: Migrated from the earlier flat real-lab map files into this bundle.
+bundle_files:
+  nav2_map: nav2.yaml
+  nav2_image: nav2.pgm
+  point_cloud: map_3d.ply
+  glim_dump: glim_dump
+  semantic_map: semantic_map.yaml
+  semantic_segments: semantic_segments.yaml
+  navigation_annotations: navigation_annotations.yaml
+  dashboard_examples: dashboard_examples.yaml
+notes:
+  - Keep this directory as the canonical real-lab map bundle.
+  - Do not recreate flat real-lab map files; use this bundle directory.
+  - Segment polygons are still approximate and should be refined with segmentation_tool.
