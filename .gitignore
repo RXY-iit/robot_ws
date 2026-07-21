@@ -32,6 +32,11 @@ __pycache__/
 .vscode/
 .idea/
 
+# Node / frontend build output (built via tools/build_dashboard_web.sh)
+node_modules/
+src/robot_agent/web/dist/
+*.tsbuildinfo
+
 # Large/local visualization state
 imgui.ini
 # map bundles are usually generated artifacts. Keep only selected reference maps.
@@ -44,3 +49,4 @@ models/
 omniverse_asset_packs/
 src/robot_sim/usd/scenes/real_lab/
 src/robot_sim/usd/scenes/robot_sim_real_lab.usd
+todo-my/
