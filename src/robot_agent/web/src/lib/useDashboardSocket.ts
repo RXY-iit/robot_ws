@@ -25,8 +25,7 @@ export interface DashboardData {
   liftState: string;
   sendCommand: (text: string) => void;
   sendCancel: () => void;
-  sendManualControl: (target: "chassis" | "camera" | "lift", value: Record<string, unknown>) => void;
-  sendManualControlStop: (target: "chassis" | "camera" | "lift") => void;
+  sendJoyState: (axes: number[], buttons: number[]) => void;
   sendJson: (message: Record<string, unknown>) => void;
 }
 
@@ -71,13 +70,8 @@ export function useDashboardSocket(): DashboardData {
 
   const sendCommand = useCallback((text: string) => sendJson({ type: "command", text }), [sendJson]);
   const sendCancel = useCallback(() => sendJson({ type: "cancel" }), [sendJson]);
-  const sendManualControl = useCallback(
-    (target: "chassis" | "camera" | "lift", value: Record<string, unknown>) =>
-      sendJson({ type: "manual_control", target, value, ts: Date.now() }),
-    [sendJson],
-  );
-  const sendManualControlStop = useCallback(
-    (target: "chassis" | "camera" | "lift") => sendJson({ type: "manual_control_stop", target }),
+  const sendJoyState = useCallback(
+    (axes: number[], buttons: number[]) => sendJson({ type: "joy_state", axes, buttons }),
     [sendJson],
   );
 
@@ -205,8 +199,7 @@ export function useDashboardSocket(): DashboardData {
     liftState,
     sendCommand,
     sendCancel,
-    sendManualControl,
-    sendManualControlStop,
+    sendJoyState,
     sendJson,
   };
 }

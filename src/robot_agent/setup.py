@@ -33,6 +33,7 @@ setup(
         ('share/' + package_name, ['package.xml']),
         (os.path.join('share', package_name, 'config'), glob('config/*.yaml')),
         (os.path.join('share', package_name, 'launch'), glob('launch/*.launch.py')),
+        (os.path.join('share', package_name, 'foxglove'), glob('foxglove/*.json')),
         *_web_dist_data_files(),
     ],
     install_requires=['setuptools'],

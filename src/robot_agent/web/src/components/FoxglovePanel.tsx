@@ -18,7 +18,7 @@ export function FoxglovePanel({ foxgloveUiPort, foxgloveBridgePort }: Props) {
       <iframe
         title="Foxglove"
         src={src}
-        style={{ width: "100%", height: 420, border: "1px solid var(--line)", borderRadius: 8 }}
+        style={{ width: "100%", flex: 1, minHeight: 600, border: "1px solid var(--line)", borderRadius: 8 }}
       />
     </>
   );

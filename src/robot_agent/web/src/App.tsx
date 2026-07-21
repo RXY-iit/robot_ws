@@ -57,17 +57,9 @@ export function App() {
       </header>
       <main>
         <section>
-          <CommandBox
-            value={commandText}
-            onChange={setCommandText}
-            onSend={sendCurrentCommand}
-            onCancel={data.sendCancel}
-            onQuickCommand={sendQuickCommand}
-            quickCommands={quickCommands}
-          />
-          <h2 style={{ marginTop: 18 }}>Robot Health</h2>
+          <h2>Robot Health</h2>
           <HealthPanel health={data.healthState} navigationProgress={data.navigationProgress} />
-          <h2 style={{ marginTop: 18 }}>ロボット状態</h2>
+          <h2 style={{ marginTop: 12 }}>ロボット状態</h2>
           <RobotStatusPanel
             robotMode={data.robotMode}
             safetyStatus={data.safetyStatus}
@@ -76,15 +68,6 @@ export function App() {
             agentStatus={data.agentStatus}
             humanPrompt={data.humanPrompt}
           />
-          <HumanChoices mission={data.missionState} onChoose={chooseHumanCommand} onCancel={data.sendCancel} />
-        </section>
-        <section>
-          {foxgloveConfig?.foxglove_ui_enabled && (
-            <FoxglovePanel
-              foxgloveUiPort={foxgloveConfig.foxglove_ui_port}
-              foxgloveBridgePort={foxgloveConfig.foxglove_bridge_port}
-            />
-          )}
           <MissionPanel
             mission={data.missionState}
             health={data.healthState}
@@ -94,6 +77,15 @@ export function App() {
             receivedPending={data.receivedPending}
             pendingCommandText={data.pendingCommandText}
           />
+          <EventTimeline events={data.eventsTimeline} />
+        </section>
+        <section>
+          {foxgloveConfig?.foxglove_ui_enabled && (
+            <FoxglovePanel
+              foxgloveUiPort={foxgloveConfig.foxglove_ui_port}
+              foxgloveBridgePort={foxgloveConfig.foxglove_bridge_port}
+            />
+          )}
         </section>
         <section>
           <ControlPanel
@@ -102,11 +94,20 @@ export function App() {
             cameraTiltAngle={data.cameraTiltAngle}
             liftPosition={data.liftPosition}
             liftState={data.liftState}
-            onManualControl={data.sendManualControl}
-            onManualControlStop={data.sendManualControlStop}
+            sendJoyState={data.sendJoyState}
             onCancel={data.sendCancel}
           />
-          <EventTimeline events={data.eventsTimeline} />
+          <div style={{ marginTop: 18 }}>
+            <CommandBox
+              value={commandText}
+              onChange={setCommandText}
+              onSend={sendCurrentCommand}
+              onCancel={data.sendCancel}
+              onQuickCommand={sendQuickCommand}
+              quickCommands={quickCommands}
+            />
+          </div>
+          <HumanChoices mission={data.missionState} onChoose={chooseHumanCommand} onCancel={data.sendCancel} />
         </section>
       </main>
     </>

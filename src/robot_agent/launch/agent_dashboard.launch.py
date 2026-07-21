@@ -1,3 +1,6 @@
+import os
+
+from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, ExecuteProcess, UnsetEnvironmentVariable
 from launch.conditions import IfCondition
@@ -6,6 +9,9 @@ from launch_ros.actions import Node
 
 
 def generate_launch_description():
+    default_layout_path = os.path.join(
+        get_package_share_directory("robot_agent"), "foxglove", "default-layout.json"
+    )
     mode = LaunchConfiguration("mode")
     dashboard_host = LaunchConfiguration("dashboard_host")
     dashboard_port = LaunchConfiguration("dashboard_port")
@@ -15,6 +21,7 @@ def generate_launch_description():
     camera_raw_topic = LaunchConfiguration("camera_raw_topic")
     enable_foxglove_ui = LaunchConfiguration("enable_foxglove_ui")
     foxglove_ui_port = LaunchConfiguration("foxglove_ui_port")
+    foxglove_ui_container_name = LaunchConfiguration("foxglove_ui_container_name")
 
     return LaunchDescription(
         [
@@ -36,6 +43,7 @@ def generate_launch_description():
             # would likely block framing.
             DeclareLaunchArgument("enable_foxglove_ui", default_value="true"),
             DeclareLaunchArgument("foxglove_ui_port", default_value="8080"),
+            DeclareLaunchArgument("foxglove_ui_container_name", default_value="robot_agent_lichtblick"),
             UnsetEnvironmentVariable("CYCLONEDDS_URI"),
             UnsetEnvironmentVariable("RMW_IMPLEMENTATION"),
             Node(
@@ -90,9 +98,11 @@ def generate_launch_description():
                     "run",
                     "--rm",
                     "--name",
-                    "robot_agent_lichtblick",
+                    foxglove_ui_container_name,
                     "-p",
                     [foxglove_ui_port, ":8080"],
+                    "-v",
+                    f"{default_layout_path}:/lichtblick/default-layout.json:ro",
                     "ghcr.io/lichtblick-suite/lichtblick:latest",
                 ],
                 output="screen",

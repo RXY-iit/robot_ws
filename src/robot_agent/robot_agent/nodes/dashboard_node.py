@@ -10,8 +10,8 @@ from pathlib import Path
 import rclpy
 from aiohttp import web, WSMsgType
 from ament_index_python.packages import PackageNotFoundError, get_package_share_directory
-from geometry_msgs.msg import Twist
 from rclpy.node import Node
+from sensor_msgs.msg import Joy
 from std_msgs.msg import Float32, String
 
 from robot_skills.semantic_map import SemanticMap
@@ -52,138 +52,94 @@ SUBSCRIBED_FLOAT_TOPICS = [
 ]
 
 
-# Manual-control button scale/step -- mirrors the existing joystick nodes exactly so
-# dashboard buttons feel the same as the Joy-Con:
-#   chassis:  src/robot_bringup/config/joy_teleop.yaml (scale_linear/scale_angular)
-#   camera:   serial_transciever/manipulator_control/camera_motor_joy_node.py
-CHASSIS_MAX_VX = 0.3
-CHASSIS_MAX_VY = 0.3
-CHASSIS_MAX_YAW = 0.5
-CAMERA_PAN_STEP_DEG = 2.5
-CAMERA_TILT_STEP_DEG = 5.0
-MANUAL_CONTROL_WATCHDOG_SEC = 0.3
+# Real Joy-Con / gamepad axis+button indices, taken directly from the existing
+# joystick-consumer nodes so the dashboard's virtual controller is interpreted
+# identically to a physical one -- see:
+#   src/robot_bringup/config/joy_teleop.yaml            (axes 0/1/3, teleop_twist_joy)
+#   src/serial_transciever/.../camera_motor_joy_node.py (axes 6/7, button 4)
+#   src/serial_transciever/.../lift_joy_node.py          (buttons 0/3/4)
+#   src/nav_pkg/scripts/nav_mode_switch_node.py          (buttons 0/1)
+#   src/safety_layer/safety_layer/cmd_vel_safety_node.py (button 3, ESTOP)
+JOY_AXIS_COUNT = 8
+JOY_BUTTON_COUNT = 8
+JOY_STATE_WATCHDOG_SEC = 0.3
+JOY_PUBLISH_PERIOD_SEC = 0.05  # 20Hz -- mirrors joy_node's continuous real-device stream
 
 
-def _clamp(value: float, limit: float) -> float:
-    return max(-limit, min(limit, value))
+class JoyManager:
+    """Publishes a synthetic sensor_msgs/Joy on /joy so the dashboard's manual
+    controls are interpreted by the *existing* joystick-consumer nodes
+    (teleop_twist_joy_node, nav_mode_switch_node, camera_motor_joy_node,
+    lift_joy_node, cmd_vel_safety_node's ESTOP button) instead of dashboard_node
+    reimplementing that logic itself. A real physical Joy-Con and the dashboard
+    can be used interchangeably, or even simultaneously -- both just publish to
+    /joy like any other input source.
 
+    This intentionally reproduces the real hardware's button overlap: button 3
+    (Y) is both lift-up (via lift_joy_node, when held with button 4/L1) AND the
+    cmd_vel_safety_node ESTOP toggle (rising edge, regardless of L1). That's not
+    a bug to fix here -- matching real Joy-Con behavior exactly is the point.
 
-class ManualControlManager:
-    """Owns the manual-control publishers and the heartbeat watchdog.
-
-    The browser sends a `manual_control` message at a fixed interval (~100ms) only
-    while a control button is held. If heartbeats for a given target (chassis/lift)
-    stop arriving -- released button, lost connection, frozen tab -- this class
-    force-publishes the stop state within MANUAL_CONTROL_WATCHDOG_SEC. This is a
-    UI-responsiveness safety net on top of, not instead of, cmd_vel_safety_node's
-    own 0.5s watchdog on /cmd_vel_raw.
-
-    Camera pan/tilt is target-angle based (not velocity), so releasing the button
-    simply stops incrementing the target -- no watchdog stop action needed there,
-    exactly like camera_motor_joy_node's own behavior.
+    Publishes continuously at JOY_PUBLISH_PERIOD_SEC regardless of activity
+    (including all-zero when idle), matching a real joystick driver. A
+    watchdog resets to neutral if the browser stops sending updates for
+    JOY_STATE_WATCHDOG_SEC (frozen tab, lost connection) -- a UI-responsiveness
+    safety net on top of, not instead of, cmd_vel_safety_node's own watchdog.
     """
 
     def __init__(self, node: Node):
         self._node = node
         self._lock = threading.Lock()
-        self._last_heartbeat: dict[str, float] = {}
-        self._chassis_active = False
-        self._lift_active = False
-        self._target_pan: float | None = None
-        self._target_tilt: float | None = None
-        self._current_pan: float | None = None
-        self._current_tilt: float | None = None
+        self._axes = [0.0] * JOY_AXIS_COUNT
+        self._buttons = [0] * JOY_BUTTON_COUNT
+        self._last_update = time.monotonic()
+        self._has_input = False
 
-        self._teleop_cmd_vel_pub = node.create_publisher(Twist, "/teleop/cmd_vel", 10)
-        self._nav_mode_pub = node.create_publisher(String, "/nav_mode/command", 10)
-        self._pan_pub = node.create_publisher(Float32, "/chokudomotor/target_angle", 10)
-        self._tilt_pub = node.create_publisher(Float32, "/cameraswingmotor/target_angle", 10)
-        self._lift_pub = node.create_publisher(String, "/lift/command", 10)
-
-        node.create_subscription(Float32, "/chokudomotor/angle", self._on_current_pan, 10)
-        node.create_subscription(Float32, "/cameraswingmotor/angle", self._on_current_tilt, 10)
-
+        self._joy_pub = node.create_publisher(Joy, "/joy", 10)
+        node.create_timer(JOY_PUBLISH_PERIOD_SEC, self._publish_tick)
         node.create_timer(0.1, self._watchdog_tick)
 
-    def _on_current_pan(self, msg: Float32):
+    def handle_joy_state(self, axes: list, buttons: list):
         with self._lock:
-            self._current_pan = float(msg.data)
-
-    def _on_current_tilt(self, msg: Float32):
-        with self._lock:
-            self._current_tilt = float(msg.data)
-
-    def handle_manual_control(self, target: str, value: dict):
-        now = time.monotonic()
-        with self._lock:
-            self._last_heartbeat[target] = now
-            if target == "chassis":
-                self._publish_chassis_locked(value)
-            elif target == "camera":
-                self._publish_camera_locked(value)
-            elif target == "lift":
-                direction = str(value.get("direction", "")).upper()
-                if direction in ("UP", "DOWN"):
-                    self._lift_active = True
-                    self._lift_pub.publish(String(data=direction))
-
-    def handle_manual_control_stop(self, target: str):
-        with self._lock:
-            self._last_heartbeat.pop(target, None)
-            self._stop_locked(target)
+            self._axes = self._sanitize(axes, JOY_AXIS_COUNT, float)
+            self._buttons = self._sanitize(buttons, JOY_BUTTON_COUNT, int)
+            self._last_update = time.monotonic()
+            self._has_input = any(self._axes) or any(self._buttons)
 
     def handle_disconnect(self):
         with self._lock:
-            for target in ("chassis", "lift"):
-                self._last_heartbeat.pop(target, None)
-                self._stop_locked(target)
+            self._reset_locked()
 
-    def _publish_chassis_locked(self, value: dict):
-        if not self._chassis_active:
-            self._nav_mode_pub.publish(String(data="MANUAL"))
-            self._chassis_active = True
-        vx = _clamp(float(value.get("vx", 0.0)), CHASSIS_MAX_VX)
-        vy = _clamp(float(value.get("vy", 0.0)), CHASSIS_MAX_VY)
-        yaw = _clamp(float(value.get("yaw", 0.0)), CHASSIS_MAX_YAW)
-        twist = Twist()
-        twist.linear.x = vx
-        twist.linear.y = vy
-        twist.angular.z = yaw
-        self._teleop_cmd_vel_pub.publish(twist)
+    @staticmethod
+    def _sanitize(values, size, cast):
+        out = [cast(0)] * size
+        for i, v in enumerate(values[:size]):
+            try:
+                out[i] = cast(v)
+            except (TypeError, ValueError):
+                pass
+        return out
 
-    def _publish_camera_locked(self, value: dict):
-        pan_dir = float(value.get("pan", 0.0))
-        tilt_dir = float(value.get("tilt", 0.0))
-        if pan_dir:
-            if self._target_pan is None:
-                self._target_pan = self._current_pan if self._current_pan is not None else 0.0
-            self._target_pan += pan_dir * CAMERA_PAN_STEP_DEG
-            self._pan_pub.publish(Float32(data=self._target_pan))
-        if tilt_dir:
-            if self._target_tilt is None:
-                self._target_tilt = self._current_tilt if self._current_tilt is not None else 0.0
-            self._target_tilt += tilt_dir * CAMERA_TILT_STEP_DEG
-            self._tilt_pub.publish(Float32(data=self._target_tilt))
-
-    def _stop_locked(self, target: str):
-        if target == "chassis" and self._chassis_active:
-            self._teleop_cmd_vel_pub.publish(Twist())
-            self._chassis_active = False
-        elif target == "lift" and self._lift_active:
-            self._lift_pub.publish(String(data="STOP"))
-            self._lift_active = False
+    def _reset_locked(self):
+        self._axes = [0.0] * JOY_AXIS_COUNT
+        self._buttons = [0] * JOY_BUTTON_COUNT
+        self._has_input = False
 
     def _watchdog_tick(self):
         now = time.monotonic()
         with self._lock:
-            stale = [
-                target
-                for target, last in self._last_heartbeat.items()
-                if now - last > MANUAL_CONTROL_WATCHDOG_SEC
-            ]
-            for target in stale:
-                del self._last_heartbeat[target]
-                self._stop_locked(target)
+            if self._has_input and now - self._last_update > JOY_STATE_WATCHDOG_SEC:
+                self._reset_locked()
+
+    def _publish_tick(self):
+        with self._lock:
+            axes = list(self._axes)
+            buttons = list(self._buttons)
+        msg = Joy()
+        msg.header.stamp = self._node.get_clock().now().to_msg()
+        msg.axes = [float(a) for a in axes]
+        msg.buttons = [int(b) for b in buttons]
+        self._joy_pub.publish(msg)
 
 
 class DashboardState:
@@ -194,7 +150,7 @@ class DashboardState:
         self.latest: dict[str, str] = {}
         self.command_pub = None
         self.cancel_pub = None
-        self.manual_control: ManualControlManager | None = None
+        self.joy_manager: JoyManager | None = None
         self.foxglove_bridge_port = 8766
         self.foxglove_ui_port = 8080
         self.foxglove_ui_enabled = True
@@ -329,20 +285,16 @@ def _build_app(state: DashboardState) -> web.Application:
                 elif msg_type == "cancel":
                     if state.cancel_pub is not None:
                         state.cancel_pub.publish(String(data="cancel"))
-                elif msg_type == "manual_control":
-                    target = str(payload.get("target", ""))
-                    value = payload.get("value") or {}
-                    if state.manual_control is not None and target in ("chassis", "camera", "lift"):
-                        state.manual_control.handle_manual_control(target, value)
-                elif msg_type == "manual_control_stop":
-                    target = str(payload.get("target", ""))
-                    if state.manual_control is not None and target in ("chassis", "camera", "lift"):
-                        state.manual_control.handle_manual_control_stop(target)
+                elif msg_type == "joy_state":
+                    axes = payload.get("axes") or []
+                    buttons = payload.get("buttons") or []
+                    if state.joy_manager is not None:
+                        state.joy_manager.handle_joy_state(axes, buttons)
         finally:
             with state.lock:
                 state.clients.discard(ws)
-            if state.manual_control is not None:
-                state.manual_control.handle_disconnect()
+            if state.joy_manager is not None:
+                state.joy_manager.handle_disconnect()
         return ws
 
     app.router.add_get("/", index)
@@ -364,7 +316,7 @@ class DashboardNode(Node):
         self.state = DashboardState()
         self.state.command_pub = self.create_publisher(String, "/agent/text_command", 10)
         self.state.cancel_pub = self.create_publisher(String, "/agent/cancel", 10)
-        self.state.manual_control = ManualControlManager(self)
+        self.state.joy_manager = JoyManager(self)
         self.state.foxglove_bridge_port = int(self.get_parameter("foxglove_bridge_port").value)
         self.state.foxglove_ui_port = int(self.get_parameter("foxglove_ui_port").value)
         self.state.foxglove_ui_enabled = bool(self.get_parameter("foxglove_ui_enabled").value)

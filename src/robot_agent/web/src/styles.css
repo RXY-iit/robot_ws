@@ -35,10 +35,10 @@ h1 {
 }
 main {
   display: grid;
-  grid-template-columns: 340px minmax(520px, 1fr) 380px;
+  grid-template-columns: 400px minmax(460px, 1fr) 380px;
   gap: 12px;
   padding: 12px;
-  min-height: calc(100vh - 56px);
+  height: calc(100vh - 56px);
 }
 section {
   background: var(--panel);
@@ -46,6 +46,9 @@ section {
   border-radius: 8px;
   padding: 12px;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
 }
 h2 {
   margin: 0 0 10px;
@@ -154,16 +157,16 @@ button.secondary {
 }
 .summary {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 8px;
-  margin-bottom: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  margin-bottom: 10px;
 }
 .summary-card,
 .block {
   border: 1px solid var(--line);
   border-radius: 8px;
   background: #fbfcfe;
-  padding: 10px;
+  padding: 8px;
 }
 .summary-card strong {
   display: block;
@@ -180,16 +183,16 @@ button.secondary {
 }
 .health-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
-  margin: 8px 0 14px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  margin: 8px 0 12px;
 }
 .health-card {
   border: 1px solid var(--line);
   border-radius: 8px;
   background: #fbfcfe;
-  padding: 10px;
-  min-height: 72px;
+  padding: 6px 8px;
+  min-height: 56px;
 }
 .health-card strong {
   display: flex;
@@ -228,12 +231,12 @@ button.secondary {
 }
 .block-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
-  margin-bottom: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  margin-bottom: 10px;
 }
 .block {
-  min-height: 84px;
+  min-height: 60px;
   transition:
     background 120ms ease,
     border-color 120ms ease;
@@ -352,9 +355,109 @@ pre {
   color: #26323f;
   font-size: 12px;
 }
+.gamepad {
+  position: relative;
+  background: #f4f4f0;
+  border: 1px solid var(--line);
+  border-radius: 999px / 60%;
+  padding: 18px 16px;
+  display: grid;
+  grid-template-columns: 1fr 0.8fr 1fr;
+  grid-template-areas:
+    "shoulderL center shoulderR"
+    "dpad center face"
+    "stickL center stickR";
+  row-gap: 10px;
+  align-items: center;
+}
+.gamepad-shoulder {
+  grid-area: shoulderL;
+  justify-self: start;
+}
+.gamepad-shoulder.right {
+  grid-area: shoulderR;
+  justify-self: end;
+}
+.gamepad-dpad {
+  grid-area: dpad;
+  justify-self: center;
+  display: grid;
+  grid-template-columns: repeat(3, 34px);
+  grid-template-rows: repeat(3, 34px);
+  gap: 2px;
+}
+.gamepad-dpad .up { grid-column: 2; grid-row: 1; }
+.gamepad-dpad .left { grid-column: 1; grid-row: 2; }
+.gamepad-dpad .right { grid-column: 3; grid-row: 2; }
+.gamepad-dpad .down { grid-column: 2; grid-row: 3; }
+.gamepad-face {
+  grid-area: face;
+  justify-self: center;
+  display: grid;
+  grid-template-columns: repeat(3, 34px);
+  grid-template-rows: repeat(3, 34px);
+  gap: 2px;
+}
+.gamepad-face .btn-y { grid-column: 2; grid-row: 1; }
+.gamepad-face .btn-x { grid-column: 1; grid-row: 2; }
+.gamepad-face .btn-b { grid-column: 3; grid-row: 2; }
+.gamepad-face .btn-a { grid-column: 2; grid-row: 3; }
+.gamepad-stick {
+  display: grid;
+  grid-template-columns: repeat(3, 30px);
+  grid-template-rows: repeat(3, 30px);
+  gap: 2px;
+  border-radius: 50%;
+  background: #eaeae4;
+  padding: 8px;
+}
+.gamepad-stick.left { grid-area: stickL; justify-self: start; }
+.gamepad-stick.right { grid-area: stickR; justify-self: end; }
+.gamepad-stick .up { grid-column: 2; grid-row: 1; }
+.gamepad-stick .left { grid-column: 1; grid-row: 2; }
+.gamepad-stick .right { grid-column: 3; grid-row: 2; }
+.gamepad-stick .down { grid-column: 2; grid-row: 3; }
+.gamepad-stick .center-label {
+  grid-column: 2;
+  grid-row: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 800;
+  color: var(--muted);
+}
+.gamepad-center {
+  grid-area: center;
+  justify-self: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.gamepad button.round {
+  border-radius: 50%;
+  padding: 0;
+  min-height: 0;
+  height: 30px;
+  width: 30px;
+  font-size: 11px;
+  line-height: 1;
+}
+.gamepad button.round.small {
+  height: 26px;
+  width: 26px;
+}
+
 @media (max-width: 1100px) {
   main {
     grid-template-columns: 1fr;
+    height: auto;
+  }
+  section {
+    overflow-y: visible;
   }
   .summary,
   .block-grid,
