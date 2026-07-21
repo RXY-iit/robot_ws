@@ -5,8 +5,6 @@ import urllib.error
 import urllib.request
 from typing import Any
 
-from robot_agent.schemas import MissionIntent
-
 
 class LlamaCppParser:
     def __init__(
@@ -14,52 +12,79 @@ class LlamaCppParser:
         endpoint: str = "http://127.0.0.1:8080/v1/chat/completions",
         model: str = "local-qwen-parser",
         timeout_sec: float = 2.0,
+        command_reference: str = "",
     ):
         self.endpoint = endpoint
         self.model = model
         self.timeout_sec = timeout_sec
+        self.command_reference = command_reference
         self.last_error: str | None = None
 
-    def parse(self, text: str) -> MissionIntent:
+    def parse_candidates(self, text: str) -> tuple[list[dict[str, Any]], str | None]:
+        """Last-resort layer (2026-07-13 redesign): never returns a single
+        confident intent. Always returns a ranked list of up to 3 candidate
+        interpretations (each a plain dict: task_type/target/object_query/
+        constraints/label) for HybridParser to present as an ask_human choice
+        list alongside a cancel option -- or an empty list plus an error
+        string if the endpoint/response itself failed, so the caller can still
+        degrade to a cancel-only prompt instead of raising.
+        """
         self.last_error = None
-        prompt = self._prompt(text)
-        request = urllib.request.Request(
-            self.endpoint,
-            data=json.dumps(
-                {
-                    "model": self.model,
-                    "temperature": 0,
-                    "response_format": {"type": "json_object"},
-                    "messages": [
-                        {
-                            "role": "system",
-                            "content": (
-                                "You are a robot command parser. Output one JSON object only. "
-                                "Do not apologize. Do not chat. Do not explain. "
-                                "Never output ROS topics, coordinates, velocity commands, or prose."
-                            ),
-                        },
-                        {"role": "user", "content": prompt},
-                    ],
-                },
-                ensure_ascii=False,
-            ).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=self.timeout_sec) as response:
-                data = json.loads(response.read().decode("utf-8"))
-        except (TimeoutError, urllib.error.URLError, json.JSONDecodeError, OSError) as exc:
-            self.last_error = repr(exc)
-            return MissionIntent(task_type="ask_human", raw_text=text)
+        prompt = self._candidates_prompt(text)
+        body = json.dumps(
+            {
+                "model": self.model,
+                "temperature": 0,
+                "response_format": {"type": "json_object"},
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are a robot command parser's last-resort fallback. Output one "
+                            "JSON object only. Do not apologize. Do not chat. Do not explain. "
+                            "Never output ROS topics, coordinates, velocity commands, or prose."
+                        ),
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+            },
+            ensure_ascii=False,
+        ).encode("utf-8")
 
-        content = self._extract_content(data)
-        parsed = self._parse_json_object(content)
-        if not parsed:
-            self.last_error = "llama_cpp_response_not_json"
-            return MissionIntent(task_type="ask_human", raw_text=text)
-        return self._intent_from_dict(parsed, text)
+        # Found 2026-07-13 against a real llama.cpp server: this prompt's huge
+        # shared prefix (the command_reference block) with only a short
+        # varying "Command: ..." tail occasionally hits a prompt-cache-reuse
+        # glitch in llama.cpp -- despite temperature=0, a request can come back
+        # as a bare "{}" instead of the real completion. Disabling cache_prompt
+        # avoids the glitch but forces a full ~1100-token cold prompt eval on
+        # every call (~10x slower, often exceeding timeout_sec on its own), so
+        # that trade is worse than the glitch. A single retry on a JSON-shaped-
+        # but-empty/invalid response is cheap and reliably recovers (the retry
+        # lands on a fresh generation, not the corrupted cache continuation).
+        last_exc: str | None = None
+        for attempt in range(2):
+            request = urllib.request.Request(
+                self.endpoint,
+                data=body,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=self.timeout_sec) as response:
+                    data = json.loads(response.read().decode("utf-8"))
+            except (TimeoutError, urllib.error.URLError, json.JSONDecodeError, OSError) as exc:
+                last_exc = repr(exc)
+                continue
+
+            content = self._extract_content(data)
+            parsed = self._parse_json_object(content)
+            candidates = self._candidates_from_dict(parsed) if parsed else []
+            if candidates:
+                return candidates, None
+            last_exc = "llama_cpp_response_not_json_or_empty"
+
+        self.last_error = last_exc
+        return [], self.last_error
 
     def choose_tolerance_profile(
         self,
@@ -76,6 +101,7 @@ class LlamaCppParser:
                     "model": self.model,
                     "temperature": 0,
                     "response_format": {"type": "json_object"},
+                    "cache_prompt": False,
                     "messages": [
                         {
                             "role": "system",
@@ -121,46 +147,57 @@ class LlamaCppParser:
             return None
         return {"profile": profile, "reason": str(parsed.get("reason") or "llm_selected")}
 
-    @staticmethod
-    def _prompt(text: str) -> str:
+    def _candidates_prompt(self, text: str) -> str:
         schema = {
-            "task_type": "navigate_to_object | navigate_to_place | search_object_near_place | search_object_here | inspect_place | look_direction | robot_status | list_known_targets | cancel | move_lift_bounded | move_relative | move_relative_xy | rotate_relative | ask_human",
-            "target": "natural language target or null",
-            "relation": "near | front | null",
-            "object_query": "typed perception query such as shelf_label_06, text_BOX, object_box, color_red, red_box, or null",
-            "constraints": {"direction": "UP/DOWN or forward/back/left/right", "distance_m": 0.05, "dx_m": 0.0, "dy_m": 0.0, "yaw_deg": 90, "band": "middle"},
-            "requires_confirmation": False,
+            "candidates": [
+                {
+                    "task_type": "one of the allowed task_types below",
+                    "target": "natural language place/object name, or null",
+                    "object_query": "raw perception phrase (never pre-typed like red_box), or null",
+                    "constraints": {"direction": "...", "distance_m": 0.0, "dx_m": 0.0, "dy_m": 0.0, "yaw_deg": 0, "band": "middle"},
+                    "label": "short human-readable description of this guess, for a person to pick from",
+                }
+            ]
         }
+        reference = self.command_reference or "(no command reference available)"
         return (
-            "Parse the command into Robot MissionIntent JSON.\n"
-            "Allowed task_type values: navigate_to_object, navigate_to_place, "
-            "search_object_near_place, search_object_here, inspect_place, robot_status, list_known_targets, "
-            "cancel, move_lift_bounded, move_relative, move_relative_xy, rotate_relative, look_direction, ask_human.\n"
+            "A regex-based deterministic parser and a semantic-similarity matcher both already "
+            "failed to confidently understand the command below. You are the last-resort fallback. "
+            "A human will be shown your candidates and will pick one (or cancel) next -- so you must "
+            "always propose your best guesses, even under uncertainty. Never refuse, never ask a "
+            "clarifying question back, never explain yourself outside the JSON.\n\n"
+            "Allowed task_type values: navigate_to_object, navigate_to_place, search_object_near_place, "
+            "search_object_here, inspect_place, robot_status, list_known_targets, cancel, "
+            "move_lift_bounded, move_relative, move_relative_xy, rotate_relative, look_direction.\n\n"
+            f"The robot's actual supported command vocabulary (grounded reference, do not invent "
+            f"commands outside this set):\n{reference}\n\n"
             "Rules:\n"
-            "- Return JSON only.\n"
-            "- Unknown target names must stay as natural-language aliases; semantic resolution happens later.\n"
-            "- relation must be exactly one of: near, front, null. Use near for around / nearby.\n"
-            "- If the command asks to go/check/find near a place, use search_object_near_place when an object is requested.\n"
-            "- If the command asks whether an object is visible here with no place target, use search_object_here.\n"
-            "- Perception object_query must be typed when possible: shelf_label_06 for shelf labels, text_BOX for exact OCR text, object_box for YOLO object, color_red for color, red_box for color+object.\n"
-            "- Bare commands like check 6 or check A are ambiguous; use ask_human.\n"
-            "- For lift commands, prefer distance_m over duration_sec. 10cm means 0.10, 少し means 0.05, 大きく means 0.15.\n"
-            "- For relative base motion, use move_relative with direction forward/back/left/right and distance_m.\n"
-            "- For diagonal relative motion, use move_relative_xy with dx_m and dy_m in the robot base frame.\n"
-            "- For turning in place, use rotate_relative with yaw_deg.\n"
-            "- For look left/right/front/up/down commands, use look_direction. It moves only the camera, not the base.\n"
-            "- Do not say you cannot access the outside world. You are only parsing text.\n"
-            "- If truly ambiguous, use task_type ask_human.\n"
+            "- Return JSON only, shaped exactly like the schema below.\n"
+            "- \"candidates\" is a list of at most 3 items, ranked most-likely first.\n"
+            "- Do not include task_type ask_human or cancel as a candidate -- cancel is always offered "
+            "separately by the system, and refusing to guess defeats the point of this fallback.\n"
+            "- object_query must be the raw phrase taken from the command (e.g. \"red box\", \"赤い箱\"), "
+            "never a pre-typed token like red_box or object_box -- a separate perception module "
+            "classifies the raw phrase later.\n"
+            "- target is a natural-language place/object name; do not resolve it to a map ID.\n"
+            "- label is a short sentence describing what this candidate would actually do.\n"
+            "- If you can only think of one plausible interpretation, return just one candidate; do "
+            "not pad the list with unrelated guesses.\n"
+            "- For lift commands, prefer distance_m over duration_sec. 10cm means 0.10, 少し/a little "
+            "means 0.05, 大きく/a lot means 0.15.\n"
+            "- For relative base motion, use move_relative with direction forward/back/left/right and "
+            "distance_m; for diagonal motion use move_relative_xy with dx_m/dy_m; for turning in place "
+            "use rotate_relative with yaw_deg; for look left/right/front/up/down (camera only, not the "
+            "base) use look_direction with direction and band.\n"
+            "- rotate_relative sign convention: yaw_deg is POSITIVE for a LEFT/counter-clockwise turn "
+            "and NEGATIVE for a RIGHT/clockwise turn (e.g. \"turn right 90\" -> yaw_deg: -90, \"turn "
+            "left 45\" -> yaw_deg: 45). Do not include a separate \"direction\" field for "
+            "rotate_relative -- the sign of yaw_deg already encodes it.\n"
             f"Required shape: {json.dumps(schema, ensure_ascii=False)}\n"
             "Examples:\n"
-            '{"task_type":"search_object_near_place","target":"06棚","relation":"near","object_query":"shelf_label_06","constraints":{},"requires_confirmation":false}\n'
-            '{"task_type":"search_object_here","target":null,"relation":"near","object_query":"object_car","constraints":{},"requires_confirmation":false}\n'
-            '{"task_type":"move_lift_bounded","target":null,"relation":null,"object_query":null,"constraints":{"direction":"UP","distance_m":0.10},"requires_confirmation":false}\n'
-            '{"task_type":"move_relative","target":null,"relation":null,"object_query":null,"constraints":{"direction":"forward","distance_m":1.0},"requires_confirmation":false}\n'
-            '{"task_type":"move_relative_xy","target":null,"relation":null,"object_query":null,"constraints":{"dx_m":0.2,"dy_m":0.2},"requires_confirmation":false}\n'
-            '{"task_type":"rotate_relative","target":null,"relation":null,"object_query":null,"constraints":{"yaw_deg":180},"requires_confirmation":false}\n'
-            '{"task_type":"look_direction","target":null,"relation":null,"object_query":null,"constraints":{"direction":"left","band":"middle"},"requires_confirmation":false}\n'
-            '{"task_type":"robot_status","target":null,"relation":null,"object_query":null,"constraints":{},"requires_confirmation":false}\n'
+            '{"candidates":[{"task_type":"robot_status","target":null,"object_query":null,"constraints":{},"label":"Report the robot\'s current status"},{"task_type":"list_known_targets","target":null,"object_query":null,"constraints":{},"label":"List the places the robot knows"}]}\n'
+            '{"candidates":[{"task_type":"navigate_to_place","target":"home","object_query":null,"constraints":{},"label":"Return to home"}]}\n'
+            '{"candidates":[{"task_type":"search_object_here","target":null,"object_query":"red box","constraints":{},"label":"Look for a red box in the current view"},{"task_type":"inspect_place","target":"front door","object_query":null,"constraints":{},"label":"Go inspect the front door"}]}\n'
             f"Command: {text}\n"
             "JSON:"
         )
@@ -193,7 +230,7 @@ class LlamaCppParser:
         return data if isinstance(data, dict) else None
 
     @staticmethod
-    def _intent_from_dict(data: dict[str, Any], raw_text: str) -> MissionIntent:
+    def _candidates_from_dict(data: dict[str, Any]) -> list[dict[str, Any]]:
         allowed = {
             "navigate_to_object",
             "navigate_to_place",
@@ -208,21 +245,26 @@ class LlamaCppParser:
             "move_relative_xy",
             "rotate_relative",
             "look_direction",
-            "ask_human",
         }
-        task_type = str(data.get("task_type") or "ask_human")
-        if task_type not in allowed:
-            task_type = "ask_human"
-        constraints = data.get("constraints") if isinstance(data.get("constraints"), dict) else {}
-        relation = data.get("relation") or "near"
-        if relation not in {"near", "front", None}:
-            relation = "near"
-        return MissionIntent(
-            task_type=task_type,
-            target=data.get("target"),
-            relation=relation,
-            object_query=data.get("object_query"),
-            constraints=constraints,
-            requires_confirmation=bool(data.get("requires_confirmation", False)),
-            raw_text=raw_text,
-        )
+        raw_candidates = data.get("candidates")
+        if not isinstance(raw_candidates, list):
+            return []
+        candidates: list[dict[str, Any]] = []
+        for item in raw_candidates[:3]:
+            if not isinstance(item, dict):
+                continue
+            task_type = str(item.get("task_type") or "").strip()
+            if task_type not in allowed:
+                continue
+            constraints = item.get("constraints") if isinstance(item.get("constraints"), dict) else {}
+            label = str(item.get("label") or "").strip() or task_type
+            candidates.append(
+                {
+                    "task_type": task_type,
+                    "target": item.get("target") or None,
+                    "object_query": item.get("object_query") or None,
+                    "constraints": constraints,
+                    "label": label,
+                }
+            )
+        return candidates

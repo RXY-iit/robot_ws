@@ -32,6 +32,7 @@ class HybridParser:
             endpoint=str(llama_cfg.get("endpoint", "http://127.0.0.1:8080/v1/chat/completions")),
             model=str(llama_cfg.get("model", "local-qwen-parser")),
             timeout_sec=float(llama_cfg.get("timeout_sec", 2.0)),
+            command_reference=self._build_command_reference(self.parser_templates.get("templates", [])),
         )
         self.last_metrics: dict[str, Any] = {}
 
@@ -110,53 +111,106 @@ class HybridParser:
         }
         if embedding_accepts:
             return embedded
-        if metrics.get("ambiguous") or metrics.get("needs_clarification"):
-            return MissionIntent(
-                task_type="ask_human",
-                raw_text=text,
-                requires_confirmation=True,
-                constraints={
-                    "ambiguity": {
-                        "reason": "embedding_multiple_candidates",
-                        "choices": metrics.get("top_matches", []),
-                    }
-                },
-            )
 
-        if metrics.get("needs_fallback", True) or slot_metrics.get("needs_fallback"):
-            fallback = self.llama.parse(text)
-            fallback, fallback_slot_metrics = self._postprocess_slots(fallback, text)
-            ambiguity = self._validate_llm_intent(fallback, text)
-            if ambiguity:
-                fallback = MissionIntent(
-                    task_type="ask_human",
-                    raw_text=text,
-                    requires_confirmation=True,
-                    constraints={"ambiguity": ambiguity},
-                )
-            route_steps.append(
-                {
-                    "layer": "LLM Fallback",
-                    "status": "accepted" if fallback.task_type != "ask_human" else "rejected",
-                    "task_type": fallback.task_type,
-                    "model": self.llama.model,
-                    "endpoint": self.llama.endpoint,
-                    "error": self.llama.last_error,
-                    **fallback_slot_metrics,
-                }
-            )
-            self.last_metrics = {
-                **metrics,
-                **fallback_slot_metrics,
-                "fallback": "llama_cpp",
-                "fallback_task_type": fallback.task_type,
-                "llama_cpp_endpoint": self.llama.endpoint,
-                "llama_cpp_error": self.llama.last_error,
-                "accepted_layer": "LLM Fallback" if fallback.task_type != "ask_human" else None,
-                "route_steps": route_steps,
+        # Neither Deterministic nor Embedding may dead-end the pipeline at
+        # ask_human on their own (2026-07-13 design change): whatever the
+        # reason Embedding didn't accept -- a genuine tie (ambiguous), a score
+        # that only cleared clarify_threshold, or a plain low/no match -- the
+        # command always continues on to the LLM layer, which is now the sole
+        # place that produces the final ask_human result (always as top-3
+        # candidates + a cancel choice, never a bare unexplained ask_human).
+        candidates, llm_error = self.llama.parse_candidates(text)
+        choices = self._build_llm_choices(candidates)
+        ambiguity = {
+            "reason": "llm_unreachable" if llm_error else "llm_fallback_candidates",
+            "choices": choices,
+            "embedding_top_matches": metrics.get("top_matches", []),
+        }
+        route_steps.append(
+            {
+                "layer": "LLM Fallback",
+                "status": "needs_human",
+                "reason": ambiguity["reason"],
+                "candidate_count": len(candidates),
+                "model": self.llama.model,
+                "endpoint": self.llama.endpoint,
+                "error": llm_error,
+                "choices": choices,
             }
-            return fallback
-        return embedded
+        )
+        self.last_metrics = {
+            **metrics,
+            "fallback": "llama_cpp",
+            "llama_cpp_endpoint": self.llama.endpoint,
+            "llama_cpp_error": llm_error,
+            "accepted_layer": None,
+            "route_steps": route_steps,
+            "ambiguity": ambiguity,
+        }
+        return MissionIntent(
+            task_type="ask_human",
+            raw_text=text,
+            requires_confirmation=True,
+            constraints={"ambiguity": ambiguity},
+        )
+
+    @staticmethod
+    def _build_llm_choices(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Always shaped like the Ambiguity Gate / Embedding-ambiguous choices
+        (label/command/intent) so the dry-run matrix and viewer render them
+        with the same machinery, no matter which layer produced them. Cancel
+        is appended unconditionally -- even if the LLM produced zero usable
+        candidates (or the endpoint errored out) -- so an ask_human result
+        from this layer always gives the human at least one way out.
+        """
+        choices: list[dict[str, Any]] = []
+        for candidate in candidates[:3]:
+            task_type = candidate.get("task_type") or "ask_human"
+            intent: dict[str, Any] = {"task_type": task_type}
+            if candidate.get("target"):
+                intent["target"] = candidate["target"]
+            if candidate.get("object_query"):
+                intent["object_query"] = candidate["object_query"]
+            if candidate.get("constraints"):
+                intent["constraints"] = candidate["constraints"]
+            label = candidate.get("label") or task_type
+            choices.append({"label": label, "command": label, "intent": intent})
+        choices.append({"label": "キャンセル / Cancel", "command": "cancel", "intent": {"task_type": "cancel"}})
+        return choices
+
+    @staticmethod
+    def _build_command_reference(templates: list[dict[str, Any]]) -> str:
+        """Compact, always-in-sync summary of the Deterministic/Embedding
+        command vocabulary (built straight from parser_templates.yaml), fed
+        into the LLM Fallback prompt so it grounds its guesses in commands the
+        rest of the system actually understands, instead of inventing shapes.
+        """
+        slot_hint = {
+            "navigate_to_object": "target=<object name>",
+            "navigate_to_place": "target=<place name>",
+            "search_object_near_place": "target=<shelf/place>, object_query=<raw phrase>",
+            "search_object_here": "object_query=<raw phrase>",
+            "inspect_place": "target=<place name>",
+            "move_relative": "constraints={direction, distance_m}",
+            "move_relative_xy": "constraints={dx_m, dy_m}",
+            "rotate_relative": "constraints={yaw_deg}",
+            "look_direction": "constraints={direction, band}",
+            "move_lift_bounded": "constraints={direction, distance_m}",
+        }
+        lines: list[str] = []
+        for item in templates:
+            task_type = str((item.get("intent") or {}).get("task_type") or "")
+            if not task_type:
+                continue
+            examples = [str(example) for example in (item.get("examples") or [])][:2]
+            hint = slot_hint.get(task_type)
+            prefix = f"- {task_type} ({hint})" if hint else f"- {task_type}"
+            if examples:
+                example_text = "; ".join(f'"{example}"' for example in examples)
+                lines.append(f"{prefix}: e.g. {example_text}")
+            else:
+                lines.append(prefix)
+        return "\n".join(lines)
 
     @staticmethod
     def _postprocess_slots(intent: MissionIntent, raw_text: str) -> tuple[MissionIntent, dict[str, Any]]:
@@ -205,8 +259,8 @@ class HybridParser:
     def _normalize_perception_query(query: str | None) -> str | None:
         """Only guards the genuinely ambiguous case -- a bare single digit or
         single character (those get a real disambiguation prompt from
-        _detect_command_ambiguity/_validate_llm_intent instead of silently
-        becoming an object query) -- plus empty strings. The actual
+        _detect_command_ambiguity instead of silently becoming an object
+        query) -- plus empty strings. The actual
         color/object/text decomposition is PerceptionSkills' job; duplicating
         it here as an allowlist is exactly what caused "red_box"/"object_car"
         to be rejected before just because a regex here didn't recognize the
@@ -273,16 +327,6 @@ class HybridParser:
                     },
                 ],
             }
-        return None
-
-    @staticmethod
-    def _validate_llm_intent(intent: MissionIntent, raw_text: str) -> dict[str, Any] | None:
-        if intent.task_type in {"search_object_here", "search_object_near_place"}:
-            query = str(intent.object_query or "").strip()
-            if re.fullmatch(r"0?[1-6]", query):
-                return HybridParser._detect_command_ambiguity(f"check {query}")
-            if re.fullmatch(r"[A-Za-z0-9]", query):
-                return HybridParser._detect_command_ambiguity(f"check {query}")
         return None
 
     @staticmethod

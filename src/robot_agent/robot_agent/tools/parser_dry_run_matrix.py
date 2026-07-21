@@ -50,20 +50,24 @@ FLOAT_TOLERANCE = 1e-6
 
 
 def classify_layer(last_metrics: dict[str, Any]) -> str:
-    """Map HybridParser.last_metrics to one of the six pipeline states this
-    harness distinguishes. accepted_layer alone collapses "ended at Embedding
-    without accepting" (Ambiguous/Clarify) and "ended at LLM Fallback without
-    accepting" (Rejected) into the same None, so route_steps is needed to tell
-    them apart.
+    """Map HybridParser.last_metrics to one of the five pipeline states this
+    harness distinguishes. Since the 2026-07-13 redesign, LLM Fallback never
+    "accepts" a bare intent any more -- it always resolves to ask_human with
+    top-3 candidates + cancel -- so accepted_layer alone can't tell "reached
+    LLM Fallback and got candidates" apart from "reached LLM Fallback and the
+    endpoint errored out"; route_steps is needed to detect that the LLM layer
+    was reached at all (both outcomes are classified as "LLM Fallback" here --
+    evaluate_row's SKIPPED handling separately distinguishes the error case via
+    llm_step.get("error"), so this function doesn't need to).
     """
     accepted = last_metrics.get("accepted_layer")
-    if accepted in ("Deterministic", "Embedding", "LLM Fallback"):
+    if accepted in ("Deterministic", "Embedding"):
         return accepted
     if last_metrics.get("source") == "ambiguity_gate":
         return "Ambiguity Gate"
     route_steps = last_metrics.get("route_steps", [])
     if any(step.get("layer") == "LLM Fallback" for step in route_steps):
-        return "Rejected"
+        return "LLM Fallback"
     return "Embedding Ambiguous"
 
 
@@ -163,14 +167,22 @@ def evaluate_row(row: dict[str, str], parser: HybridParser) -> dict[str, Any]:
     layer_match = (not expected_layer) or (actual_layer == expected_layer)
     task_type_match = (not expected_task_type) or (intent.task_type == expected_task_type)
 
-    # LLM Fallback wording is not template-locked, so target/object_query are
-    # recorded for review but do not gate pass/fail for that layer.
+    # LLM Fallback's top-level intent is always a bare ask_human wrapper --
+    # target/object_query/constraints all live inside its choices instead, so
+    # none of them are ever populated on intent itself. Any expected value
+    # for those three fields is recorded for manual review but never gates
+    # pass/fail for that layer (previously only target/object_query got this
+    # treatment; constraints being left out was a real gap -- a handful of
+    # LLM-Fallback-tier rows with an expected_constraints hint were failing
+    # for a structural reason that had nothing to do with actual quality).
     soft_fields = expected_layer == "LLM Fallback"
     target_match = True if (not expected_target or soft_fields) else (intent.target == expected_target)
     object_query_match = (
         True if (not expected_object_query or soft_fields) else (intent.object_query == expected_object_query)
     )
-    constraints_match = constraints_subset_match(expected_constraints, intent.constraints or {})
+    constraints_match = (
+        True if soft_fields else constraints_subset_match(expected_constraints, intent.constraints or {})
+    )
 
     # ask_human intents (Ambiguity Gate / Embedding Ambiguous / LLM-validated
     # ambiguity) are supposed to carry a "choices" list the human can pick
@@ -194,18 +206,46 @@ def evaluate_row(row: dict[str, str], parser: HybridParser) -> dict[str, Any]:
         True if not expected_choice_task_types else (expected_choice_task_types == set(actual_choice_task_types))
     )
 
-    hard_checks = [layer_match, task_type_match, constraints_match]
+    hard_checks = [("layer", layer_match), ("task_type", task_type_match), ("constraints", constraints_match)]
     if expected_target and not soft_fields:
-        hard_checks.append(target_match)
+        hard_checks.append(("target", target_match))
     if expected_object_query and not soft_fields:
-        hard_checks.append(object_query_match)
+        hard_checks.append(("object_query", object_query_match))
     if expected_ambiguity_reason:
-        hard_checks.append(ambiguity_reason_match)
+        hard_checks.append(("ambiguity_reason", ambiguity_reason_match))
     if expected_choice_count_raw:
-        hard_checks.append(choice_count_match)
+        hard_checks.append(("choice_count", choice_count_match))
     if expected_choice_task_types and choice_task_types_hard:
-        hard_checks.append(choice_task_types_match)
-    overall_pass = "PASS" if all(hard_checks) else "FAIL"
+        hard_checks.append(("choice_task_types", choice_task_types_match))
+
+    if all(v for _, v in hard_checks):
+        overall_pass = "PASS"
+    elif (
+        expected_layer in ("Embedding", "LLM Fallback")
+        and actual_layer in ("Embedding", "LLM Fallback")
+        and not layer_match
+    ):
+        # Landed on the *other* soft-tier layer than hypothesized. task_type,
+        # target, object_query, and constraints necessarily differ in this
+        # case purely because each layer shapes the intent differently
+        # (Embedding: the intent carries a real task_type/target/constraints
+        # directly; LLM Fallback: the intent is always ask_human, with the
+        # real content living inside its choices instead) -- that's a
+        # mechanical side effect of the layer miss, not an independent
+        # defect, so none of those four gate the outcome here. This is
+        # exactly the calibration signal this kind of dry run is for, so
+        # it's downgraded to WARNING rather than FAIL. ambiguity_reason /
+        # choice_count / choice_task_types (the ask_human CONTENT itself)
+        # still gate it when hard-checked, since a bad choice list is a real
+        # quality problem regardless of which layer produced it. Deterministic
+        # and the Ambiguity Gate are excluded entirely: they're supposed to be
+        # fully reliable, so any mismatch landing there (or landing away from
+        # an expectation of one) is a real bug, not calibration noise.
+        calibration_exempt = {"layer", "task_type", "target", "object_query", "constraints"}
+        failing = {name for name, v in hard_checks if not v}
+        overall_pass = "WARNING" if not (failing - calibration_exempt) else "FAIL"
+    else:
+        overall_pass = "FAIL"
     if llm_unreachable and expected_layer == "LLM Fallback":
         overall_pass = "SKIPPED"
 
@@ -253,6 +293,7 @@ def write_results(path: str, results: list[dict[str, Any]]) -> None:
 
 def print_summary(results: list[dict[str, Any]], require_llm: bool) -> bool:
     total = len(results)
+    outcomes = ("PASS", "WARNING", "FAIL", "SKIPPED")
     by_outcome: dict[str, int] = {}
     for row in results:
         outcome = row["overall_pass"]
@@ -262,25 +303,44 @@ def print_summary(results: list[dict[str, Any]], require_llm: bool) -> bool:
         by_outcome[outcome] = by_outcome.get(outcome, 0) + 1
 
     print(f"\n=== Parser Dry-Run Matrix: {total} cases ===")
-    print(f"PASS={by_outcome.get('PASS', 0)} FAIL={by_outcome.get('FAIL', 0)} SKIPPED={by_outcome.get('SKIPPED', 0)}")
+    print(
+        f"PASS={by_outcome.get('PASS', 0)} WARNING={by_outcome.get('WARNING', 0)} "
+        f"FAIL={by_outcome.get('FAIL', 0)} SKIPPED={by_outcome.get('SKIPPED', 0)}"
+    )
 
     print("\n-- by expected_layer --")
     layer_stats: dict[str, dict[str, int]] = {}
     for row in results:
         layer = row.get("expected_layer") or "(unspecified)"
-        layer_stats.setdefault(layer, {"PASS": 0, "FAIL": 0, "SKIPPED": 0})
+        layer_stats.setdefault(layer, {o: 0 for o in outcomes})
         layer_stats[layer][row["overall_pass"]] = layer_stats[layer].get(row["overall_pass"], 0) + 1
     for layer, stats in sorted(layer_stats.items()):
-        print(f"  {layer:20s} PASS={stats.get('PASS', 0):3d} FAIL={stats.get('FAIL', 0):3d} SKIPPED={stats.get('SKIPPED', 0):3d}")
+        print(
+            f"  {layer:20s} PASS={stats.get('PASS', 0):3d} WARNING={stats.get('WARNING', 0):3d} "
+            f"FAIL={stats.get('FAIL', 0):3d} SKIPPED={stats.get('SKIPPED', 0):3d}"
+        )
 
     print("\n-- by category --")
     cat_stats: dict[str, dict[str, int]] = {}
     for row in results:
         cat = row.get("category") or "(uncategorized)"
-        cat_stats.setdefault(cat, {"PASS": 0, "FAIL": 0, "SKIPPED": 0})
+        cat_stats.setdefault(cat, {o: 0 for o in outcomes})
         cat_stats[cat][row["overall_pass"]] = cat_stats[cat].get(row["overall_pass"], 0) + 1
     for cat, stats in sorted(cat_stats.items()):
-        print(f"  {cat:28s} PASS={stats.get('PASS', 0):3d} FAIL={stats.get('FAIL', 0):3d} SKIPPED={stats.get('SKIPPED', 0):3d}")
+        print(
+            f"  {cat:28s} PASS={stats.get('PASS', 0):3d} WARNING={stats.get('WARNING', 0):3d} "
+            f"FAIL={stats.get('FAIL', 0):3d} SKIPPED={stats.get('SKIPPED', 0):3d}"
+        )
+
+    warnings = [row for row in results if row["overall_pass"] == "WARNING"]
+    if warnings:
+        print(f"\n-- {len(warnings)} warning case(s) (layer/task_type calibration miss only) --")
+        for row in warnings:
+            print(
+                f"  [{row.get('id')}] {row.get('input_text')!r}: "
+                f"expected {row.get('expected_layer') or '-'}/{row.get('expected_task_type') or '-'} "
+                f"-> actual {row.get('actual_layer')}/{row.get('actual_task_type')}"
+            )
 
     failures = [row for row in results if row["overall_pass"] == "FAIL"]
     if failures:

@@ -98,14 +98,17 @@ class EmbeddingParser:
         scored.sort(key=lambda item: item[0], reverse=True)
         return scored[:limit]
 
-    @staticmethod
-    def _is_ambiguous(matches: list[tuple[float, TemplateExample]]) -> bool:
+    def _is_ambiguous(self, matches: list[tuple[float, TemplateExample]]) -> bool:
         if len(matches) < 2:
             return False
         best_score, best = matches[0]
-        if best_score < 0.72:
+        if best_score < self.clarify_threshold:
             return False
-        high = [(score, item) for score, item in matches[1:] if score >= 0.72 and best_score - score <= 0.04]
+        high = [
+            (score, item)
+            for score, item in matches[1:]
+            if score >= self.clarify_threshold and best_score - score <= 0.04
+        ]
         return any(item.task_type != best.task_type or item.template_id != best.template_id for score, item in high)
 
     def _build_tfidf(self):

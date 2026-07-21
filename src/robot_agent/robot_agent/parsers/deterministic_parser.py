@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 
 from robot_agent.schemas import MissionIntent
 
@@ -18,8 +19,14 @@ class DeterministicParser:
 
     def parse(self, text: str) -> MissionIntent:
         raw = text.strip()
-        compact = re.sub(r"\s+", " ", raw)
-        lowered = raw.lower()
+        # NFKC-normalize a separate copy used only for matching, so fullwidth
+        # digits/units (e.g. "１０ｃｍ") behave identically to their halfwidth
+        # ASCII form -- found 2026-07-14: "リフトを10ｃｍ上げてください" was
+        # classified correctly but silently fell back to the vague-amount
+        # default distance because the cm/mm/m regexes are ASCII-only. Keep
+        # raw_text on MissionIntent as the verbatim user string, unnormalized.
+        compact = unicodedata.normalize("NFKC", re.sub(r"\s+", " ", raw))
+        lowered = compact.lower()
         if not raw:
             return MissionIntent(task_type="ask_human", raw_text=raw)
         if lowered in {"cancel", "stop task", "abort", "キャンセル", "タスクを停止"}:
@@ -44,8 +51,8 @@ class DeterministicParser:
         if re.match(r"^(?:lift|リフトを)", lowered) and any(
             token in lowered for token in ["up", "down", "上げ", "下げ", "下ろ"]
         ):
-            direction = self._lift_direction(raw)
-            distance_m = self._lift_distance_m(raw)
+            direction = self._lift_direction(compact)
+            distance_m = self._lift_distance_m(compact)
             return MissionIntent(
                 task_type="move_lift_bounded",
                 constraints={"direction": direction, "distance_m": distance_m},
@@ -130,7 +137,15 @@ class DeterministicParser:
                 # bare "check" isn't. If X is already a known target's own name,
                 # prefer inspect_place (handled by _parse_structured_inspect)
                 # over treating the target's own name as a perception query.
-                if is_check_verb and DeterministicParser._matches_known_target(candidate.strip(), known_targets or frozenset()):
+                # "check ON X" is the same idiom ("verify X's status") as bare
+                # "check X" -- strip the "on" before the known-target check so
+                # "check on the meeting table" defers to inspect_place too,
+                # instead of becoming search_object_here(object_query="on the
+                # meeting table") (F15 fix, 2026-07-14).
+                known_target_candidate = re.sub(
+                    r"^on\s+(?:the|a|an)?\s*", "", candidate.strip(), flags=re.IGNORECASE
+                )
+                if is_check_verb and DeterministicParser._matches_known_target(known_target_candidate, known_targets or frozenset()):
                     return None
                 query = DeterministicParser._extract_perception_query(candidate)
                 if query:
@@ -154,6 +169,14 @@ class DeterministicParser:
             return None
         if not DeterministicParser._is_plausible_phrase(query):
             return None
+        # Defense-in-depth backstop for the F14 look_direction gap: a leftover
+        # phrase that is JUST a direction word (plus optional filler) is
+        # always a botched look_direction match, never a real perception
+        # query -- reject it here too so any future verb combination the
+        # look_direction regex doesn't cover still fails gracefully to
+        # ask_human instead of returning a nonsense object_query.
+        if DeterministicParser._LOOK_DIRECTION_RE.match("look " + query.lower()):
+            return None
         return query
 
     @staticmethod
@@ -161,7 +184,9 @@ class DeterministicParser:
         match = re.search(r"^(?:move to|go to)\s+(.+)$", text, re.IGNORECASE)
         if match:
             target = DeterministicParser._clean_target(match.group(1), known_targets)
-            return target if DeterministicParser._is_plausible_phrase(target) else None
+            if not DeterministicParser._is_plausible_phrase(target):
+                return None
+            return target if DeterministicParser._target_is_recognizable(target, known_targets) else None
         jp_match = re.search(
             r"^(0?[1-6]棚|0?[1-5][-_ー〜~]0?[2-6]棚)(?:に|へ)?\s*(?:行って|行く|移動して|移動|戻って|戻る)$", text
         )
@@ -170,7 +195,9 @@ class DeterministicParser:
         jp_free_match = re.search(r"^(.+?)(?:に|へ)?\s*(?:行って|行く|移動して|移動|戻って|戻る)$", text)
         if jp_free_match:
             target = DeterministicParser._clean_target(jp_free_match.group(1), known_targets)
-            return target if DeterministicParser._is_plausible_phrase(target) else None
+            if not DeterministicParser._is_plausible_phrase(target):
+                return None
+            return target if DeterministicParser._target_is_recognizable(target, known_targets) else None
         return None
 
     @staticmethod
@@ -180,14 +207,18 @@ class DeterministicParser:
             target = DeterministicParser._clean_target(match.group(1), known_targets)
             if re.fullmatch(r"0?[1-6]", target.strip()):
                 return None
-            return target if DeterministicParser._is_plausible_phrase(target) else None
+            if not DeterministicParser._is_plausible_phrase(target):
+                return None
+            return target if DeterministicParser._target_is_recognizable(target, known_targets) else None
         jp_match = re.search(r"^(0?[1-6]棚|0?[1-5][-_ー〜~]0?[2-6]棚)(?:を)?\s*(?:確認して|確認|見て|見てください)$", text)
         if jp_match:
             return DeterministicParser._clean_target(jp_match.group(1), known_targets)
         jp_free_match = re.search(r"^(.+?)(?:を)?\s*(?:確認して|確認|見て|見てください)$", text)
         if jp_free_match:
             target = DeterministicParser._clean_target(jp_free_match.group(1), known_targets)
-            return target if DeterministicParser._is_plausible_phrase(target) else None
+            if not DeterministicParser._is_plausible_phrase(target):
+                return None
+            return target if DeterministicParser._target_is_recognizable(target, known_targets) else None
         return None
 
     @staticmethod
@@ -204,7 +235,7 @@ class DeterministicParser:
         previous = None
         while previous != target:
             previous = target
-            target = re.sub(r"^(move to|go to|inspect|check|確認|確認して|見て)\s*", "", target, flags=re.IGNORECASE)
+            target = re.sub(r"^(move to|go to|inspect|check on|check|on|確認|確認して|見て)\s*", "", target, flags=re.IGNORECASE)
             target = re.sub(r"^(?:the|a|an)\s+", "", target, flags=re.IGNORECASE)
         target = re.sub(r"(確認して|確認)$", "", target)
         # A relational qualifier ("near X", "in front of X") should only be
@@ -225,6 +256,58 @@ class DeterministicParser:
         if not known_targets:
             return False
         return DeterministicParser._normalize_light(candidate) in known_targets
+
+    @staticmethod
+    def _target_is_recognizable(target: str, known_targets: frozenset[str] | None) -> bool:
+        """2026-07-14 design decision: no fuzzy/edit-distance matching here.
+        If a navigate/inspect target doesn't look like anything the loaded map
+        actually knows about, Deterministic declines the match entirely and
+        lets Embedding/LLM -- which are far better suited to judge "is this a
+        typo or paraphrase of a known place" -- take over, instead of
+        silently accepting a possible typo (the old behavior for e.g. "go to
+        sfoa"). A *whole-word* containment relationship in either direction is
+        still allowed: a generic category word like "table" is a real word
+        inside the registered "meeting table"/"meeting_table", and that
+        multi-candidate case is already handled downstream by
+        SemanticMap.find_matches, not by the parser. This is deliberately NOT
+        raw substring matching -- "sofa" is a substring of the typo "sofaa" too,
+        which would defeat the whole point of this gate, so containment is
+        checked over tokens instead (same approach as
+        SemanticMap._token_phrase_contains) -- split on whitespace/underscore/
+        hyphen AND on script transitions (Latin-alnum run vs. everything
+        else), not whitespace alone: JP text has no spaces at all between a
+        registered Latin-script name and a following particle/suffix (e.g.
+        "RXYのところ" for known target "rxy"), so whitespace-only splitting
+        would wrongly treat the whole string as one token and reject a
+        legitimate case the same way it correctly rejects "sofaa" for "sofa"
+        (where there is no script boundary to exploit).
+        """
+        if not known_targets:
+            return True  # no map loaded (e.g. a standalone unit test) -- don't gate
+        normalized = DeterministicParser._normalize_light(target)
+        if not normalized:
+            return False
+        if normalized in known_targets:
+            return True
+        target_tokens = DeterministicParser._script_tokens(normalized)
+        for kt in known_targets:
+            kt_tokens = DeterministicParser._script_tokens(kt)
+            if DeterministicParser._token_run_contains(kt_tokens, target_tokens):
+                return True
+            if DeterministicParser._token_run_contains(target_tokens, kt_tokens):
+                return True
+        return False
+
+    @staticmethod
+    def _script_tokens(text: str) -> list[str]:
+        return [t for t in re.findall(r"[a-z0-9]+|[^\sa-z0-9_\-]+", text) if t]
+
+    @staticmethod
+    def _token_run_contains(haystack_tokens: list[str], needle_tokens: list[str]) -> bool:
+        if not needle_tokens or len(needle_tokens) > len(haystack_tokens):
+            return False
+        span = len(needle_tokens)
+        return any(haystack_tokens[i : i + span] == needle_tokens for i in range(len(haystack_tokens) - span + 1))
 
     @staticmethod
     def _strip_relational_phrase(target: str) -> str:
@@ -423,7 +506,9 @@ class DeterministicParser:
             combined_match = re.search(
                 r"(?:turn|rotate)\s+(left|right)\s+(-?\d+(?:\.\d+)?)\s*(?:deg|degree|degrees)?$", lowered
             )
-            jp_combined_match = re.search(r"(左|右)(?:に|へ)?\s*(\d+(?:\.\d+)?)\s*度\s*(?:回転して|回転|回って|回る)", text)
+            jp_combined_match = re.search(
+                r"(左|右)(?:に|へ)?\s*(\d+(?:\.\d+)?)\s*度\s*(?:くらい|ほど)?\s*(?:回転して|回転|回って|回る)", text
+            )
             if combined_match:
                 magnitude = float(combined_match.group(2))
                 yaw_deg = magnitude if combined_match.group(1) == "left" else -magnitude
@@ -438,15 +523,34 @@ class DeterministicParser:
             return None
         return MissionIntent(task_type="rotate_relative", constraints={"yaw_deg": yaw_deg}, raw_text=text)
 
+    # F14 fix (2026-07-14): the direction-word match used to be anchored with a
+    # bare "$" right after the direction token, so any leading filler ("check
+    # to the left") or trailing filler ("look up please") made it miss --
+    # and the command would then fall through to the much looser
+    # search_object_here catch-all, which happily swallowed "to the left" /
+    # "up please" as a bogus perception query instead of failing gracefully.
+    # Tolerating a small, explicit filler whitelist (not a generic wildcard)
+    # closes that gap without risking "front left"/"front right" being
+    # mis-split by the "front"/"left" alternatives (backtracking still finds
+    # the two-word alternative first because the filler whitelist can't
+    # absorb "left"/"right" itself).
+    _LOOK_DIRECTION_RE = re.compile(
+        r"^(look|view|check)\s+(?:to\s+the\s+|towards?\s+|at\s+)?"
+        r"(front left|front right|left|right|front|forward|up|down)"
+        r"(?:\s+(?:please|now|for me|thanks|thank you))?[.!?]*$",
+        re.IGNORECASE,
+    )
+
     @staticmethod
     def _parse_look_direction(text: str) -> MissionIntent | None:
         lowered = text.lower().strip()
         direction = None
         band = "middle"
-        if re.match(r"^(look|view|check)\s+(left|right|front|forward|up|down|front left|front right)$", lowered):
-            target = re.sub(r"^(look|view|check)\s+", "", lowered).strip()
+        look_match = DeterministicParser._LOOK_DIRECTION_RE.match(lowered)
+        if look_match:
+            target = look_match.group(2)
             direction, band = DeterministicParser._look_slots(target)
-        elif re.search(r"(左|右|前方|正面|上|下|左前方|右前方)(?:を)?\s*(?:見て|確認して|確認)$", text):
+        elif re.search(r"(左|右|前方|正面|上|下|左前方|右前方)(?:に|を)?\s*(?:ちょっと|少し)?\s*(?:見て|確認して|確認|見てください)$", text):
             direction, band = DeterministicParser._look_slots(text)
         if direction is None:
             return None
