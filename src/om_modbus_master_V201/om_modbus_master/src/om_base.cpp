@@ -81,14 +81,22 @@ namespace om_modbusRTU_node {
 /** コンストラクタ
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
 Base::Base() {
-  is_enabled_ = false;
+  is_enabled_.store(false);
+  stop_requested_.store(false);
+  socket_fd_ = -1;
   ros_mes_ = nullptr;
 }
 
 /*---------------------------------------------------------------------------*/
 /** デストラクタ
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
-Base::~Base() { closeComm(); }
+Base::~Base() {
+  stop_requested_.store(true);
+  if (comm_thread_.joinable()) {
+    comm_thread_.join();
+  }
+  closeComm();
+}
 
 /*---------------------------------------------------------------------------*/
 /** レスポンス長のエラーチェック
@@ -127,8 +135,13 @@ void Base::chkResponseLength(char *pFrm, int len) {
 * @note
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
 void Base::closeComm(void) {
-  close(socket_fd_);
-  RCLCPP_INFO(node_->get_logger(), "----------- close: ------------- ");
+  if (socket_fd_ >= 0) {
+    close(socket_fd_);
+    socket_fd_ = -1;
+  }
+  if (node_ != nullptr) {
+    RCLCPP_INFO(node_->get_logger(), "----------- close: ------------- ");
+  }
 }
 
 /*---------------------------------------------------------------------------*/
@@ -227,8 +240,8 @@ void Base::dispErrorMessage(int error) {
 void Base::exeComm(void) {
   ISetResponse *pObj = ros_mes_;
   rclcpp::WallRate loop_rate(1ms);
-  while (1) {
-    if (is_enabled_) {
+  while (!stop_requested_.load()) {
+    if (is_enabled_.load(std::memory_order_acquire)) {
       for (int i = 0; i < MAX_DATA_NUM; i++) {
         response_msg_.data[i] = 0;
       }
@@ -247,7 +260,7 @@ void Base::exeComm(void) {
       }
       setState(STATE_DRIVER, STATE_DRIVER_NONE);
       setState(STATE_MES, STATE_MES_NONE);
-      is_enabled_ = false;
+      is_enabled_.store(false, std::memory_order_release);
       pObj->setCommEnabled(false);
     }
     loop_rate.sleep();
@@ -473,8 +486,8 @@ void Base::setState(int type, int val) {
 * @note
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
 void Base::startThread(void) {
-  thread th(&om_modbusRTU_node::Base::exeComm, this);
-  th.detach();
+  stop_requested_.store(false);
+  comm_thread_ = thread(&om_modbusRTU_node::Base::exeComm, this);
 }
 
 /*---------------------------------------------------------------------------*/
@@ -839,7 +852,7 @@ void Base::setData(const om_msgs::msg::Query::SharedPtr msg) {
     query_data_.data[i] = msg->data[i];
   }
 
-  is_enabled_ = true;
+  is_enabled_.store(true, std::memory_order_release);
 }
 
 void Base::setQueryData(int index, int value){//queryCallback
@@ -869,7 +882,7 @@ void Base::setQueryData(int index, int value){//queryCallback
     // RCLCPP_ERROR(node_->get_logger(), "Error: motor input becomes zero");
     query_data_.data[index] = value;
   }
-  is_enabled_ = true;
+  is_enabled_.store(true, std::memory_order_release);
 }
 
 /*---------------------------------------------------------------------------*/

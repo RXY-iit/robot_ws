@@ -1,0 +1,440 @@
+map_id: sim_l402_seed_v0
+frame_id: map
+places:
+- id: home
+  names:
+  - home
+  - origin
+  - start
+  - ホーム
+  category: place
+  pose:
+    x: 0.0
+    y: 0.0
+    yaw: 0.0
+  confidence: 1.0
+- id: entrance
+  names:
+  - entrance
+  - door
+  - 入口
+  - ドア
+  category: place
+  pose:
+    x: 0.0
+    y: 0.0
+    yaw: 0.0
+  confidence: 0.6
+- id: corridor_mid
+  names:
+  - corridor
+  - corridor middle
+  - 廊下
+  category: place
+  pose:
+    x: 0.0
+    y: 0.0
+    yaw: 0.0
+  confidence: 0.6
+objects:
+- id: shelf_06
+  names:
+  - shelf_06
+  - 06棚
+  - 棚06
+  - 6番棚
+  - 06 shelf
+  - shelf 06
+  category: shelf
+  static: true
+  segment_id: shelf_06
+  navigation_ready: true
+  affordances:
+  - navigate_near
+  - inspect
+  - visual_arrival_confirm
+  safety_zone_m: 0.5
+  confidence: 0.7
+  note: Annotated from Nav2 map. For first-stage tests, "go to shelf_06" means approach
+    the number-label side of the shelf, not the sparse geometric middle.
+  map_region:
+    type: polygon
+    polygon:
+    - x: 3.112
+      y: 25.0991
+    - x: 4.9323
+      y: 24.9124
+    - x: 4.9323
+      y: 8.3896
+    - x: 3.2053
+      y: 8.4362
+    front_side: west
+  approach_policy:
+    generator: region_side_offset
+    preferred_side: west
+    anchor_mode: label_end
+    label_end: south
+    label_end_offset_m: 2.55
+    distance_m: 0.45
+    clearance_mode: narrow
+    speed_profile: cautious
+    face_region_center: true
+    yaw_mode: face_region_center
+    yaw_offset_deg: 0.0
+  visual_arrival_confirm:
+    enabled: true
+    camera_control_policy: scan_after_stop
+    detector_skill: detect_known_object
+    detector_candidates:
+    - yolo
+    - gpt_api
+    - local_vlm
+    - manual_confirm
+    expected_query: 06 shelf label
+- id: shelf_05_06_region
+  names:
+  - 05-06棚
+  - 05と06棚
+  - 05棚
+  - 棚05
+  - shelf 05 06 region
+  category: shelf_region
+  static: true
+  segment_id: shelf_05_06_region
+  navigation_ready: true
+  affordances:
+  - navigate_near
+  - inspect
+  - visual_arrival_confirm
+  safety_zone_m: 0.5
+  confidence: 0.4
+  note: Green box in the user-provided map screenshot.
+  map_region:
+    type: polygon
+    polygon:
+    - x: -1.9289
+      y: 25.0991
+    - x: -0.5286
+      y: 24.9591
+    - x: -0.0152
+      y: 8.4362
+    - x: -1.7888
+      y: 8.2962
+    front_side: west
+  approach_policy:
+    generator: region_side_offset
+    preferred_side: west
+    anchor_mode: label_end
+    label_end: south
+    label_end_offset_m: 2.55
+    distance_m: 0.45
+    clearance_mode: narrow
+    speed_profile: cautious
+    face_region_center: true
+  visual_arrival_confirm:
+    enabled: true
+    camera_control_policy: scan_after_stop
+    detector_skill: detect_known_object
+    detector_candidates:
+    - yolo
+    - gpt_api
+    - local_vlm
+    - manual_confirm
+    expected_query: shelf_05_06_region label
+- id: shelf_01
+  names:
+  - shelf_01
+  - 01棚
+  - 棚01
+  - 1番棚
+  - 01 shelf
+  - shelf 01
+  category: shelf
+  static: true
+  segment_id: shelf_01
+  navigation_ready: true
+  affordances:
+  - navigate_near
+  - inspect
+  - visual_arrival_confirm
+  safety_zone_m: 0.5
+  confidence: 0.4
+  note: Region pending user annotation in segmentation tool.
+  map_region:
+    type: polygon
+    polygon:
+    - x: -26.4331
+      y: 25.0991
+    - x: -24.7528
+      y: 25.0991
+    - x: -24.7528
+      y: 8.2962
+    - x: -26.293
+      y: 8.3896
+    front_side: west
+  approach_policy:
+    generator: region_side_offset
+    preferred_side: west
+    anchor_mode: label_end
+    label_end: south
+    label_end_offset_m: 2.55
+    distance_m: 0.45
+    clearance_mode: narrow
+    speed_profile: cautious
+    face_region_center: true
+  visual_arrival_confirm:
+    enabled: true
+    camera_control_policy: scan_after_stop
+    detector_skill: detect_known_object
+    detector_candidates:
+    - yolo
+    - gpt_api
+    - local_vlm
+    - manual_confirm
+    expected_query: 01 shelf label
+- id: shelf_01_02_region
+  names:
+  - 01-02棚
+  - 01と02棚
+  - 01 02 shelf region
+  - shelf 01 02
+  category: shelf_region
+  static: true
+  segment_id: shelf_01_02_region
+  navigation_ready: true
+  affordances:
+  - navigate_near
+  - inspect
+  - visual_arrival_confirm
+  safety_zone_m: 0.5
+  confidence: 0.4
+  note: Region pending user annotation in segmentation tool.
+  map_region:
+    type: polygon
+    polygon:
+    - x: -21.4389
+      y: 24.9591
+    - x: -19.4785
+      y: 24.9124
+    - x: -19.7119
+      y: 8.2495
+    - x: -21.6723
+      y: 8.2495
+    front_side: west
+  approach_policy:
+    generator: region_side_offset
+    preferred_side: west
+    anchor_mode: label_end
+    label_end: south
+    label_end_offset_m: 2.55
+    distance_m: 0.45
+    clearance_mode: narrow
+    speed_profile: cautious
+    face_region_center: true
+  visual_arrival_confirm:
+    enabled: true
+    camera_control_policy: scan_after_stop
+    detector_skill: detect_known_object
+    detector_candidates:
+    - yolo
+    - gpt_api
+    - local_vlm
+    - manual_confirm
+    expected_query: 01 02 shelf labels
+- id: shelf_02_03_region
+  names:
+  - 02-03棚
+  - 02と03棚
+  - 02 03 shelf region
+  - shelf 02 03
+  category: shelf_region
+  static: true
+  segment_id: shelf_02_03_region
+  navigation_ready: true
+  affordances:
+  - navigate_near
+  - inspect
+  - visual_arrival_confirm
+  safety_zone_m: 0.5
+  confidence: 0.4
+  note: Region pending user annotation in segmentation tool.
+  map_region:
+    type: polygon
+    polygon:
+    - x: -14.5777
+      y: 25.0524
+    - x: -16.6314
+      y: 25.0524
+    - x: -16.4914
+      y: 8.5296
+    - x: -14.6711
+      y: 8.5296
+    front_side: west
+  approach_policy:
+    generator: region_side_offset
+    preferred_side: west
+    anchor_mode: label_end
+    label_end: south
+    label_end_offset_m: 2.55
+    distance_m: 0.45
+    clearance_mode: narrow
+    speed_profile: cautious
+    face_region_center: true
+  visual_arrival_confirm:
+    enabled: true
+    camera_control_policy: scan_after_stop
+    detector_skill: detect_known_object
+    detector_candidates:
+    - yolo
+    - gpt_api
+    - local_vlm
+    - manual_confirm
+    expected_query: 02 03 shelf labels
+- id: shelf_03_04_region
+  names:
+  - 03-04棚
+  - 03と04棚
+  - 03 04 shelf region
+  - shelf 03 04
+  category: shelf_region
+  static: true
+  segment_id: shelf_03_04_region
+  navigation_ready: true
+  affordances:
+  - navigate_near
+  - inspect
+  - visual_arrival_confirm
+  safety_zone_m: 0.5
+  confidence: 0.4
+  note: Region pending user annotation in segmentation tool.
+  map_region:
+    type: polygon
+    polygon:
+    - x: -11.6372
+      y: 25.0524
+    - x: -9.7702
+      y: 24.9591
+    - x: -9.7702
+      y: 8.2495
+    - x: -11.7772
+      y: 8.3896
+    front_side: west
+  approach_policy:
+    generator: region_side_offset
+    preferred_side: west
+    anchor_mode: label_end
+    label_end: south
+    label_end_offset_m: 2.55
+    distance_m: 0.45
+    clearance_mode: narrow
+    speed_profile: cautious
+    face_region_center: true
+  visual_arrival_confirm:
+    enabled: true
+    camera_control_policy: scan_after_stop
+    detector_skill: detect_known_object
+    detector_candidates:
+    - yolo
+    - gpt_api
+    - local_vlm
+    - manual_confirm
+    expected_query: 03 04 shelf labels
+- id: shelf_04_05_region
+  names:
+  - 04-05棚
+  - 04と05棚
+  - 05棚
+  - 棚05
+  - 04 05 shelf region
+  - shelf 04 05
+  category: shelf_region
+  static: true
+  segment_id: shelf_04_05_region
+  navigation_ready: true
+  affordances:
+  - navigate_near
+  - inspect
+  - visual_arrival_confirm
+  safety_zone_m: 0.5
+  confidence: 0.4
+  note: Region pending user annotation in segmentation tool.
+  map_region:
+    type: polygon
+    polygon:
+    - x: -6.7364
+      y: 25.0524
+    - x: -4.7293
+      y: 24.9591
+    - x: -4.916
+      y: 8.2495
+    - x: -6.5963
+      y: 8.2962
+    front_side: west
+  approach_policy:
+    generator: region_side_offset
+    preferred_side: west
+    anchor_mode: label_end
+    label_end: south
+    label_end_offset_m: 2.55
+    distance_m: 0.45
+    clearance_mode: narrow
+    speed_profile: cautious
+    face_region_center: true
+  visual_arrival_confirm:
+    enabled: true
+    camera_control_policy: scan_after_stop
+    detector_skill: detect_known_object
+    detector_candidates:
+    - yolo
+    - gpt_api
+    - local_vlm
+    - manual_confirm
+    expected_query: 04 05 shelf labels
+- id: forklift_01
+  names:
+  - forklift
+  - forklift_01
+  - フォークリフト
+  category: vehicle
+  static: true
+  pose:
+    x: 0.0
+    y: 0.0
+    yaw: 0.0
+  approach_poses:
+  - id: near
+    pose:
+      x: 0.0
+      y: 0.0
+      yaw: 0.0
+    clearance_mode: normal
+    speed_profile: cautious
+  affordances:
+  - navigate_near
+  - inspect
+  safety_zone_m: 0.8
+  confidence: 0.3
+- id: elevator_panel
+  names:
+  - elevator
+  - elevator panel
+  - エレベーター
+  category: panel
+  static: true
+  pose:
+    x: 0.0
+    y: 0.0
+    yaw: 0.0
+  approach_poses:
+  - id: front
+    pose:
+      x: 0.0
+      y: 0.0
+      yaw: 0.0
+    clearance_mode: narrow
+    speed_profile: cautious
+  affordances:
+  - navigate_near
+  - inspect
+  safety_zone_m: 0.6
+  confidence: 0.3

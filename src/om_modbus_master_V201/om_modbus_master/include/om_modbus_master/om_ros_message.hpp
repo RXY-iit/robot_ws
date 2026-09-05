@@ -2,7 +2,8 @@
 #define OM_ROS_MESSAGE_H
 
 #include <rclcpp/rclcpp.hpp>
-#include <thread>
+#include <mutex>
+#include <vector>
 
 #include "om_modbus_master/ICheckData.hpp"
 #include "om_modbus_master/ICheckIdShareMode.hpp"
@@ -33,13 +34,11 @@ class RosMessage : public ISetResponse {
   rclcpp::TimerBase::SharedPtr timer_ = nullptr;
   om_msgs::msg::State state_msg_;
   bool isCommEnabled_;
+  std::mutex pending_response_mutex_;
+  std::vector<om_msgs::msg::Response> pending_responses_;
   int topic_id_;
   int topic_update_rate_;
   rclcpp::Node::SharedPtr node_;
-
-  //スレッド用の変数MRI
-  std::thread monitoring_thread_;  
-  bool stop_thread_;
 
   const static int BUF_SIZE = 1;
   const static int MIN_UPDATE_RATE = 0;
@@ -87,10 +86,6 @@ class RosMessage : public ISetResponse {
   bool chkIdShareMode(const om_msgs::msg::Query::SharedPtr msg);
   void flowCtrlIdShare(const om_msgs::msg::Query::SharedPtr msg);
   bool chkGlobalIdRange(int id);
-  //監視スレッドの処理
-  void monitoringFunction();
-  std::chrono::time_point<std::chrono::high_resolution_clock> last_execution_time;
-
  public:
   RosMessage();
   ~RosMessage();

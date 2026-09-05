@@ -27,6 +27,7 @@ setup(
             'angle_arucopose_csv = serial_transciever.angle_arucopose_csv:main',
             'joy_offset_command_node = serial_transciever.manipulator_control.joy_angle_command_node:main',
             'camera_motor_joy_node = serial_transciever.manipulator_control.camera_motor_joy_node:main',
+            'camera_pan_tilt_joint_state_node = serial_transciever.camera_pan_tilt_joint_state_node:main',
             'chokudo_cameraswing_air_serial_node = serial_transciever.chokudo_cameraswing_air_serial_node:main',
             'motor_manual_chokudo_node = serial_transciever.manipulator_control.motor_manual_chokudo_node:main',
             'relay_controller = serial_transciever.relay_control.relay_controller:main',
@@ -39,6 +40,7 @@ setup(
             'integrated_control_node = serial_transciever.manipulator_control.integrated_control_node:main',
             'lift_serial_node = serial_transciever.lift_control.lift_serial_node:main',
             'lift_joy_node = serial_transciever.lift_control.lift_joy_node:main',
+            'lift_abzo_monitor_node = serial_transciever.lift_control.lift_abzo_monitor_node:main',
         ],
     },
 )

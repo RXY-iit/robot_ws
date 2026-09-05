@@ -1,0 +1,1163 @@
+map_id: l402_2d_map_clean_0509
+frame_id: map
+status: partial_manual_plus_provisional_transform
+places:
+- id: home
+  names:
+  - home
+  - start
+  - initial position
+  category: place
+  navigation_ready: false
+  confidence: 0.2
+  note: Provisional transform from sim_real_lab_001/home; adjust polygon and approach
+    side on the real L402 map before navigation. Fill pose after choosing the real
+    lab start pose.
+objects:
+- id: front-door
+  names:
+  - front-door
+  category: shelf
+  static: true
+  segment_id: front-door
+  navigation_ready: true
+  affordances:
+  - navigate_near
+  - inspect
+  - visual_arrival_confirm
+  safety_zone_m: 0.5
+  confidence: 0.7
+  note: Annotated from Nav2 map. Approach pose should be generated from polygon, not
+    remembered from one manual stop.
+  map_region:
+    type: polygon
+    polygon:
+    - x: -1.2659
+      y: -4.4704
+    - x: -0.8819
+      y: -4.7497
+    - x: -1.2659
+      y: -5.8667
+    - x: -1.615
+      y: -5.6922
+    front_side: west
+  approach_policy:
+    generator: region_side_offset
+    preferred_side: west
+    distance_m: 0.75
+    clearance_mode: narrow
+    speed_profile: cautious
+    yaw_mode: face_region_center
+    yaw: 0.0
+    yaw_offset_deg: 0.0
+    face_region_center: true
+  visual_arrival_confirm:
+    enabled: true
+    camera_control_policy: scan_after_stop
+    detector_skill: detect_known_object
+    detector_candidates:
+    - yolo
+    - gpt_api
+    - local_vlm
+    - manual_confirm
+    expected_query: ''
+- id: rxy-table
+  names:
+  - rxy-table
+  category: shelf
+  static: true
+  segment_id: rxy-table
+  navigation_ready: true
+  affordances:
+  - navigate_near
+  - inspect
+  - visual_arrival_confirm
+  safety_zone_m: 0.5
+  confidence: 0.7
+  note: Annotated from Nav2 map. Approach pose should be generated from polygon, not
+    remembered from one manual stop.
+  map_region:
+    type: polygon
+    polygon:
+    - x: -0.8597
+      y: -1.101
+    - x: 0.3352
+      y: -1.9772
+    - x: -0.3021
+      y: -2.6941
+    - x: -1.4173
+      y: -1.9772
+    front_side: west
+  approach_policy:
+    generator: region_side_offset
+    preferred_side: west
+    distance_m: 0.75
+    clearance_mode: narrow
+    speed_profile: cautious
+    yaw_mode: face_region_center
+    yaw: 0.0
+    yaw_offset_deg: 0.0
+    face_region_center: true
+  visual_arrival_confirm:
+    enabled: true
+    camera_control_policy: scan_after_stop
+    detector_skill: detect_known_object
+    detector_candidates:
+    - yolo
+    - gpt_api
+    - local_vlm
+    - manual_confirm
+    expected_query: rxy-table label
+- id: sofa
+  names:
+  - sofa
+  category: shelf
+  static: true
+  segment_id: sofa
+  navigation_ready: true
+  affordances:
+  - navigate_near
+  - inspect
+  - visual_arrival_confirm
+  safety_zone_m: 0.5
+  confidence: 0.7
+  note: Annotated from Nav2 map. Approach pose should be generated from polygon, not
+    remembered from one manual stop.
+  map_region:
+    type: polygon
+    polygon:
+    - x: -6.9932
+      y: -2.2958
+    - x: -5.4399
+      y: -3.0526
+    - x: -5.8382
+      y: -4.4864
+    - x: -7.5906
+      y: -3.411
+    front_side: west
+  approach_policy:
+    generator: region_side_offset
+    preferred_side: west
+    distance_m: 0.75
+    clearance_mode: narrow
+    speed_profile: cautious
+    yaw_mode: face_region_center
+    yaw: 0.0
+    yaw_offset_deg: 0.0
+    face_region_center: true
+  visual_arrival_confirm:
+    enabled: true
+    camera_control_policy: scan_after_stop
+    detector_skill: detect_known_object
+    detector_candidates:
+    - yolo
+    - gpt_api
+    - local_vlm
+    - manual_confirm
+    expected_query: sofa label
+- id: tool-box
+  names:
+  - tool-box
+  category: shelf
+  static: true
+  segment_id: tool-box
+  navigation_ready: true
+  affordances:
+  - navigate_near
+  - inspect
+  - visual_arrival_confirm
+  safety_zone_m: 0.5
+  confidence: 0.7
+  note: Annotated from Nav2 map. Approach pose should be generated from polygon, not
+    remembered from one manual stop.
+  map_region:
+    type: polygon
+    polygon:
+    - x: 1.1427
+      y: 3.8375
+    - x: 2.3994
+      y: 3.1393
+    - x: 2.0852
+      y: 2.2666
+    - x: 0.654
+      y: 2.8601
+    front_side: west
+  approach_policy:
+    generator: region_side_offset
+    preferred_side: west
+    distance_m: 0.75
+    clearance_mode: narrow
+    speed_profile: cautious
+    yaw_mode: face_region_center
+    yaw: 0.0
+    yaw_offset_deg: 0.0
+    face_region_center: true
+  visual_arrival_confirm:
+    enabled: true
+    camera_control_policy: scan_after_stop
+    detector_skill: detect_known_object
+    detector_candidates:
+    - yolo
+    - gpt_api
+    - local_vlm
+    - manual_confirm
+    expected_query: ''
+- id: back-door
+  names:
+  - back-door
+  category: shelf
+  static: true
+  segment_id: back-door
+  navigation_ready: true
+  affordances:
+  - navigate_near
+  - inspect
+  - visual_arrival_confirm
+  safety_zone_m: 0.5
+  confidence: 0.7
+  note: Annotated from Nav2 map. Approach pose should be generated from polygon, not
+    remembered from one manual stop.
+  map_region:
+    type: polygon
+    polygon:
+    - x: 3.5862
+      y: 3.9422
+    - x: 3.8655
+      y: 3.8025
+    - x: 3.4815
+      y: 2.9997
+    - x: 3.3069
+      y: 3.1044
+    front_side: west
+  approach_policy:
+    generator: region_side_offset
+    preferred_side: west
+    distance_m: 0.75
+    clearance_mode: narrow
+    speed_profile: cautious
+    yaw_mode: face_region_center
+    yaw: 0.0
+    yaw_offset_deg: 0.0
+    face_region_center: true
+  visual_arrival_confirm:
+    enabled: true
+    camera_control_policy: scan_after_stop
+    detector_skill: detect_known_object
+    detector_candidates:
+    - yolo
+    - gpt_api
+    - local_vlm
+    - manual_confirm
+    expected_query: ''
+- id: trash_bin
+  names:
+  - trash bin
+  - bin
+  - garbage bin
+  category: trash_bin
+  static: true
+  segment_id: trash_bin
+  navigation_ready: false
+  affordances:
+  - navigate_near
+  - inspect
+  - visual_arrival_confirm
+  safety_zone_m: 0.5
+  confidence: 0.2
+  note: Provisional transform from sim_real_lab_001/trash_bin; adjust polygon and
+    approach side on the real L402 map before navigation. Placeholder. Adjust on sim_real_lab_001
+    map.
+  map_region:
+    type: polygon
+    polygon:
+    - x: -2.3085
+      y: -6.8637
+    - x: -3.3006
+      y: -6.4246
+    - x: -2.8257
+      y: -5.4946
+    - x: -1.9099
+      y: -5.9193
+    front_side: north
+  approach_policy:
+    generator: region_side_offset
+    preferred_side: north
+    distance_m: 0.75
+    clearance_mode: narrow
+    speed_profile: cautious
+    yaw_mode: face_region_center
+    yaw: 0.0
+    yaw_offset_deg: 0.0
+    face_region_center: true
+  visual_arrival_confirm:
+    enabled: true
+    camera_control_policy: scan_after_stop
+    detector_skill: detect_known_object
+    detector_candidates:
+    - yolo
+    - gpt_api
+    - local_vlm
+    - manual_confirm
+    expected_query: trash_bin label
+  refinement:
+    method: local_idw_from_calibrated_real_objects
+    neighbor_count: 4
+    anchors:
+    - meeting_table
+    - front-door
+    - desk_ire
+    - rxy-table
+    delta_x: -0.2048
+    delta_y: 0.0607
+- id: meeting_table
+  names:
+  - meeting table
+  - meeting desk
+  category: table
+  static: true
+  segment_id: meeting_table
+  navigation_ready: true
+  affordances:
+  - navigate_near
+  - inspect
+  - visual_arrival_confirm
+  safety_zone_m: 0.5
+  confidence: 0.2
+  note: Provisional transform from sim_real_lab_001/meeting_table; adjust polygon
+    and approach side on the real L402 map before navigation. Placeholder. Adjust
+    on sim_real_lab_001 map.
+  map_region:
+    type: polygon
+    polygon:
+    - x: -4.233
+      y: -4.0166
+    - x: -3.0461
+      y: -4.7846
+    - x: -3.9886
+      y: -6.9139
+    - x: -5.1755
+      y: -6.1111
+    front_side: north
+  approach_policy:
+    generator: region_side_offset
+    preferred_side: north
+    distance_m: 0.75
+    clearance_mode: narrow
+    speed_profile: cautious
+    yaw_mode: face_region_center
+    yaw: 0.0
+    yaw_offset_deg: 0.0
+    face_region_center: true
+  visual_arrival_confirm:
+    enabled: true
+    camera_control_policy: scan_after_stop
+    detector_skill: detect_known_object
+    detector_candidates:
+    - yolo
+    - gpt_api
+    - local_vlm
+    - manual_confirm
+    expected_query: meeting_table label
+- id: wall_cabinet_left_upper
+  names:
+  - left upper cabinet
+  - left shelf upper
+  category: cabinet
+  static: true
+  segment_id: wall_cabinet_left_upper
+  navigation_ready: true
+  affordances:
+  - navigate_near
+  - inspect
+  - visual_arrival_confirm
+  safety_zone_m: 0.5
+  confidence: 0.2
+  note: Provisional transform from sim_real_lab_001/wall_cabinet_left_upper; adjust
+    polygon and approach side on the real L402 map before navigation. Placeholder.
+  map_region:
+    type: polygon
+    polygon:
+    - x: 2.6437
+      y: 2.0572
+    - x: 2.8881
+      y: 1.9525
+    - x: -0.5677
+      y: -4.2261
+    - x: -0.9517
+      y: -4.0515
+    front_side: west
+  approach_policy:
+    generator: region_side_offset
+    preferred_side: west
+    distance_m: 0.75
+    clearance_mode: narrow
+    speed_profile: cautious
+    yaw_mode: face_region_center
+    yaw: 0.0
+    yaw_offset_deg: 0.0
+    face_region_center: true
+  visual_arrival_confirm:
+    enabled: true
+    camera_control_policy: scan_after_stop
+    detector_skill: detect_known_object
+    detector_candidates:
+    - yolo
+    - gpt_api
+    - local_vlm
+    - manual_confirm
+    expected_query: wall_cabinet_left_upper label
+- id: wall_cabinet_left_lower
+  names:
+  - left lower cabinet
+  - left shelf lower
+  category: cabinet
+  static: true
+  segment_id: wall_cabinet_left_lower
+  navigation_ready: true
+  affordances:
+  - navigate_near
+  - inspect
+  - visual_arrival_confirm
+  safety_zone_m: 0.5
+  confidence: 0.2
+  note: Provisional transform from sim_real_lab_001/wall_cabinet_left_lower; adjust
+    polygon and approach side on the real L402 map before navigation. Placeholder.
+  map_region:
+    type: polygon
+    polygon:
+    - x: -0.8819
+      y: 8.5499
+    - x: 3.7258
+      y: 5.7573
+    - x: 3.2022
+      y: 5.1988
+    - x: -1.231
+      y: 7.6772
+    front_side: west
+  approach_policy:
+    generator: region_side_offset
+    preferred_side: west
+    distance_m: 0.75
+    clearance_mode: narrow
+    speed_profile: cautious
+    yaw_mode: face_region_center
+    yaw: 0.0
+    yaw_offset_deg: 0.0
+    face_region_center: true
+  visual_arrival_confirm:
+    enabled: true
+    camera_control_policy: scan_after_stop
+    detector_skill: detect_known_object
+    detector_candidates:
+    - yolo
+    - gpt_api
+    - local_vlm
+    - manual_confirm
+    expected_query: wall_cabinet_left_lower label
+- id: desk_ire
+  names:
+  - IRE
+  - ire desk
+  - ire table
+  category: workstation
+  static: true
+  segment_id: desk_ire
+  navigation_ready: true
+  affordances:
+  - navigate_near
+  - inspect
+  - visual_arrival_confirm
+  safety_zone_m: 0.5
+  confidence: 0.2
+  note: Provisional transform from sim_real_lab_001/desk_ire; adjust polygon and approach
+    side on the real L402 map before navigation. Placeholder.
+  map_region:
+    type: polygon
+    polygon:
+    - x: -2.8367
+      y: -1.608
+    - x: -1.5451
+      y: -2.1666
+    - x: -2.1037
+      y: -3.2487
+    - x: -3.2905
+      y: -2.5156
+    front_side: south
+  approach_policy:
+    generator: region_side_offset
+    preferred_side: south
+    distance_m: 0.75
+    clearance_mode: narrow
+    speed_profile: cautious
+    yaw_mode: face_region_center
+    yaw: 0.0
+    yaw_offset_deg: 0.0
+    face_region_center: true
+  visual_arrival_confirm:
+    enabled: true
+    camera_control_policy: scan_after_stop
+    detector_skill: detect_known_object
+    detector_candidates:
+    - yolo
+    - gpt_api
+    - local_vlm
+    - manual_confirm
+    expected_query: desk_ire label
+- id: desk_tkd
+  names:
+  - TKD
+  - tkd desk
+  - tkd table
+  category: workstation
+  static: true
+  segment_id: desk_tkd
+  navigation_ready: true
+  affordances:
+  - navigate_near
+  - inspect
+  - visual_arrival_confirm
+  safety_zone_m: 0.5
+  confidence: 0.2
+  note: Provisional transform from sim_real_lab_001/desk_tkd; adjust polygon and approach
+    side on the real L402 map before navigation. Placeholder.
+  map_region:
+    type: polygon
+    polygon:
+    - x: -2.2084
+      y: -0.4212
+    - x: -1.0564
+      y: -1.0495
+    - x: -1.4753
+      y: -2.0269
+    - x: -2.6273
+      y: -1.4684
+    front_side: north
+  approach_policy:
+    generator: region_side_offset
+    preferred_side: north
+    distance_m: 0.75
+    clearance_mode: narrow
+    speed_profile: cautious
+    yaw_mode: face_region_center
+    yaw: 0.0
+    yaw_offset_deg: 0.0
+    face_region_center: true
+  visual_arrival_confirm:
+    enabled: true
+    camera_control_policy: scan_after_stop
+    detector_skill: detect_known_object
+    detector_candidates:
+    - yolo
+    - gpt_api
+    - local_vlm
+    - manual_confirm
+    expected_query: desk_tkd label
+- id: desk_tcb
+  names:
+  - TCB
+  - tcb desk
+  - tcb table
+  category: workstation
+  static: true
+  segment_id: desk_tcb
+  navigation_ready: true
+  affordances:
+  - navigate_near
+  - inspect
+  - visual_arrival_confirm
+  safety_zone_m: 0.5
+  confidence: 0.2
+  note: Provisional transform from sim_real_lab_001/desk_tcb; adjust polygon and approach
+    side on the real L402 map before navigation. Placeholder.
+  map_region:
+    type: polygon
+    polygon:
+    - x: 0.7238
+      y: 2.8601
+    - x: 2.3994
+      y: 1.6034
+    - x: 1.8059
+      y: 0.7307
+    - x: 0.2351
+      y: 1.8478
+    front_side: south
+  approach_policy:
+    generator: region_side_offset
+    preferred_side: south
+    distance_m: 0.75
+    clearance_mode: narrow
+    speed_profile: cautious
+    yaw_mode: face_region_center
+    yaw: 0.0
+    yaw_offset_deg: 0.0
+    face_region_center: true
+  visual_arrival_confirm:
+    enabled: true
+    camera_control_policy: scan_after_stop
+    detector_skill: detect_known_object
+    detector_candidates:
+    - yolo
+    - gpt_api
+    - local_vlm
+    - manual_confirm
+    expected_query: desk_tcb label
+- id: desk_min
+  names:
+  - MIN
+  - min desk
+  - min table
+  category: workstation
+  static: true
+  segment_id: desk_min
+  navigation_ready: true
+  affordances:
+  - navigate_near
+  - inspect
+  - visual_arrival_confirm
+  safety_zone_m: 0.5
+  confidence: 0.2
+  note: Provisional transform from sim_real_lab_001/desk_min; adjust polygon and approach
+    side on the real L402 map before navigation. Placeholder.
+  map_region:
+    type: polygon
+    polygon:
+    - x: -4.5821
+      y: -0.142
+    - x: -3.2556
+      y: -0.7354
+    - x: -3.9188
+      y: -1.4335
+    - x: -5.2104
+      y: -0.875
+    front_side: south
+  approach_policy:
+    generator: region_side_offset
+    preferred_side: south
+    distance_m: 0.75
+    clearance_mode: narrow
+    speed_profile: cautious
+    yaw_mode: face_region_center
+    yaw: 0.0
+    yaw_offset_deg: 0.0
+    face_region_center: true
+  visual_arrival_confirm:
+    enabled: true
+    camera_control_policy: scan_after_stop
+    detector_skill: detect_known_object
+    detector_candidates:
+    - yolo
+    - gpt_api
+    - local_vlm
+    - manual_confirm
+    expected_query: desk_min label
+- id: desk_hyk
+  names:
+  - HYK
+  - hyk desk
+  - hyk table
+  category: workstation
+  static: true
+  segment_id: desk_hyk
+  navigation_ready: true
+  affordances:
+  - navigate_near
+  - inspect
+  - visual_arrival_confirm
+  safety_zone_m: 0.5
+  confidence: 0.2
+  note: Provisional transform from sim_real_lab_001/desk_hyk; adjust polygon and approach
+    side on the real L402 map before navigation. Placeholder.
+  map_region:
+    type: polygon
+    polygon:
+    - x: -4.0235
+      y: 0.8704
+    - x: -4.4075
+      y: 0.0326
+    - x: -3.1858
+      y: -0.7354
+    - x: -2.9414
+      y: 0.1024
+    front_side: north
+  approach_policy:
+    generator: region_side_offset
+    preferred_side: north
+    distance_m: 0.75
+    clearance_mode: narrow
+    speed_profile: cautious
+    yaw_mode: face_region_center
+    yaw: 0.0
+    yaw_offset_deg: 0.0
+    face_region_center: true
+  visual_arrival_confirm:
+    enabled: true
+    camera_control_policy: scan_after_stop
+    detector_skill: detect_known_object
+    detector_candidates:
+    - yolo
+    - gpt_api
+    - local_vlm
+    - manual_confirm
+    expected_query: desk_hyk label
+- id: desk_mkr
+  names:
+  - MKR
+  - mkr desk
+  - mkr table
+  category: workstation
+  static: true
+  segment_id: desk_mkr
+  navigation_ready: true
+  affordances:
+  - navigate_near
+  - inspect
+  - visual_arrival_confirm
+  safety_zone_m: 0.5
+  confidence: 0.2
+  note: Provisional transform from sim_real_lab_001/desk_mkr; adjust polygon and approach
+    side on the real L402 map before navigation. Placeholder.
+  map_region:
+    type: polygon
+    polygon:
+    - x: -5.4198
+      y: 1.743
+    - x: -3.9537
+      y: 0.9402
+    - x: -4.5122
+      y: 0.0675
+    - x: -5.8736
+      y: 0.9053
+    front_side: north
+  approach_policy:
+    generator: region_side_offset
+    preferred_side: north
+    distance_m: 0.75
+    clearance_mode: narrow
+    speed_profile: cautious
+    yaw_mode: face_region_center
+    yaw: 0.0
+    yaw_offset_deg: 0.0
+    face_region_center: true
+  visual_arrival_confirm:
+    enabled: true
+    camera_control_policy: scan_after_stop
+    detector_skill: detect_known_object
+    detector_candidates:
+    - yolo
+    - gpt_api
+    - local_vlm
+    - manual_confirm
+    expected_query: desk_mkr label
+- id: desk_tks
+  names:
+  - TKS
+  - tks desk
+  - tks table
+  category: workstation
+  static: true
+  segment_id: desk_tks
+  navigation_ready: false
+  affordances:
+  - navigate_near
+  - inspect
+  - visual_arrival_confirm
+  safety_zone_m: 0.5
+  confidence: 0.2
+  note: Provisional transform from sim_real_lab_001/desk_tks; adjust polygon and approach
+    side on the real L402 map before navigation. Placeholder.
+  map_region:
+    type: polygon
+    polygon:
+    - x: -1.7353
+      y: 1.8638
+    - x: -2.973
+      y: 2.594
+    - x: -2.5112
+      y: 3.3487
+    - x: -1.2665
+      y: 2.6568
+    front_side: south
+  approach_policy:
+    generator: region_side_offset
+    preferred_side: south
+    distance_m: 0.75
+    clearance_mode: narrow
+    speed_profile: cautious
+    yaw_mode: face_region_center
+    yaw: 0.0
+    yaw_offset_deg: 0.0
+    face_region_center: true
+  visual_arrival_confirm:
+    enabled: true
+    camera_control_policy: scan_after_stop
+    detector_skill: detect_known_object
+    detector_candidates:
+    - yolo
+    - gpt_api
+    - local_vlm
+    - manual_confirm
+    expected_query: desk_tks label
+  refinement:
+    method: local_idw_from_calibrated_real_objects
+    neighbor_count: 4
+    anchors:
+    - desk_hyk
+    - desk_tcb
+    - desk_mkr
+    - desk_tkd
+    delta_x: 0.5847
+    delta_y: 1.0402
+- id: desk_ysd
+  names:
+  - YSD
+  - ysd desk
+  - ysd table
+  category: workstation
+  static: true
+  segment_id: desk_ysd
+  navigation_ready: false
+  affordances:
+  - navigate_near
+  - inspect
+  - visual_arrival_confirm
+  safety_zone_m: 0.5
+  confidence: 0.2
+  note: Provisional transform from sim_real_lab_001/desk_ysd; adjust polygon and approach
+    side on the real L402 map before navigation. Placeholder.
+  map_region:
+    type: polygon
+    polygon:
+    - x: -1.2041
+      y: 2.6946
+    - x: -2.4704
+      y: 3.3986
+    - x: -2.097
+      y: 4.0198
+    - x: -0.8342
+      y: 3.36
+    front_side: north
+  approach_policy:
+    generator: region_side_offset
+    preferred_side: north
+    distance_m: 0.75
+    clearance_mode: narrow
+    speed_profile: cautious
+    yaw_mode: face_region_center
+    yaw: 0.0
+    yaw_offset_deg: 0.0
+    face_region_center: true
+  visual_arrival_confirm:
+    enabled: true
+    camera_control_policy: scan_after_stop
+    detector_skill: detect_known_object
+    detector_candidates:
+    - yolo
+    - gpt_api
+    - local_vlm
+    - manual_confirm
+    expected_query: desk_ysd label
+  refinement:
+    method: local_idw_from_calibrated_real_objects
+    neighbor_count: 4
+    anchors:
+    - desk_tcb
+    - desk_hyk
+    - desk_mkr
+    - desk_tkd
+    delta_x: 0.6423
+    delta_y: 1.0948
+- id: desk_ikr
+  names:
+  - IKR
+  - ikr desk
+  - ikr table
+  category: workstation
+  static: true
+  segment_id: desk_ikr
+  navigation_ready: false
+  affordances:
+  - navigate_near
+  - inspect
+  - visual_arrival_confirm
+  safety_zone_m: 0.5
+  confidence: 0.2
+  note: Provisional transform from sim_real_lab_001/desk_ikr; adjust polygon and approach
+    side on the real L402 map before navigation. Placeholder.
+  map_region:
+    type: polygon
+    polygon:
+    - x: -3.1696
+      y: 2.518
+    - x: -4.5432
+      y: 3.2817
+    - x: -4.1232
+      y: 3.9613
+    - x: -2.7091
+      y: 3.2454
+    front_side: south
+  approach_policy:
+    generator: region_side_offset
+    preferred_side: south
+    distance_m: 0.75
+    clearance_mode: narrow
+    speed_profile: cautious
+    yaw_mode: face_region_center
+    yaw: 0.0
+    yaw_offset_deg: 0.0
+    face_region_center: true
+  visual_arrival_confirm:
+    enabled: true
+    camera_control_policy: scan_after_stop
+    detector_skill: detect_known_object
+    detector_candidates:
+    - yolo
+    - gpt_api
+    - local_vlm
+    - manual_confirm
+    expected_query: desk_ikr label
+  refinement:
+    method: local_idw_from_calibrated_real_objects
+    neighbor_count: 4
+    anchors:
+    - desk_mkr
+    - desk_hyk
+    - desk_min
+    - desk_tkd
+    delta_x: 0.4144
+    delta_y: 0.9356
+- id: desk_myj
+  names:
+  - MYJ
+  - myj desk
+  - myj table
+  category: workstation
+  static: true
+  segment_id: desk_myj
+  navigation_ready: false
+  affordances:
+  - navigate_near
+  - inspect
+  - visual_arrival_confirm
+  safety_zone_m: 0.5
+  confidence: 0.2
+  note: Provisional transform from sim_real_lab_001/desk_myj; adjust polygon and approach
+    side on the real L402 map before navigation. Placeholder.
+  map_region:
+    type: polygon
+    polygon:
+    - x: -2.5662
+      y: 3.3893
+    - x: -3.9839
+      y: 4.1493
+    - x: -3.6022
+      y: 4.8361
+    - x: -2.1761
+      y: 4.0153
+    front_side: north
+  approach_policy:
+    generator: region_side_offset
+    preferred_side: north
+    distance_m: 0.75
+    clearance_mode: narrow
+    speed_profile: cautious
+    yaw_mode: face_region_center
+    yaw: 0.0
+    yaw_offset_deg: 0.0
+    face_region_center: true
+  visual_arrival_confirm:
+    enabled: true
+    camera_control_policy: scan_after_stop
+    detector_skill: detect_known_object
+    detector_candidates:
+    - yolo
+    - gpt_api
+    - local_vlm
+    - manual_confirm
+    expected_query: desk_myj label
+  refinement:
+    method: local_idw_from_calibrated_real_objects
+    neighbor_count: 4
+    anchors:
+    - desk_mkr
+    - desk_hyk
+    - desk_tcb
+    - desk_min
+    delta_x: 0.5751
+    delta_y: 1.1117
+- id: desk_isz
+  names:
+  - ISZ
+  - isz desk
+  - isz table
+  category: workstation
+  static: true
+  segment_id: desk_isz
+  navigation_ready: false
+  affordances:
+  - navigate_near
+  - inspect
+  - visual_arrival_confirm
+  safety_zone_m: 0.5
+  confidence: 0.2
+  note: Provisional transform from sim_real_lab_001/desk_isz; adjust polygon and approach
+    side on the real L402 map before navigation. Placeholder.
+  map_region:
+    type: polygon
+    polygon:
+    - x: -0.6139
+      y: 3.768
+    - x: -1.9852
+      y: 4.4601
+    - x: -1.6522
+      y: 5.2864
+    - x: -0.2142
+      y: 4.487
+    front_side: south
+  approach_policy:
+    generator: region_side_offset
+    preferred_side: south
+    distance_m: 0.75
+    clearance_mode: narrow
+    speed_profile: cautious
+    yaw_mode: face_region_center
+    yaw: 0.0
+    yaw_offset_deg: 0.0
+    face_region_center: true
+  visual_arrival_confirm:
+    enabled: true
+    camera_control_policy: scan_after_stop
+    detector_skill: detect_known_object
+    detector_candidates:
+    - yolo
+    - gpt_api
+    - local_vlm
+    - manual_confirm
+    expected_query: desk_isz label
+  refinement:
+    method: local_idw_from_calibrated_real_objects
+    neighbor_count: 4
+    anchors:
+    - wall_cabinet_left_lower
+    - desk_tcb
+    - back-door
+    - wall_cabinet_left_upper
+    delta_x: 0.3388
+    delta_y: 0.5859
+- id: desk_sek
+  names:
+  - SEK
+  - sek desk
+  - sek table
+  category: workstation
+  static: true
+  segment_id: desk_sek
+  navigation_ready: false
+  affordances:
+  - navigate_near
+  - inspect
+  - visual_arrival_confirm
+  safety_zone_m: 0.5
+  confidence: 0.2
+  note: Provisional transform from sim_real_lab_001/desk_sek; adjust polygon and approach
+    side on the real L402 map before navigation. Placeholder.
+  map_region:
+    type: polygon
+    polygon:
+    - x: -1.8399
+      y: 4.8506
+    - x: -3.2183
+      y: 5.6309
+    - x: -2.8508
+      y: 6.3678
+    - x: -1.5058
+      y: 5.7044
+    front_side: south
+  approach_policy:
+    generator: region_side_offset
+    preferred_side: south
+    distance_m: 0.75
+    clearance_mode: narrow
+    speed_profile: cautious
+    yaw_mode: face_region_center
+    yaw: 0.0
+    yaw_offset_deg: 0.0
+    face_region_center: true
+  visual_arrival_confirm:
+    enabled: true
+    camera_control_policy: scan_after_stop
+    detector_skill: detect_known_object
+    detector_candidates:
+    - yolo
+    - gpt_api
+    - local_vlm
+    - manual_confirm
+    expected_query: desk_sek label
+  refinement:
+    method: local_idw_from_calibrated_real_objects
+    neighbor_count: 4
+    anchors:
+    - wall_cabinet_left_lower
+    - desk_tcb
+    - desk_mkr
+    - desk_hyk
+    delta_x: 0.4912
+    delta_y: 1.0145
+- id: desk_tym
+  names:
+  - TYM
+  - tym desk
+  - tym table
+  category: workstation
+  static: true
+  segment_id: desk_tym
+  navigation_ready: false
+  affordances:
+  - navigate_near
+  - inspect
+  - visual_arrival_confirm
+  safety_zone_m: 0.5
+  confidence: 0.2
+  note: Provisional transform from sim_real_lab_001/desk_tym; adjust polygon and approach
+    side on the real L402 map before navigation. Placeholder.
+  map_region:
+    type: polygon
+    polygon:
+    - x: -1.5832
+      y: 5.5862
+    - x: -2.9067
+      y: 6.2377
+    - x: -2.3985
+      y: 7.0508
+    - x: -1.1429
+      y: 6.3529
+    front_side: north
+  approach_policy:
+    generator: region_side_offset
+    preferred_side: north
+    distance_m: 0.75
+    clearance_mode: narrow
+    speed_profile: cautious
+    yaw_mode: face_region_center
+    yaw: 0.0
+    yaw_offset_deg: 0.0
+    face_region_center: true
+  visual_arrival_confirm:
+    enabled: true
+    camera_control_policy: scan_after_stop
+    detector_skill: detect_known_object
+    detector_candidates:
+    - yolo
+    - gpt_api
+    - local_vlm
+    - manual_confirm
+    expected_query: desk_tym label
+  refinement:
+    method: local_idw_from_calibrated_real_objects
+    neighbor_count: 4
+    anchors:
+    - wall_cabinet_left_lower
+    - desk_tcb
+    - back-door
+    - desk_mkr
+    delta_x: 0.3315
+    delta_y: 0.7736

@@ -1,0 +1,783 @@
+map_id: sim_real_lab_001
+frame_id: map
+source:
+  type: user_manual_template
+  nav2_map: maps/sim_real_lab_001/nav2.yaml
+  note: 'Base template for the real-lab Isaac Sim map. Polygons are approximate placeholders
+    from the hand sketch and must be adjusted in segmentation_tool before agent navigation
+    tests.
+
+    '
+segments:
+- id: front_door
+  type: object_region
+  names:
+  - front door
+  - entrance
+  - main door
+  tags:
+  - door
+  - pending_region
+  annotation:
+    color: user
+    shape: polygon
+    meaning: front door
+  map_polygon:
+  - x: -4.0886
+    y: 5.3382
+  - x: -3.5812
+    y: 5.3877
+  - x: -3.507
+    y: 3.7666
+  - x: -4.0886
+    y: 3.7295
+  map_pose:
+    x: -3.81635
+    y: 4.5555
+    yaw: 3.141592653589793
+    frame_id: map
+  calibrated: true
+  navigation_ready: true
+  notes: Placeholder. Adjust on sim_real_lab_001 map.
+  approach_policy:
+    generator: fixed_pose
+    recovery_mode: fixed_point
+    allow_relaxed_tolerance: false
+    allow_alternate_goal: false
+    clearance_mode: narrow
+    speed_profile: cautious
+    yaw_mode: fixed
+    yaw: 3.141592653589793
+    yaw_offset_deg: 0.0
+    face_region_center: false
+- id: back_door
+  type: object_region
+  names:
+  - back door
+  - rear door
+  tags:
+  - door
+  - pending_region
+  annotation:
+    color: user
+    shape: polygon
+    meaning: back door
+  map_polygon:
+  - x: -3.6926
+    y: -4.772
+  - x: -3.3214
+    y: -4.7473
+  - x: -3.3461
+    y: -6.257
+  - x: -3.7174
+    y: -6.257
+  map_pose:
+    x: -3.519375
+    y: -5.508325
+    yaw: 3.141592653589793
+    frame_id: map
+  calibrated: true
+  navigation_ready: true
+  notes: Placeholder. Adjust on sim_real_lab_001 map.
+  approach_policy:
+    generator: fixed_pose
+    recovery_mode: fixed_point
+    allow_relaxed_tolerance: false
+    allow_alternate_goal: false
+    clearance_mode: narrow
+    speed_profile: cautious
+    yaw_mode: fixed
+    yaw: 3.141592653589793
+    yaw_offset_deg: 0.0
+    face_region_center: false
+- id: trash_bin
+  type: object_region
+  names:
+  - trash bin
+  - bin
+  - garbage bin
+  tags:
+  - object
+  - pending_region
+  annotation:
+    color: user
+    shape: polygon
+    meaning: trash bin
+  map_polygon:
+  - x: -3.6555
+    y: 6.5385
+  - x: -2.5665
+    y: 6.6375
+  - x: -2.5294
+    y: 5.5857
+  - x: -3.5441
+    y: 5.5114
+  map_pose: null
+  calibrated: true
+  navigation_ready: true
+  notes: Placeholder. Adjust on sim_real_lab_001 map.
+  approach_policy:
+    generator: region_side_offset
+    preferred_side: south
+    distance_m: 0.75
+    yaw_mode: face_region_center
+    yaw: 0.0
+    yaw_offset_deg: 0.0
+    face_region_center: true
+- id: meeting_table
+  type: object_region
+  names:
+  - meeting table
+  - meeting desk
+  tags:
+  - table
+  - pending_region
+  annotation:
+    color: user
+    shape: polygon
+    meaning: meeting table
+  map_polygon:
+  - x: -1.8364
+    y: 6.885
+  - x: -1.0073
+    y: 6.8727
+  - x: -0.9825
+    y: 5.2268
+  - x: -1.8116
+    y: 5.2021
+  map_pose: null
+  calibrated: true
+  navigation_ready: true
+  notes: Placeholder. Adjust on sim_real_lab_001 map.
+  approach_policy:
+    generator: region_side_offset
+    preferred_side: south
+    distance_m: 0.75
+    yaw_mode: face_region_center
+    yaw: 0.0
+    yaw_offset_deg: 0.0
+    face_region_center: true
+- id: sofa
+  type: object_region
+  names:
+  - sofa
+  - couch
+  - loveseat
+  tags:
+  - sofa
+  - pending_region
+  annotation:
+    color: user
+    shape: polygon
+    meaning: sofa
+  map_polygon:
+  - x: 1.0964
+    y: 6.3158
+  - x: 2.767
+    y: 6.4148
+  - x: 2.7794
+    y: 5.4743
+  - x: 1.0841
+    y: 5.4743
+  map_pose: null
+  calibrated: true
+  navigation_ready: true
+  notes: Placeholder. Adjust on sim_real_lab_001 map.
+  approach_policy:
+    generator: region_side_offset
+    preferred_side: south
+    distance_m: 0.75
+    yaw_mode: face_region_center
+    yaw: 0.0
+    yaw_offset_deg: 0.0
+    face_region_center: true
+- id: tool_box
+  type: object_region
+  names:
+  - tool box
+  - toolbox
+  - tool cart
+  tags:
+  - tool
+  - pending_region
+  annotation:
+    color: user
+    shape: polygon
+    meaning: tool box
+  map_polygon:
+  - x: -2.5789
+    y: -2.4456
+  - x: -1.329
+    y: -2.4208
+  - x: -1.0815
+    y: -3.4232
+  - x: -2.4304
+    y: -3.4603
+  map_pose: null
+  calibrated: true
+  navigation_ready: true
+  notes: Placeholder. Adjust on sim_real_lab_001 map.
+  approach_policy:
+    generator: region_side_offset
+    preferred_side: south
+    distance_m: 0.75
+    yaw_mode: face_region_center
+    yaw: 0.0
+    yaw_offset_deg: 0.0
+    face_region_center: true
+- id: wall_cabinet_left_upper
+  type: object_region
+  names:
+  - left upper cabinet
+  - left shelf upper
+  tags:
+  - cabinet
+  - pending_region
+  annotation:
+    color: user
+    shape: polygon
+    meaning: wall cabinet
+  map_polygon:
+  - x: -3.9649
+    y: 3.1231
+  - x: -2.9625
+    y: 3.0488
+  - x: -2.7026
+    y: -4.2771
+  - x: -3.6184
+    y: -4.3018
+  map_pose: null
+  calibrated: true
+  navigation_ready: true
+  notes: Placeholder.
+  approach_policy:
+    generator: region_side_offset
+    preferred_side: east
+    distance_m: 0.75
+    yaw_mode: face_region_center
+    yaw: 0.0
+    yaw_offset_deg: 0.0
+    face_region_center: true
+- id: wall_cabinet_left_lower
+  type: object_region
+  names:
+  - left lower cabinet
+  - left shelf lower
+  tags:
+  - cabinet
+  - pending_region
+  annotation:
+    color: user
+    shape: polygon
+    meaning: wall cabinet
+  map_polygon:
+  - x: -2.6036
+    y: -6.0838
+  - x: 2.4205
+    y: -5.9972
+  - x: 2.5567
+    y: -6.9005
+  - x: -2.715
+    y: -7.0614
+  map_pose: null
+  calibrated: true
+  navigation_ready: true
+  notes: Placeholder.
+  approach_policy:
+    generator: region_side_offset
+    preferred_side: east
+    distance_m: 0.75
+    yaw_mode: face_region_center
+    yaw: 0.0
+    yaw_offset_deg: 0.0
+    face_region_center: true
+- id: desk_rxy
+  type: object_region
+  names:
+  - RXY
+  - rxy desk
+  - rxy table
+  tags:
+  - desk
+  - workstation
+  - pending_region
+  annotation:
+    color: user
+    shape: polygon
+    meaning: RXY workstation
+  map_polygon:
+  - x: -2.8882
+    y: 2.492
+  - x: -1.7869
+    y: 2.4672
+  - x: -1.6755
+    y: 1.5886
+  - x: -2.8882
+    y: 1.5515
+  map_pose: null
+  calibrated: true
+  navigation_ready: true
+  notes: Placeholder.
+  approach_policy:
+    generator: region_side_offset
+    preferred_side: south
+    distance_m: 0.75
+    yaw_mode: face_region_center
+    yaw: 0.0
+    yaw_offset_deg: 0.0
+    face_region_center: true
+- id: desk_ire
+  type: object_region
+  names:
+  - IRE
+  - ire desk
+  - ire table
+  tags:
+  - desk
+  - workstation
+  - pending_region
+  annotation:
+    color: user
+    shape: polygon
+    meaning: IRE workstation
+  map_polygon:
+  - x: -1.9849
+    y: 3.3335
+  - x: -0.6608
+    y: 3.3335
+  - x: -0.5865
+    y: 2.4672
+  - x: -1.9725
+    y: 2.4672
+  map_pose: null
+  calibrated: true
+  navigation_ready: true
+  notes: Placeholder.
+  approach_policy:
+    generator: region_side_offset
+    preferred_side: north
+    distance_m: 0.75
+    yaw_mode: face_region_center
+    yaw: 0.0
+    yaw_offset_deg: 0.0
+    face_region_center: true
+- id: desk_tkd
+  type: object_region
+  names:
+  - TKD
+  - tkd desk
+  - tkd table
+  tags:
+  - desk
+  - workstation
+  - pending_region
+  annotation:
+    color: user
+    shape: polygon
+    meaning: TKD workstation
+  map_polygon:
+  - x: -1.7745
+    y: 2.4301
+  - x: -0.5865
+    y: 2.4425
+  - x: -0.537
+    y: 1.5886
+  - x: -1.7374
+    y: 1.6134
+  map_pose: null
+  calibrated: true
+  navigation_ready: true
+  notes: Placeholder.
+  approach_policy:
+    generator: region_side_offset
+    preferred_side: south
+    distance_m: 0.75
+    yaw_mode: face_region_center
+    yaw: 0.0
+    yaw_offset_deg: 0.0
+    face_region_center: true
+- id: desk_tcb
+  type: object_region
+  names:
+  - TCB
+  - tcb desk
+  - tcb table
+  tags:
+  - desk
+  - workstation
+  - pending_region
+  annotation:
+    color: user
+    shape: polygon
+    meaning: TCB workstation
+  map_polygon:
+  - x: -2.8635
+    y: -0.28
+  - x: -1.527
+    y: -0.3047
+  - x: -1.5023
+    y: -1.3195
+  - x: -2.7645
+    y: -1.3442
+  map_pose: null
+  calibrated: true
+  navigation_ready: true
+  notes: Placeholder.
+  approach_policy:
+    generator: region_side_offset
+    preferred_side: north
+    distance_m: 0.75
+    yaw_mode: face_region_center
+    yaw: 0.0
+    yaw_offset_deg: 0.0
+    face_region_center: true
+- id: desk_min
+  type: object_region
+  names:
+  - MIN
+  - min desk
+  - min table
+  tags:
+  - desk
+  - workstation
+  - pending_region
+  annotation:
+    color: user
+    shape: polygon
+    meaning: MIN workstation
+  map_polygon:
+  - x: 0.255
+    y: 3.8408
+  - x: 1.7523
+    y: 3.9027
+  - x: 1.8884
+    y: 2.591
+  - x: 0.2178
+    y: 2.5538
+  map_pose: null
+  calibrated: true
+  navigation_ready: true
+  notes: Placeholder.
+  approach_policy:
+    generator: region_side_offset
+    preferred_side: north
+    distance_m: 0.75
+    yaw_mode: face_region_center
+    yaw: 0.0
+    yaw_offset_deg: 0.0
+    face_region_center: true
+- id: desk_hyk
+  type: object_region
+  names:
+  - HYK
+  - hyk desk
+  - hyk table
+  tags:
+  - desk
+  - workstation
+  - pending_region
+  annotation:
+    color: user
+    shape: polygon
+    meaning: HYK workstation
+  map_polygon:
+  - x: 0.2426
+    y: 2.5662
+  - x: 1.9008
+    y: 2.5786
+  - x: 1.8513
+    y: 1.7371
+  - x: 0.2673
+    y: 1.7
+  map_pose: null
+  calibrated: true
+  navigation_ready: true
+  notes: Placeholder.
+  approach_policy:
+    generator: region_side_offset
+    preferred_side: south
+    distance_m: 0.75
+    yaw_mode: face_region_center
+    yaw: 0.0
+    yaw_offset_deg: 0.0
+    face_region_center: true
+- id: desk_mkr
+  type: object_region
+  names:
+  - MKR
+  - mkr desk
+  - mkr table
+  tags:
+  - desk
+  - workstation
+  - pending_region
+  annotation:
+    color: user
+    shape: polygon
+    meaning: MKR workstation
+  map_polygon:
+  - x: 1.9256
+    y: 2.6652
+  - x: 3.3115
+    y: 2.69
+  - x: 3.3239
+    y: 1.7742
+  - x: 1.8142
+    y: 1.7371
+  map_pose: null
+  calibrated: true
+  navigation_ready: true
+  notes: Placeholder.
+  approach_policy:
+    generator: region_side_offset
+    preferred_side: south
+    distance_m: 0.75
+    yaw_mode: face_region_center
+    yaw: 0.0
+    yaw_offset_deg: 0.0
+    face_region_center: true
+- id: desk_tks
+  type: object_region
+  names:
+  - TKS
+  - tks desk
+  - tks table
+  tags:
+  - desk
+  - workstation
+  - pending_region
+  annotation:
+    color: user
+    shape: polygon
+    meaning: TKS workstation
+  map_polygon:
+  - x: 0.3292
+    y: -0.181
+  - x: 1.7771
+    y: -0.2181
+  - x: 1.7399
+    y: -1.1091
+  - x: 0.3045
+    y: -1.1091
+  map_pose: null
+  calibrated: true
+  navigation_ready: true
+  notes: Placeholder.
+  approach_policy:
+    generator: region_side_offset
+    preferred_side: north
+    distance_m: 0.75
+    yaw_mode: face_region_center
+    yaw: 0.0
+    yaw_offset_deg: 0.0
+    face_region_center: true
+- id: desk_ysd
+  type: object_region
+  names:
+  - YSD
+  - ysd desk
+  - ysd table
+  tags:
+  - desk
+  - workstation
+  - pending_region
+  annotation:
+    color: user
+    shape: polygon
+    meaning: YSD workstation
+  map_polygon:
+  - x: 0.2921
+    y: -1.0967
+  - x: 1.7523
+    y: -1.0967
+  - x: 1.7276
+    y: -1.8268
+  - x: 0.2921
+    y: -1.864
+  map_pose: null
+  calibrated: true
+  navigation_ready: true
+  notes: Placeholder.
+  approach_policy:
+    generator: region_side_offset
+    preferred_side: south
+    distance_m: 0.75
+    yaw_mode: face_region_center
+    yaw: 0.0
+    yaw_offset_deg: 0.0
+    face_region_center: true
+- id: desk_ikr
+  type: object_region
+  names:
+  - IKR
+  - ikr desk
+  - ikr table
+  tags:
+  - desk
+  - workstation
+  - pending_region
+  annotation:
+    color: user
+    shape: polygon
+    meaning: IKR workstation
+  map_polygon:
+  - x: 1.8142
+    y: -0.2305
+  - x: 3.3982
+    y: -0.2305
+  - x: 3.361
+    y: -1.0349
+  - x: 1.7647
+    y: -1.0967
+  map_pose: null
+  calibrated: true
+  navigation_ready: true
+  notes: Placeholder.
+  approach_policy:
+    generator: region_side_offset
+    preferred_side: north
+    distance_m: 0.75
+    yaw_mode: face_region_center
+    yaw: 0.0
+    yaw_offset_deg: 0.0
+    face_region_center: true
+- id: desk_myj
+  type: object_region
+  names:
+  - MYJ
+  - myj desk
+  - myj table
+  tags:
+  - desk
+  - workstation
+  - pending_region
+  annotation:
+    color: user
+    shape: polygon
+    meaning: MYJ workstation
+  map_polygon:
+  - x: 1.7647
+    y: -1.0596
+  - x: 3.3858
+    y: -1.0349
+  - x: 3.3858
+    y: -1.8268
+  - x: 1.7276
+    y: -1.8021
+  map_pose: null
+  calibrated: true
+  navigation_ready: true
+  notes: Placeholder.
+  approach_policy:
+    generator: region_side_offset
+    preferred_side: south
+    distance_m: 0.75
+    yaw_mode: face_region_center
+    yaw: 0.0
+    yaw_offset_deg: 0.0
+    face_region_center: true
+- id: desk_isz
+  type: object_region
+  names:
+  - ISZ
+  - isz desk
+  - isz table
+  tags:
+  - desk
+  - workstation
+  - pending_region
+  annotation:
+    color: user
+    shape: polygon
+    meaning: ISZ workstation
+  map_polygon:
+  - x: 0.2797
+    y: -2.9282
+  - x: 1.8266
+    y: -2.8663
+  - x: 1.9379
+    y: -3.7573
+  - x: 0.2797
+    y: -3.7573
+  map_pose: null
+  calibrated: true
+  navigation_ready: true
+  notes: Placeholder.
+  approach_policy:
+    generator: region_side_offset
+    preferred_side: north
+    distance_m: 0.75
+    yaw_mode: face_region_center
+    yaw: 0.0
+    yaw_offset_deg: 0.0
+    face_region_center: true
+- id: desk_sek
+  type: object_region
+  names:
+  - SEK
+  - sek desk
+  - sek table
+  tags:
+  - desk
+  - workstation
+  - pending_region
+  annotation:
+    color: user
+    shape: polygon
+    meaning: SEK workstation
+  map_polygon:
+  - x: 1.8142
+    y: -2.8292
+  - x: 3.4105
+    y: -2.8416
+  - x: 3.4477
+    y: -3.6707
+  - x: 1.9379
+    y: -3.7449
+  map_pose: null
+  calibrated: true
+  navigation_ready: true
+  notes: Placeholder.
+  approach_policy:
+    generator: region_side_offset
+    preferred_side: north
+    distance_m: 0.75
+    yaw_mode: face_region_center
+    yaw: 0.0
+    yaw_offset_deg: 0.0
+    face_region_center: true
+- id: desk_tym
+  type: object_region
+  names:
+  - TYM
+  - tym desk
+  - tym table
+  tags:
+  - desk
+  - workstation
+  - pending_region
+  annotation:
+    color: user
+    shape: polygon
+    meaning: TYM workstation
+  map_polygon:
+  - x: 1.9256
+    y: -3.8934
+  - x: 3.4105
+    y: -3.8192
+  - x: 3.361
+    y: -4.7844
+  - x: 1.9132
+    y: -4.7844
+  map_pose: null
+  calibrated: true
+  navigation_ready: true
+  notes: Placeholder.
+  approach_policy:
+    generator: region_side_offset
+    preferred_side: south
+    distance_m: 0.75
+    yaw_mode: face_region_center
+    yaw: 0.0
+    yaw_offset_deg: 0.0
+    face_region_center: true

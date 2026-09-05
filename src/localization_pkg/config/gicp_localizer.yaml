@@ -24,7 +24,17 @@ gicp_localizer:
 
     # fitness_score_threshold: INLIER RMSE above this → localization rejected,
     #   previous TF is rebroadcast unchanged.  Tune after first run.
-    fitness_score_threshold: 0.5
+    # Keep this aligned with the real-robot Agent health threshold. Previously
+    # GICP accepted 0.25..0.5 matches and moved map->odom while the Agent called
+    # the same localization BAD, which could make a manual pose drift away.
+    fitness_score_threshold: 0.25
+
+    # After RViz /initialpose, hold the clicked map->odom transform while several
+    # stationary Livox frames are accumulated. The first correction therefore
+    # uses a denser cloud instead of one sparse frame.
+    initialpose_accumulation_sec: 2.5
+    initialpose_min_scans: 10
+    initialpose_max_scans: 30
 
     # normal_search_radius: KD-tree radius for normal estimation (m).
     #   ~3-4× voxel_size is a good starting point.

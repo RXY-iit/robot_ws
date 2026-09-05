@@ -45,12 +45,16 @@ int main(int argc, char **argv)
             }
             else
             {
-                RCLCPP_ERROR(node->get_logger(), "Failed to call service get_position");
+                RCLCPP_ERROR_THROTTLE(
+                    node->get_logger(), *node->get_clock(), 2000,
+                    "Failed to call service get_position");
             }
         }
         else
         {
-            RCLCPP_ERROR(node->get_logger(), "Service get_position not available");
+            RCLCPP_ERROR_THROTTLE(
+                node->get_logger(), *node->get_clock(), 5000,
+                "Service get_position not available");
         }
 
         steer_odom.header.stamp = node->now();

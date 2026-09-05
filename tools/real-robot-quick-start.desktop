@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Real Robot Quick Start
+Name[ja]=実機クイックスタート
+Comment=Start full robot, Arm-only or Agent Dashboard with saved options
+Comment[ja]=保存した設定で実機フル構成、SO101アームのみ、またはAgent Dashboardを起動
+Exec=/usr/bin/python3 /home/matsunaga-h/robot_ws/tools/real_robot_quick_start.py
+Icon=utilities-terminal
+Terminal=false
+Categories=Utility;
+StartupNotify=true

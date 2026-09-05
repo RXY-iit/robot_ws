@@ -11,7 +11,7 @@
 #       Baudrate: [230400, 230400, 230400]
 #
 # ●launchファイル設定:
-#       com:="/dev/ttyUSB0" topicID:=1 baudrate:=230400 updateRate:=1000 firstGen:="" secondGen:="1,2,3" globalID:="10" axisNum:="3"
+#       com:="/dev/ttyUSB0" topicID:=1 baudrate:=230400 updateRate:=100 firstGen:="" secondGen:="1,2,3" globalID:="10" axisNum:="3"
 #
 # ●処理内容:
 #       Writeにより連続運転(速度制御)でモーターを運転させる。
@@ -20,6 +20,8 @@
 import os
 import sys
 import threading
+import json
+from collections import deque
 
 sys.path.append(os.path.dirname(os.path.abspath(os.path.dirname(__file__))))
 from rclpy.node import Node
@@ -43,13 +45,32 @@ from geometry_msgs.msg import Pose
 from geometry_msgs.msg import PoseStamped
 from geometry_msgs.msg import Quaternion
 from my_messages.msg import DriveMotor
+from std_msgs.msg import String
 
 # グローバル変数
 _state_driver = 0  # 0:通信可能 1:通信中
 _state_mes = 0  # 0:メッセージなし 1:メッセージ到達 2:メッセージエラー
 _state_error = 0  # 0:エラーなし 1:無応答 2:例外応答
 _is_timer_active = False
-msg = Query()
+# Completion counter shared by the serialized runtime publisher.  The ROS
+# driver state topic can lag the query callback briefly, so state alone is not
+# a sufficient guard against submitting the next Modbus transaction too soon.
+_query_completion_counter = 0
+_runtime_query_count = 0
+_query_timeout_count = 0
+_query_timeout_times = deque(maxlen=256)
+_last_query_timeout_time = None
+_last_query_timeout_kind = None
+_last_query_timeout_elapsed_sec = None
+# Direct error events reported by the C++ Modbus driver through /om_state0.
+# Keep these separate from an upper-layer completion callback deadline miss:
+# the latter may be caused by ROS/Python scheduling even when the driver did
+# not report a serial error.
+_driver_error_event_count = 0
+_driver_no_response_event_count = 0
+_driver_exception_event_count = 0
+_last_driver_error_time = None
+_runtime_query_kind = None
 left = 0
 right = 0
 back = 0
@@ -71,11 +92,72 @@ last_commanded_rpm = (0.0, 0.0, 0.0)
 last_servo_diagnostic_time = 0.0
 zero_feedback_count_after_cmd = 0
 # 指令タイムアウト[s]
-CMD_TIMEOUT_SEC = 0.3
+CMD_TIMEOUT_SEC = 0.08
 # スレッドセーフなロック機構
 motor_speed_lock = threading.Lock()
 # 定数
 const.QUEUE_SIZE = 1
+WHEEL_EFFECTIVE_RADIUS_M = 0.107
+DRIVE_AXIS_LAYOUT = (
+    (1, "back"),
+    (2, "front_left"),
+    (3, "front_right"),
+)
+DRIVE_HEALTH_PUBLISH_RATE_HZ = 2.0
+# The C++ serial layer uses a 500 ms transaction timeout. Real-robot unicast
+# alarm reads complete in about 280 ms, so the previous 250 ms callback
+# deadline produced false misses while /om_state0 still reported no error.
+COMPLETION_CALLBACK_DEADLINE_SEC = 0.5
+
+
+def decode_drive_diagnostics(data):
+    """Decode NET-ID 106/155/163/164 values grouped by physical axis."""
+    if len(data) < 12:
+        raise ValueError(f"Expected 12 drive diagnostic values, received {len(data)}")
+    direct_io = []
+    electrical = []
+    for axis, (slave_id, wheel_position) in enumerate(DRIVE_AXIS_LAYOUT):
+        base = axis * 4
+        direct_raw = int(data[base])
+        direct_io.append(
+            {
+                "slave_id": slave_id,
+                "wheel_position": wheel_position,
+                "raw": direct_raw,
+                "din0": bool(direct_raw & 0x01),
+                "din1": bool(direct_raw & 0x02),
+                "din2": bool(direct_raw & 0x04),
+                "din3": bool(direct_raw & 0x08),
+            }
+        )
+        electrical.append(
+            {
+                "slave_id": slave_id,
+                "wheel_position": wheel_position,
+                "main_power_supply_current_raw": int(data[base + 1]),
+                "main_power_supply_current_a": int(data[base + 1]) * 0.001,
+                "inverter_voltage_raw": int(data[base + 2]),
+                "inverter_voltage_v": int(data[base + 2]) * 0.1,
+                "main_power_supply_voltage_raw": int(data[base + 3]),
+                "main_power_supply_voltage_v": int(data[base + 3]) * 0.1,
+            }
+        )
+    return direct_io, electrical
+
+
+def decode_drive_alarm_status(data, slave_id):
+    """Decode direct BLVD Present alarm and Alarm history 1 registers."""
+    if len(data) < 2:
+        raise ValueError(f"Expected 2 alarm values, received {len(data)}")
+    positions = dict(DRIVE_AXIS_LAYOUT)
+    if slave_id not in positions:
+        raise ValueError(f"Unexpected BLVD slave ID {slave_id}")
+    return {
+        "slave_id": int(slave_id),
+        "wheel_position": positions[slave_id],
+        "present_alarm": int(data[0]),
+        "alarm_history_1": int(data[1]),
+    }
 
 def yaw_to_quaternion(yaw):
     q = Quaternion()
@@ -99,15 +181,26 @@ class Mysubscription2(Node):
                 self.ca.destroy_node()
         except Exception:
             pass
-        
+
     def drive_callback(self, res):
         global lpr
         global right
         global left
         global back
+        global last_cmd_time
         global last_commanded_rpm
         global last_nonzero_cmd_time
-        wheeles_size = 0.1125
+        # Do not refresh/replay motion while the Modbus layer is reporting a
+        # communication error.  A fresh command will be accepted after the
+        # state returns to healthy.
+        if _state_error != 0:
+            with motor_speed_lock:
+                right = 0
+                left = 0
+                back = 0
+                last_cmd_time = None
+            return
+        wheeles_size = WHEEL_EFFECTIVE_RADIUS_M
         # axle_length = 0.5
 
         # omega = res.angular.z
@@ -132,9 +225,7 @@ class Mysubscription2(Node):
             last_commanded_rpm = (right, left, back)
             if abs(right) > 1.0 or abs(left) > 1.0 or abs(back) > 1.0:
                 last_nonzero_cmd_time = time.monotonic()
-        global last_cmd_time
         last_cmd_time = time.monotonic()
-        self.get_logger().info("after calucurate right left %f" % (time.time()))
 
 class MySubscription(Node):
     def __init__(self):
@@ -148,6 +239,32 @@ class MySubscription(Node):
         self.pub = self.create_publisher(TwistWithCovarianceStamped, "/localization/twist_estimator/twist_with_covariance", const.QUEUE_SIZE)
         self.pub2 = self.create_publisher(Odometry, "odom", const.QUEUE_SIZE)
         self.pub_drive_odom = self.create_publisher(DriveMotor, "drive_odom", const.QUEUE_SIZE)
+        # Low-rate, factual summary for health consumers.  It is generated in
+        # this process from the actual response/state callbacks so monitors do
+        # not need to subscribe to the high-rate /om_state0 snapshot stream.
+        self.pub_health = self.create_publisher(String, "/drive/health_summary", 10)
+        self.health_timer = self.create_timer(
+            1.0 / DRIVE_HEALTH_PUBLISH_RATE_HZ,
+            self.publish_health_summary,
+        )
+        self.response_times = deque(maxlen=256)
+        self.read_response_times = deque(maxlen=256)
+        self.last_response_time = None
+        self.last_read_response_time = None
+        self.last_response_func_code = None
+        self.last_direct_io_time = None
+        self.direct_io_status = None
+        self.last_electrical_time = None
+        self.electrical_status = None
+        self.alarm_status = {}
+        self.alarm_history_baseline = {}
+        self.alarm_event_count = 0
+        self.last_alarm_event_time = None
+        self.session_started_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        self.state_update_count = 0
+        self.last_state_time = None
+        self.last_state = None
+        self.cached_axis_num = None
         self.ca = ClientAsync("sub")
 
     def destroy_client(self):
@@ -158,6 +275,8 @@ class MySubscription(Node):
             pass
 
     def response_callback(self, res):
+        global _query_completion_counter
+        global _runtime_query_kind
         global v
         global omega
         global x
@@ -167,11 +286,11 @@ class MySubscription(Node):
         global dt2
         global last_servo_diagnostic_time
         global zero_feedback_count_after_cmd
-        
-        # Debug: func_code and res.data to diagnose why drive_odom is zero
-        self.get_logger().info(
-            f"response_callback: func_code={res.func_code}, data_len={len(res.data)}, data={res.data[:3] if len(res.data) >= 3 else res.data}"
-        )
+        _query_completion_counter += 1
+        now_monotonic = time.monotonic()
+        self.response_times.append(now_monotonic)
+        self.last_response_time = now_monotonic
+        self.last_response_func_code = int(res.func_code)
         
         pose = Pose()
         twist_stamp = TwistWithCovarianceStamped()
@@ -194,7 +313,69 @@ class MySubscription(Node):
         # ID Shareモードのとき
         # Read応答のファンクションコードは環境により 0 or 0x03 として返ることがあるため両方許容
         if (res.func_code == 0) or (res.func_code == 0x03):
-            axis_num = self.ca.get_parameters_from_another_node("om_node", ["axis_num"])
+            self.read_response_times.append(now_monotonic)
+            self.last_read_response_time = now_monotonic
+            if _runtime_query_kind in {"direct_io", "drive_diagnostics"}:
+                # HP-5142 ID-share responses are grouped per physical axis.
+                # Nameplates confirm ID 1=back, ID 2=front-left and
+                # ID 3=front-right.  The current combined query returns four
+                # values per axis: NET-ID 106, 155, 163 and 164.
+                values_per_axis = 4 if _runtime_query_kind == "drive_diagnostics" else 1
+                if len(res.data) >= 3 * values_per_axis:
+                    self.last_direct_io_time = now_monotonic
+                    if values_per_axis == 4:
+                        self.direct_io_status, self.electrical_status = (
+                            decode_drive_diagnostics(res.data)
+                        )
+                        self.last_electrical_time = now_monotonic
+                    else:
+                        self.direct_io_status = [
+                            {
+                                "slave_id": axis + 1,
+                                "wheel_position": ("back", "front_left", "front_right")[axis],
+                                "raw": int(res.data[axis]),
+                                "din0": bool(int(res.data[axis]) & 0x01),
+                                "din1": bool(int(res.data[axis]) & 0x02),
+                                "din2": bool(int(res.data[axis]) & 0x04),
+                                "din3": bool(int(res.data[axis]) & 0x08),
+                            }
+                            for axis in range(3)
+                        ]
+                return
+            if isinstance(_runtime_query_kind, str) and _runtime_query_kind.startswith("drive_alarm:"):
+                try:
+                    slave_id = int(_runtime_query_kind.split(":", 1)[1])
+                    alarm = decode_drive_alarm_status(res.data, slave_id)
+                except (TypeError, ValueError, IndexError) as exc:
+                    self.get_logger().error(f"Invalid BLVD alarm response: {exc}")
+                    return
+                previous = self.alarm_status.get(slave_id)
+                baseline = self.alarm_history_baseline.get(slave_id)
+                history = alarm["alarm_history_1"]
+                if baseline is None:
+                    self.alarm_history_baseline[slave_id] = history
+                history_changed = baseline is not None and history != baseline
+                history_change_started = (
+                    history_changed
+                    and (previous is None or previous.get("alarm_history_1") != history)
+                )
+                present_alarm_started = (
+                    alarm["present_alarm"] != 0
+                    and (previous is None or previous.get("present_alarm") == 0)
+                )
+                if history_change_started or present_alarm_started:
+                    self.alarm_event_count += 1
+                    self.last_alarm_event_time = now_monotonic
+                alarm["alarm_history_baseline"] = self.alarm_history_baseline[slave_id]
+                alarm["alarm_history_changed_in_session"] = history_changed
+                alarm["observed_monotonic"] = now_monotonic
+                self.alarm_status[slave_id] = alarm
+                return
+            if self.cached_axis_num is None:
+                self.cached_axis_num = self.ca.get_parameters_from_another_node(
+                    "om_node", ["axis_num"]
+                )
+            axis_num = self.cached_axis_num
             if dt2 != 0:
                 delta = dt1-dt2
             else:
@@ -208,8 +389,8 @@ class MySubscription(Node):
             drive_odom_msg.header.frame_id = "base_link"
             
             for axis in range(axis_num[0]):
-                vR = math.pi*2*0.1125*(-res.data[1])/(60*30) #m/s
-                vL = math.pi*2*0.1125*res.data[0]/(60*30) #m/s
+                vR = math.pi*2*WHEEL_EFFECTIVE_RADIUS_M*(-res.data[1])/(60*30) #m/s
+                vL = math.pi*2*WHEEL_EFFECTIVE_RADIUS_M*res.data[0]/(60*30) #m/s
                 robot_v = (vR+vL)/2
                 robot_w = (vR-vL)/0.5
                 th = th + robot_w*delta
@@ -234,24 +415,19 @@ class MySubscription(Node):
                 # twist_stamp.twist.covariance[35] = 1.0
                 # self.pub.publish(twist_stamp)
 
-                print(
-                    "{0}: {1}[m], {2}[m]".format(
-                        delta,x,y#res.data[0], res.data[1]
-                    )
-                )  # [0]:1軸目の検出速度、[1]:2軸目の検出速度
             
             # 3軸分の検出速度を変換してDriveMotorメッセージに格納
-            # res.data[0]: 2軸目(left), res.data[1]: 3軸目(right), res.data[2]: 1軸目(back)の検出速度 [r/min]
-            wheeles_size = 0.1125
+            # Convert physical motor signs to the logical wheel signs used by
+            # PickingRobotMatrix. A positive /cmd_vel.x must produce positive
+            # right, left, and back wheel feedback when steer angles are zero.
+            # ID Share response follows physical axis order:
+            # data[0]=back, data[1]=left, data[2]=right [r/min].
+            wheeles_size = WHEEL_EFFECTIVE_RADIUS_M
             if len(res.data) >= 3:
                 # r/min から m/s に変換
-                drive_odom_msg.vel1 = math.pi * 2 * wheeles_size * (-res.data[1]) / (60 * 30)  # right
-                drive_odom_msg.vel2 = math.pi * 2 * wheeles_size * res.data[0] / (60 * 30)    # left
-                drive_odom_msg.vel3 = math.pi * 2 * wheeles_size * res.data[2] / (60 * 30)    # back
-                # パブリッシュ前に可視化用のログを出す
-                self.get_logger().info(
-                    f"publish drive_odom vel=[{drive_odom_msg.vel1:.4f}, {drive_odom_msg.vel2:.4f}, {drive_odom_msg.vel3:.4f}]"
-                )
+                drive_odom_msg.vel1 = math.pi * 2 * wheeles_size * (-res.data[2]) / (60 * 30) # right
+                drive_odom_msg.vel2 = math.pi * 2 * wheeles_size * res.data[1] / (60 * 30)    # left
+                drive_odom_msg.vel3 = math.pi * 2 * wheeles_size * res.data[0] / (60 * 30)    # back
                 self.pub_drive_odom.publish(drive_odom_msg)
                 feedback_zero = (
                     abs(drive_odom_msg.vel1) < 1e-4
@@ -261,6 +437,7 @@ class MySubscription(Node):
                 recently_commanded = (
                     last_nonzero_cmd_time is not None
                     and (time.monotonic() - last_nonzero_cmd_time) < 1.0
+                    and any(abs(value) > 1.0 for value in last_commanded_rpm)
                 )
                 if recently_commanded and feedback_zero:
                     zero_feedback_count_after_cmd += 1
@@ -297,9 +474,116 @@ class MySubscription(Node):
         global _state_driver
         global _state_mes
         global _state_error
+        global _driver_error_event_count
+        global _driver_no_response_event_count
+        global _driver_exception_event_count
+        global _last_driver_error_time
+        previous_error = _state_error
         _state_driver = res.state_driver
         _state_mes = res.state_mes
         _state_error = res.state_error
+        if _state_error != 0 and _state_error != previous_error:
+            _driver_error_event_count += 1
+            if _state_error == 1:
+                _driver_no_response_event_count += 1
+            elif _state_error == 2:
+                _driver_exception_event_count += 1
+            _last_driver_error_time = time.monotonic()
+        self.state_update_count += 1
+        self.last_state_time = time.monotonic()
+        self.last_state = {
+            "state_driver": int(res.state_driver),
+            "state_message": int(res.state_mes),
+            "state_error": int(res.state_error),
+        }
+        # Drop any cached non-zero command as soon as the Modbus layer reports
+        # an error.  If communication recovers, the next fresh /drive_vel
+        # callback may command motion again; stale motion is never replayed.
+        if _state_error != 0:
+            global left, right, back, last_cmd_time
+            with motor_speed_lock:
+                left = 0
+                right = 0
+                back = 0
+                last_cmd_time = None
+
+    @staticmethod
+    def _recent_rate(times, now, window_sec=5.0):
+        recent = [stamp for stamp in times if now - stamp <= window_sec]
+        if len(recent) < 2 or recent[-1] <= recent[0]:
+            return None
+        return (len(recent) - 1) / (recent[-1] - recent[0])
+
+    @staticmethod
+    def _age(stamp, now):
+        return None if stamp is None else max(0.0, now - stamp)
+
+    def publish_health_summary(self):
+        global _query_completion_counter
+        global _runtime_query_count
+        global _query_timeout_count
+        global _last_query_timeout_time
+        global _last_query_timeout_kind
+        global _last_query_timeout_elapsed_sec
+        global _driver_error_event_count
+        global _driver_no_response_event_count
+        global _driver_exception_event_count
+        global _last_driver_error_time
+        now = time.monotonic()
+        recent_timeouts = [stamp for stamp in _query_timeout_times if now - stamp <= 5.0]
+        session_timeout_age = self._age(_last_query_timeout_time, now)
+        state_age = self._age(self.last_state_time, now)
+        summary = {
+            "schema_version": 1,
+            "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "source": "drive_motor.py callbacks for /om_response0 and /om_state0",
+            "publish_rate_hz": DRIVE_HEALTH_PUBLISH_RATE_HZ,
+            "session_started_at": self.session_started_at,
+            "state": self.last_state,
+            "state_update_count": self.state_update_count,
+            "state_snapshot_age_sec": state_age,
+            "response_count": _query_completion_counter,
+            "runtime_query_count": _runtime_query_count,
+            "response_rate_hz_5s": self._recent_rate(self.response_times, now),
+            "read_response_rate_hz_5s": self._recent_rate(self.read_response_times, now),
+            "last_response_age_sec": self._age(self.last_response_time, now),
+            "last_read_response_age_sec": self._age(self.last_read_response_time, now),
+            "direct_io": self.direct_io_status,
+            "last_direct_io_age_sec": self._age(self.last_direct_io_time, now),
+            "electrical_status": self.electrical_status,
+            "last_electrical_age_sec": self._age(self.last_electrical_time, now),
+            "alarm_status": [
+                {
+                    key: value
+                    for key, value in self.alarm_status[slave_id].items()
+                    if key != "observed_monotonic"
+                }
+                | {
+                    "sample_age_sec": self._age(
+                        self.alarm_status[slave_id].get("observed_monotonic"), now
+                    )
+                }
+                for slave_id in sorted(self.alarm_status)
+            ],
+            "alarm_event_count": self.alarm_event_count,
+            "last_alarm_event_age_sec": self._age(self.last_alarm_event_time, now),
+            "last_response_func_code": self.last_response_func_code,
+            "query_timeout_count": _query_timeout_count,
+            "query_timeouts_5s": len(recent_timeouts),
+            "last_query_timeout_age_sec": session_timeout_age,
+            # Preferred truthful names.  Keep the three query_timeout fields
+            # above for V1 schema compatibility with existing consumers.
+            "completion_deadline_miss_count": _query_timeout_count,
+            "completion_deadline_misses_5s": len(recent_timeouts),
+            "last_completion_deadline_miss_age_sec": session_timeout_age,
+            "last_completion_deadline_miss_query_kind": _last_query_timeout_kind,
+            "last_completion_deadline_miss_elapsed_sec": _last_query_timeout_elapsed_sec,
+            "driver_error_event_count": _driver_error_event_count,
+            "driver_no_response_event_count": _driver_no_response_event_count,
+            "driver_exception_event_count": _driver_exception_event_count,
+            "last_driver_error_age_sec": self._age(_last_driver_error_time, now),
+        }
+        self.pub_health.publish(String(data=json.dumps(summary, ensure_ascii=False)))
 
     # パラメータサーバとresponseのslave_idから、現在ID Shareモードか調べる
     def is_idshare(self, res):
@@ -310,8 +594,21 @@ class MyPublisher(Node):
     def __init__(self):
         super().__init__("my_pub")
         self.seq = 0
+        self.operation_cycle = 0
+        self.feedback_read_cycle = 0
+        self.diagnostic_cycle = 0
+        self.query_pending = False
+        self.query_completion_seen = 0
+        self.query_started_time = 0.0
+        self.last_timeout_log_time = 0.0
         self.pub = self.create_publisher(Query, "om_query0", const.QUEUE_SIZE)
-        self.timer = self.create_timer(0.01, self.timer_callback)  # 20ms → 10ms に短縮
+        # Serialize writes and feedback reads on one timer. Concurrent publishers
+        # starve read requests because the Modbus driver accepts one query at a time.
+        # The C++ Modbus driver accepts only one serial transaction at a time.
+        # Use one request every 40 ms and alternate command/feedback (12.5 Hz
+        # each). This leaves completion margin between requests and avoids the
+        # stale state race that previously produced "Driver is busy" bursts.
+        self.timer = self.create_timer(0.04, self.timer_callback)
         self.ca = ClientAsync("pub")
 
     def destroy_client(self):
@@ -326,9 +623,71 @@ class MyPublisher(Node):
         except Exception:
             pass
 
+    def publish_setup_query(self, msg, label, timeout_sec=0.75, max_attempts=3):
+        """Publish one setup request and wait for direct driver evidence.
+
+        The C++ driver accepts only one transaction at a time and its serial
+        timeout is 500 ms. Setup previously emitted requests every 10 ms,
+        which produced a directly observed busy rejection and no-response.
+        Response and state callbacks run on the other executor nodes, so this
+        publisher callback can wait without blocking their evidence path.
+        """
+        global _query_completion_counter
+        global _driver_error_event_count
+        for attempt in range(1, max_attempts + 1):
+            completion_seen = _query_completion_counter
+            driver_errors_seen = _driver_error_event_count
+            self.pub.publish(msg)
+            deadline = time.monotonic() + timeout_sec
+            failure = "no completion callback"
+            while time.monotonic() < deadline:
+                if _query_completion_counter != completion_seen:
+                    return True
+                if _driver_error_event_count != driver_errors_seen:
+                    failure = "driver reported an error"
+                    break
+                time.sleep(0.002)
+            if attempt < max_attempts:
+                self.get_logger().warn(
+                    f"Modbus setup retry {attempt}/{max_attempts - 1} at "
+                    f"{label}: {failure}")
+                # A timed-out serial transaction can take up to 500 ms in the
+                # C++ layer. Leave an explicit quiet interval before the next
+                # idempotent setup write.
+                time.sleep(0.15)
+        self.get_logger().error(
+            f"Modbus setup failed at {label} after {max_attempts} attempts")
+        return False
+
     def timer_callback(self):
         # self.get_logger().info("query is published")
         global _is_timer_active
+        global _query_completion_counter
+        global _query_timeout_count
+        global _last_query_timeout_time
+        global _last_query_timeout_kind
+        global _last_query_timeout_elapsed_sec
+        if self.query_pending:
+            if _query_completion_counter != self.query_completion_seen:
+                self.query_pending = False
+            elif time.monotonic() - self.query_started_time < COMPLETION_CALLBACK_DEADLINE_SEC:
+                return
+            else:
+                now = time.monotonic()
+                elapsed_sec = now - self.query_started_time
+                _query_timeout_count += 1
+                _query_timeout_times.append(now)
+                _last_query_timeout_time = now
+                _last_query_timeout_kind = _runtime_query_kind
+                _last_query_timeout_elapsed_sec = elapsed_sec
+                if now - self.last_timeout_log_time >= 5.0:
+                    self.last_timeout_log_time = now
+                    self.get_logger().warn(
+                        "Modbus completion callback deadline miss (500 ms); "
+                        "this does not by itself prove a serial timeout; "
+                        "further logs are suppressed for 5 s; see "
+                        "/drive/health_summary for counters")
+                self.query_pending = False
         if _state_driver == 1:
             # print("1\n")
             return
@@ -336,13 +695,30 @@ class MyPublisher(Node):
         if self.seq == 0:
             self.seq = 1
         elif self.seq == 1:
-            self.set_excitation_on()
-            self.seq = 2
+            self.seq = 2 if self.set_excitation_on() else -1
         elif self.seq == 2:
-            self.set_share_data()
-            self.seq = 3
+            self.seq = 3 if self.set_share_data() else -1
         elif self.seq == 3:
-            self.set_drive_operation()
+            # Alternate command and feedback so neither can starve the other.
+            if self.operation_cycle % 2 == 1:
+                # Replace every fourth velocity read with one low-rate health
+                # transaction. The four-step cycle reads the combined
+                # electrical/DIN3 sample, then Present alarm + Alarm history 1
+                # from IDs 1, 2 and 3. Total Modbus transaction rate remains
+                # unchanged while every per-driver alarm is sampled ~1.3 Hz.
+                if self.feedback_read_cycle % 4 == 3:
+                    diagnostic = self.diagnostic_cycle % 4
+                    if diagnostic == 0:
+                        self.read_drive_diagnostics()
+                    else:
+                        self.read_drive_alarm(diagnostic)
+                    self.diagnostic_cycle += 1
+                else:
+                    self.read_drive_feedback()
+                self.feedback_read_cycle += 1
+            else:
+                self.set_drive_operation()
+            self.operation_cycle += 1
             #print("1\n")
             self.seq = 3
         elif self.seq == 4:
@@ -354,7 +730,7 @@ class MyPublisher(Node):
             pass
 
     def set_excitation_off(self):
-        global msg
+        msg = Query()
         # ユニキャストモードで通信するため、global_id=-1に設定
         self.ca.set_parameters_from_another_node("om_node", "global_id", -1)
 
@@ -364,27 +740,28 @@ class MyPublisher(Node):
         msg.write_addr = 124  # アドレス指定： ドライバ入力指令
         msg.write_num = 1  # 書き込みデータ数: 1
         msg.data[0] = 0  # S-ONを立ち下げる
-        self.pub.publish(msg)  # 配信
-        self.wait(0.01)
+        if not self.publish_setup_query(msg, "excitation off ID 1"):
+            return False
 
         msg.slave_id = 2  # スレーブID
         msg.func_code = 1  # ファンクションコード: 0:Read 1:Write 2:Read/Write
         msg.write_addr = 124  # アドレス指定： ドライバ入力指令
         msg.write_num = 1  # 書き込みデータ数: 1
         msg.data[0] = 0  # S-ONを立ち下げる
-        self.pub.publish(msg)  # 配信
-        self.wait(0.01)
+        if not self.publish_setup_query(msg, "excitation off ID 2"):
+            return False
 
         msg.slave_id = 3  # スレーブID
         msg.func_code = 1  # ファンクションコード: 0:Read 1:Write 2:Read/Write
         msg.write_addr = 124  # アドレス指定： ドライバ入力指令
         msg.write_num = 1  # 書き込みデータ数: 1
         msg.data[0] = 0  # S-ONを立ち下げる
-        self.pub.publish(msg)  # 配信
-        self.wait(0.01)
+        if not self.publish_setup_query(msg, "excitation off ID 3"):
+            return False
+        return True
 
     def set_excitation_on(self):
-        global msg
+        msg = Query()
         # ユニキャストモードで通信するため、global_id=-1に設定
         self.ca.set_parameters_from_another_node("om_node", "global_id", -1)
 
@@ -394,28 +771,29 @@ class MyPublisher(Node):
         msg.write_addr = 124  # アドレス指定： ドライバ入力指令
         msg.write_num = 1  # 書き込みデータ数: 1
         msg.data[0] = 1  # S-ONを立ち上げる
-        self.pub.publish(msg)  # 配信
-        self.wait(0.01)
+        if not self.publish_setup_query(msg, "excitation on ID 1"):
+            return False
 
         msg.slave_id = 2  # スレーブID
         msg.func_code = 1  # ファンクションコード: 1:Write
         msg.write_addr = 124  # アドレス指定： ドライバ入力指令
         msg.write_num = 1  # 書き込みデータ数: 1
         msg.data[0] = 1  # S-ONを立ち上げる
-        self.pub.publish(msg)  # 配信
-        self.wait(0.01)
+        if not self.publish_setup_query(msg, "excitation on ID 2"):
+            return False
 
         msg.slave_id = 3  # スレーブID
         msg.func_code = 1  # ファンクションコード: 1:Write
         msg.write_addr = 124  # アドレス指定： ドライバ入力指令
         msg.write_num = 1  # 書き込みデータ数: 1
         msg.data[0] = 1  # S-ONを立ち上げる
-        self.pub.publish(msg)  # 配信
-        self.wait(0.01)
+        if not self.publish_setup_query(msg, "excitation on ID 3"):
+            return False
+        return True
 
     # 各軸のID Shareモードの設定を行う
     def set_share_data(self):
-        global msg
+        msg = Query()
         # ユニキャストモードで通信するため、global_id=-1に設定
         self.ca.set_parameters_from_another_node("om_node", "global_id", -1)
 
@@ -427,8 +805,8 @@ class MyPublisher(Node):
         msg.data[0] = 10  # Share control global ID
         msg.data[1] = 3  # Share control number
         msg.data[2] = 1  # Share control local ID
-        self.pub.publish(msg)  # 配信する
-        self.wait(0.01)
+        if not self.publish_setup_query(msg, "ID-share control ID 1"):
+            return False
 
         msg.write_addr = 0x0990  # 書き込みの起点：Share Read data[0]
         msg.write_num = 24  # 書き込むデータ数*軸数=36
@@ -440,10 +818,10 @@ class MyPublisher(Node):
         msg.data[5] = 50  # Share Read data[5] → DDOトルク制限値
         msg.data[6] = 102  # Share Read data[6] → 検出位置[step]
         msg.data[7] = 103  # Share Read data[7] → 検出速度[r/min]
-        msg.data[8] = 0  # Share Read data[8] →
-        msg.data[9] = 0  # Share Read data[9] →
-        msg.data[10] = 0  # Share Read data[10] →
-        msg.data[11] = 0  # Share Read data[11] →
+        msg.data[8] = 106  # Share Read data[8] → Direct I/O (DIN0..DIN3)
+        msg.data[9] = 155  # Share Read data[9] → Main current [0.001 A]
+        msg.data[10] = 163  # Share Read data[10] → Inverter voltage [0.1 V]
+        msg.data[11] = 164  # Share Read data[11] → Main supply voltage [0.1 V]
 
         msg.data[12] = 45  # Share Write data[0] → DDO運転方式
         msg.data[13] = 46  # Share Write data[1] → DDO位置
@@ -457,8 +835,8 @@ class MyPublisher(Node):
         msg.data[21] = 0  # Share Write data[9] →
         msg.data[22] = 0  # Share Write data[10] →
         msg.data[23] = 0  # Share Write data[11] →
-        self.pub.publish(msg)
-        self.wait(0.01)
+        if not self.publish_setup_query(msg, "ID-share data ID 1"):
+            return False
 
         # 2軸目の設定
         msg.slave_id = 2  # 書き込むドライバのスレーブID
@@ -468,8 +846,8 @@ class MyPublisher(Node):
         msg.data[0] = 10  # Share control global ID
         msg.data[1] = 3  # Share control number
         msg.data[2] = 2  # Share control local ID
-        self.pub.publish(msg)
-        self.wait(0.01)
+        if not self.publish_setup_query(msg, "ID-share control ID 2"):
+            return False
 
         msg.write_addr = 0x0990  # 書き込みの起点：Share Read data[0]
         msg.write_num = 24  # 書き込むデータ数*軸数=36
@@ -481,10 +859,10 @@ class MyPublisher(Node):
         msg.data[5] = 50  # Share Read data[5] → DDOトルク制限値
         msg.data[6] = 102  # Share Read data[6] → DDO検出位置[step]
         msg.data[7] = 103  # Share Read data[7] → DDO検出速度[r/min]
-        msg.data[8] = 0  # Share Read data[8] →
-        msg.data[9] = 0  # Share Read data[9] →
-        msg.data[10] = 0  # Share Read data[10] →
-        msg.data[11] = 0  # Share Read data[11] →
+        msg.data[8] = 106  # Share Read data[8] → Direct I/O (DIN0..DIN3)
+        msg.data[9] = 155  # Share Read data[9] → Main current [0.001 A]
+        msg.data[10] = 163  # Share Read data[10] → Inverter voltage [0.1 V]
+        msg.data[11] = 164  # Share Read data[11] → Main supply voltage [0.1 V]
 
         msg.data[12] = 45  # Share Write data[0] → DDO運転方式
         msg.data[13] = 46  # Share Write data[1] → DDO位置
@@ -498,8 +876,8 @@ class MyPublisher(Node):
         msg.data[21] = 0  # Share Write data[9] →
         msg.data[22] = 0  # Share Write data[10] →
         msg.data[23] = 0  # Share Write data[11] →
-        self.pub.publish(msg)
-        self.wait(0.01)
+        if not self.publish_setup_query(msg, "ID-share data ID 2"):
+            return False
 
         # 3軸目の設定
         msg.slave_id = 3  # 書き込むドライバのスレーブID
@@ -509,8 +887,8 @@ class MyPublisher(Node):
         msg.data[0] = 10  # Share control global ID
         msg.data[1] = 3  # Share control number
         msg.data[2] = 3  # Share control local ID
-        self.pub.publish(msg)
-        self.wait(0.01)
+        if not self.publish_setup_query(msg, "ID-share control ID 3"):
+            return False
 
         msg.write_addr = 0x0990  # 書き込みの起点：Share Read data[0]
         msg.write_num = 24  # 書き込むデータ数*軸数=36
@@ -522,10 +900,10 @@ class MyPublisher(Node):
         msg.data[5] = 50  # Share Read data[5] → DDOトルク制限値
         msg.data[6] = 102  # Share Read data[6] → DDO検出位置[step]
         msg.data[7] = 103  # Share Read data[7] → DDO検出速度[r/min]
-        msg.data[8] = 0  # Share Read data[8] →
-        msg.data[9] = 0  # Share Read data[9] →
-        msg.data[10] = 0  # Share Read data[10] →
-        msg.data[11] = 0  # Share Read data[11] →
+        msg.data[8] = 106  # Share Read data[8] → Direct I/O (DIN0..DIN3)
+        msg.data[9] = 155  # Share Read data[9] → Main current [0.001 A]
+        msg.data[10] = 163  # Share Read data[10] → Inverter voltage [0.1 V]
+        msg.data[11] = 164  # Share Read data[11] → Main supply voltage [0.1 V]
 
         msg.data[12] = 45  # Share Write data[0] → DDO運転方式
         msg.data[13] = 46  # Share Write data[1] → DDO位置
@@ -539,9 +917,10 @@ class MyPublisher(Node):
         msg.data[21] = 0  # Share Write data[9] →
         msg.data[22] = 0  # Share Write data[10] →
         msg.data[23] = 0  # Share Write data[11] →
-        self.pub.publish(msg)
-        self.wait(0.01)
+        if not self.publish_setup_query(msg, "ID-share data ID 3"):
+            return False
         self.ca.set_parameters_from_another_node("om_node", "global_id", 10)
+        return True
         #print("2\n")
 
     def set_drive_operation(self):
@@ -549,10 +928,10 @@ class MyPublisher(Node):
         # self.get_logger().info("left %f" % (left))
         # self.get_logger().info("right %f" % (right))
         global _is_timer_active
-        global msg
         global left, right, back
+        msg = Query()
         a = 300
-        d = 400
+        d = 100
         # ID Shareモードで通信するため、global_id=10に設定
         #self.ca.set_parameters_from_another_node("om_node", "global_id", 10)
         #print("3\n")
@@ -596,11 +975,57 @@ class MyPublisher(Node):
         msg.data[17] = 1  # DDO運転トリガ設定
         # 配信
         #self.wait(0.03)
-        self.pub.publish(msg)
+        self.publish_runtime_query(msg)
         #self.wait(0.03)
         _is_timer_active = True
         #self.wait(5)
         #self.get_logger().info("broadcast! %f" % (time.time()))
+
+    def read_drive_feedback(self):
+        msg = Query()
+        msg.slave_id = 10
+        msg.func_code = 0
+        msg.read_addr = 0x000E
+        msg.read_num = 3
+        self.publish_runtime_query(msg, kind="velocity")
+
+    def read_drive_direct_io(self):
+        """Compatibility alias; the runtime now reads one combined sample."""
+        self.read_drive_diagnostics()
+
+    def read_drive_diagnostics(self):
+        msg = Query()
+        msg.slave_id = 10
+        msg.func_code = 0
+        # Share Read data[8] starts at 8 * 2 = 0x0010. Read four configured
+        # 32-bit values for each of three axes. The C++ ID-share decoder
+        # removes per-axis checks and preserves per-axis grouping.
+        msg.read_addr = 0x0010
+        msg.read_num = 12
+        self.publish_runtime_query(msg, kind="drive_diagnostics")
+
+    def read_drive_alarm(self, slave_id):
+        msg = Query()
+        msg.slave_id = int(slave_id)
+        msg.func_code = 0
+        # HP-5142-4E register 128/129 is Present alarm (NET-ID 64),
+        # followed by register 130/131 Alarm history 1 (NET-ID 65).
+        msg.read_addr = 128
+        msg.read_num = 2
+        self.publish_runtime_query(msg, kind=f"drive_alarm:{int(slave_id)}")
+
+    def publish_runtime_query(self, msg, kind="write"):
+        global _query_completion_counter
+        global _runtime_query_count
+        global _runtime_query_kind
+        # Arm the guard before publish; the MultiThreadedExecutor may deliver a
+        # very fast response callback immediately after publish returns.
+        self.query_completion_seen = _query_completion_counter
+        self.query_started_time = time.monotonic()
+        self.query_pending = True
+        _runtime_query_kind = kind
+        _runtime_query_count += 1
+        self.pub.publish(msg)
 
     # t[s]待機する
     def wait(self, t):
@@ -617,10 +1042,9 @@ class MyPublisherPolling(Node):
 
     # 一定周期で実行する処理
     def timer_callback(self):
-        global msg
-
         if _state_driver == 1:
             return
+        msg = Query()
         # Always poll for detected velocities regardless of _is_timer_active
         # 到底して常にセンサーデータをポーリング
         msg.slave_id = 10  # スレーブID指定(ID Shareモードのときはglobal_idとみなされる)
@@ -637,12 +1061,10 @@ def main(args=None):
     executor = None
     try:
         pub1 = MyPublisher()
-        pub2 = MyPublisherPolling()
         sub_2 = Mysubscription2()
         sub = MySubscription()
         executor = MultiThreadedExecutor()
         executor.add_node(pub1)
-        executor.add_node(pub2)
         executor.add_node(sub_2)
         executor.add_node(sub)
         executor.spin()
@@ -675,10 +1097,6 @@ def main(args=None):
             time.sleep(1.0)
             try:
                 pub1.destroy_client()
-            except Exception:
-                pass
-            try:
-                pub2.destroy_node()
             except Exception:
                 pass
             try:

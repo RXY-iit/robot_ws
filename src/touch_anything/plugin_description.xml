@@ -1,0 +1,10 @@
+<library path="touch_anything_rviz_panel">
+  <class
+    name="touch_anything/TouchPanel"
+    type="touch_anything::TouchPanel"
+    base_class_type="rviz_common::Panel">
+    <description>
+      Freezes the D435 observation and publishes positive/negative image point prompts.
+    </description>
+  </class>
+</library>

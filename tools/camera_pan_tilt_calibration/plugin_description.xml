@@ -1,0 +1,10 @@
+<library path="camera_calibration_capture_panel">
+  <class
+    name="camera_pan_tilt_calibration/CapturePanel"
+    type="camera_pan_tilt_calibration::CapturePanel"
+    base_class_type="rviz_common::Panel">
+    <description>
+      Requests a synchronized, stable ChArUco calibration sample without sending motor commands.
+    </description>
+  </class>
+</library>

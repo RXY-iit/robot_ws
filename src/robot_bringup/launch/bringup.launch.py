@@ -15,7 +15,7 @@ Launch arguments:
   fast_lio_mode    Switch Livox driver to xfer_format=1 (CustomMsg) required by
                    FAST-LIO2.  The livox_custom_to_pc2_node relay (started by
                    fast_lio_localization.launch.py with_fast_lio:=true) converts
-                   CustomMsg → PointCloud2 for GICP and pointcloud_to_laserscan.
+                   CustomMsg → PointCloud2 for GICP.
                    Default: false  (xfer_format=0 PointCloud2, normal GICP mode)
 """
 import os
@@ -81,7 +81,7 @@ def generate_launch_description():
 
     # xfer_format=1: CustomMsg — required by FAST-LIO2
     # The livox_custom_to_pc2 relay node (in fast_lio_localization.launch.py)
-    # converts CustomMsg → PointCloud2 for GICP and pointcloud_to_laserscan.
+    # converts CustomMsg → PointCloud2 for GICP.
     livox_custommsg_group = GroupAction(
         condition=IfCondition(fast_lio_mode),
         actions=[
@@ -115,6 +115,7 @@ def generate_launch_description():
             'enable_color':     'true',
             'enable_infra1':    'false',
             'enable_infra2':    'false',
+            'diagnostics_period': '1.0',
             'rgb_camera.color_profile': '640,480,30',
         }.items(),
     )

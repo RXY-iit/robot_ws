@@ -1,0 +1,22 @@
+# Real camera nine-view calibration measured on the real robot.
+calibration:
+  status: calibrated_9_of_9
+  use_calibrated_poses: true
+  feedback_tolerance_deg: 2.0
+  measured_at: "2026-07-14"
+  measured_by: matsunaga-h
+
+poses:
+  ground_left:   {hardware_pan_deg: 320.0, hardware_tilt_deg: 88.0, note: "measured left/down"}
+  ground_center: {hardware_pan_deg: 271.0, hardware_tilt_deg: 88.0, note: "measured front/down"}
+  ground_right:  {hardware_pan_deg: 212.0, hardware_tilt_deg: 107.0, note: "measured right/down"}
+  middle_left:   {hardware_pan_deg: 320.0, hardware_tilt_deg: 60.0, note: "measured left/center"}
+  middle_center: {hardware_pan_deg: 267.0, hardware_tilt_deg: 65.0, note: "measured front/center"}
+  middle_right:  {hardware_pan_deg: 215.0, hardware_tilt_deg: 78.0, note: "measured right/center"}
+  upper_left:    {hardware_pan_deg: 334.0, hardware_tilt_deg: 47.0, note: "measured left/up"}
+  upper_center:  {hardware_pan_deg: 267.0, hardware_tilt_deg: 33.0, note: "measured front/up"}
+  upper_right:   {hardware_pan_deg: 213.0, hardware_tilt_deg: 54.0, note: "measured right/up"}
+
+  # Navigation neutral was already verified from real feedback. It can also be
+  # replaced later if the camera mounting changes.
+  return_home: {hardware_pan_deg: 267.0, hardware_tilt_deg: 102.0, note: "verified neutral"}

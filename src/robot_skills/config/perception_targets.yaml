@@ -1,0 +1,120 @@
+# yolo_open_vocab_classes is the ground truth for "can YOLO actually see this at
+# all" -- it is the literal class list baked into the configured checkpoint
+# (models/perception/yolo11s.pt), extracted via:
+#   torch.load(path, weights_only=False)['model'].names
+# Regenerate this list whenever perception_models.yaml's yolo11s/yolo11s_ocr
+# weights change. Anything not in this list and not covered by an `objects:`
+# entry's classes/fallback_classes below is not detectable by the current
+# model, full stop -- no heuristic guessing about which nouns "sound like"
+# objects.
+yolo_open_vocab_classes:
+  [person, bicycle, car, motorcycle, airplane, bus, train, truck, boat,
+   "traffic light", "fire hydrant", "stop sign", "parking meter", bench, bird,
+   cat, dog, horse, sheep, cow, elephant, bear, zebra, giraffe, backpack,
+   umbrella, handbag, tie, suitcase, frisbee, skis, snowboard, "sports ball",
+   kite, "baseball bat", "baseball glove", skateboard, surfboard,
+   "tennis racket", bottle, "wine glass", cup, fork, knife, spoon, bowl,
+   banana, apple, sandwich, orange, broccoli, carrot, "hot dog", pizza, donut,
+   cake, chair, couch, "potted plant", bed, "dining table", toilet, tv,
+   laptop, mouse, remote, keyboard, "cell phone", microwave, oven, toaster,
+   sink, refrigerator, book, clock, vase, scissors, "teddy bear",
+   "hair drier", toothbrush]
+
+colors:
+  red:
+    aliases: [red, reddish, 赤, 赤い, 赤色]
+    hsv_ranges:
+      - lower: [0, 80, 60]
+        upper: [12, 255, 255]
+      - lower: [170, 80, 60]
+        upper: [180, 255, 255]
+  blue:
+    aliases: [blue, bluish, 青, 青い, 青色]
+    hsv_ranges:
+      - lower: [95, 70, 50]
+        upper: [130, 255, 255]
+  green:
+    aliases: [green, 緑, 緑色, グリーン]
+    hsv_ranges:
+      - lower: [40, 55, 45]
+        upper: [85, 255, 255]
+  yellow:
+    aliases: [yellow, 黄色, 黄, 黄色い]
+    hsv_ranges:
+      - lower: [18, 70, 70]
+        upper: [38, 255, 255]
+  orange:
+    aliases: [orange, オレンジ, 橙, 橙色]
+    hsv_ranges:
+      - lower: [8, 80, 70]
+        upper: [24, 255, 255]
+  black:
+    aliases: [black, 黒, 黒い, 黒色]
+    hsv_ranges:
+      - lower: [0, 0, 0]
+        upper: [180, 255, 55]
+  white:
+    aliases: [white, 白, 白い, 白色]
+    hsv_ranges:
+      - lower: [0, 0, 180]
+        upper: [180, 55, 255]
+
+objects:
+  box:
+    aliases: [box, boxes, carton, package, parcel, 箱, 盒子, ボックス, 段ボール]
+    detector: yolo11s
+    classes: [box, package, carton, suitcase]
+    fallback_classes: [suitcase]
+    fallback_requires_human: true
+  bottle:
+    aliases: [bottle, bottles, 瓶, 瓶子, ボトル]
+    detector: yolo11s
+    classes: [bottle]
+  bucket:
+    aliases: [bucket, pail, barrel, container, 桶, バケツ]
+    detector: yolo11s
+    classes: [bucket, pail, barrel, container]
+    fallback_classes: [bottle, cup, bowl]
+    fallback_requires_human: true
+  car:
+    aliases: [car, vehicle, auto, 車, 自動車, くるま]
+    detector: yolo11s
+    classes: [car, truck, bus]
+  person:
+    aliases: [person, human, worker, 人, 人間, 作業員]
+    detector: yolo11s
+    classes: [person]
+  forklift:
+    aliases: [forklift, フォークリフト]
+    detector: yolo11s
+    classes: [forklift]
+    fallback_classes: [truck]
+    fallback_requires_human: true
+  pallet:
+    aliases: [pallet, パレット]
+    detector: yolo11s
+    classes: [pallet]
+
+text:
+  digit:
+    aliases: [number, digit, digits, 番号, 数字, number label]
+    detector: ocr
+    pattern: "\\d+"
+  letter:
+    aliases: [letter, alphabet, 字母, 文字, アルファベット]
+    detector: ocr
+    pattern: "[A-Za-z]+"
+  text:
+    aliases: [text, label, sign, 字, 字幕, ラベル, 文字, 標識]
+    detector: ocr
+    pattern: ".+"
+
+unsupported_attributes:
+  size:
+    aliases: [small, tiny, big, large, 小さい, 小さな, 大きい, 大きな]
+    behavior: needs_human
+
+abstract:
+  unsafe:
+    aliases: [unsafe, dangerous, hazard, risk, 不安全, 危険, 危ない, 異常]
+    behavior: needs_human

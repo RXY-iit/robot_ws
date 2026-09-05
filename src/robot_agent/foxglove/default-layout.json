@@ -1,0 +1,81 @@
+{
+  "configById": {
+    "3D!main": {
+      "cameraState": {
+        "perspective": true,
+        "distance": 15,
+        "phi": 60,
+        "thetaOffset": 45,
+        "targetOffset": [0, 0, 0],
+        "target": [0, 0, 0],
+        "targetOrientation": [0, 0, 0, 1],
+        "fovy": 45,
+        "near": 0.1,
+        "far": 5000
+      },
+      "followTf": "map",
+      "followMode": "follow-pose",
+      "scene": { "enableStats": false },
+      "transforms": {},
+      "topics": {
+        "/tf": { "visible": true },
+        "/map": { "visible": true, "colorMode": "map", "alpha": 0.7 },
+        "/global_costmap/costmap": { "visible": true, "colorMode": "costmap", "alpha": 0.6 },
+        "/local_costmap/costmap": { "visible": true, "colorMode": "costmap", "alpha": 0.75 },
+        "/plan": { "visible": true, "lineWidth": 0.05, "color": "#4287f5" },
+        "/local_plan": { "visible": true, "lineWidth": 0.04, "color": "#f5a742" },
+        "/local_costmap/published_footprint": { "visible": true, "lineWidth": 0.02, "color": "#2ecc71" },
+        "/global_costmap/published_footprint": { "visible": true, "lineWidth": 0.02, "color": "#2ecc71" },
+        "/livox/lidar_pc2": { "visible": true, "pointSize": 2, "colorField": "intensity" },
+        "/scan": { "visible": true, "pointSize": 3, "colorMode": "flat", "color": "#ff3b30" },
+        "/robot_skills/navigation_route_markers": { "visible": true },
+        "/robot_skills/navigation_goal_markers": { "visible": true },
+        "/semantic_map/markers_array": { "visible": true },
+        "/robot_description": { "visible": true }
+      },
+      "layers": {
+        "grid": {
+          "layerId": "foxglove.Grid",
+          "visible": true
+        }
+      },
+      "publish": {
+        "type": "point",
+        "poseTopic": "/goal_pose",
+        "pointTopic": "/clicked_point",
+        "poseEstimateTopic": "/initialpose",
+        "poseEstimateXDeviation": 0.5,
+        "poseEstimateYDeviation": 0.5,
+        "poseEstimateThetaDeviation": 0.26
+      },
+      "imageMode": {}
+    },
+    "Image!camera": {
+      "cameraTopic": "/camera/camera/color/image_raw/compressed",
+      "enabledMarkerTopics": [],
+      "mode": "fit",
+      "synchronize": false
+    },
+    "Image!depth": {
+      "cameraTopic": "/camera/camera/depth/image_rect_raw",
+      "enabledMarkerTopics": [],
+      "mode": "fit",
+      "synchronize": false
+    }
+  },
+  "globalVariables": {},
+  "userNodes": {},
+  "linkedGlobalVariables": [],
+  "playbackConfig": { "speed": 1 },
+  "layout": {
+    "first": "3D!main",
+    "second": {
+      "first": "Image!camera",
+      "second": "Image!depth",
+      "direction": "column",
+      "splitPercentage": 55
+    },
+    "direction": "row",
+    "splitPercentage": 70
+  }
+}

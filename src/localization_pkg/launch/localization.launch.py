@@ -1,7 +1,11 @@
-"""Start map_server + AMCL + pointcloud_to_laserscan for Nav2.
+"""Legacy AMCL-only localization entrypoint.
 
 AMCL publishes map→odom TF from the 2D occupancy map and /scan.
-pointcloud_to_laserscan converts /livox/lidar → /scan for costmap sensors.
+pointcloud_to_laserscan exists here only because AMCL itself requires LaserScan.
+
+This file is not used by tools/open_nav2_windows.sh or the current GICP real-
+robot stack.  The active Nav2 local costmap uses /camera/depth/points, not
+/scan.  Do not use this legacy entrypoint as the production obstacle pipeline.
 """
 
 import os
@@ -136,7 +140,7 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "use_pointcloud_to_scan",
                 default_value="true",
-                description="Convert /livox/lidar → /scan for Nav2 costmap sensors.",
+                description="Legacy AMCL input only; not a production Nav2 obstacle source.",
             ),
             DeclareLaunchArgument(
                 "scan_min_height",

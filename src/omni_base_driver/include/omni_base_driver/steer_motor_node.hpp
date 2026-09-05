@@ -65,7 +65,7 @@ void SteerMotorNode::callback(const my_messages::msg::SteerMotor::SharedPtr ang_
     set_pos[1] = home_pos[1] - int(ang_msg->phi2 / M_PI * 2048);
     set_pos[2] = home_pos[2] - int(ang_msg->phi3 / M_PI * 2048);
 
-    RCLCPP_INFO(this->get_logger(), "Updated Set Position: [%d, %d, %d]",
+    RCLCPP_DEBUG(this->get_logger(), "Updated Set Position: [%d, %d, %d]",
                 static_cast<int>(set_pos[0]),
                 static_cast<int>(set_pos[1]),
                 static_cast<int>(set_pos[2]));
@@ -74,10 +74,12 @@ void SteerMotorNode::callback(const my_messages::msg::SteerMotor::SharedPtr ang_
 void SteerMotorNode::convertPositionRadian(std::shared_ptr<dynamixel_sdk_custom_interfaces::srv::GetPosition::Response> get_pos)
 {
     // Convert current position to radians
-    current_pos[0] = M_PI * (get_pos->position1 - home_pos[0]) / 2048;
-    current_pos[1] = M_PI * (get_pos->position2 - home_pos[1]) / 2048;
-    current_pos[2] = M_PI * (get_pos->position3 - home_pos[2]) / 2048;
+    // Command conversion uses set_pos = home_pos - angle. Convert feedback
+    // with the same sign convention so steer_odom matches steer_angle.
+    current_pos[0] = M_PI * (home_pos[0] - get_pos->position1) / 2048;
+    current_pos[1] = M_PI * (home_pos[1] - get_pos->position2) / 2048;
+    current_pos[2] = M_PI * (home_pos[2] - get_pos->position3) / 2048;
 
-    RCLCPP_INFO(this->get_logger(), "Current Positions (radians): [%f, %f, %f]",
+    RCLCPP_DEBUG(this->get_logger(), "Current Positions (radians): [%f, %f, %f]",
                 current_pos[0], current_pos[1], current_pos[2]);
 }

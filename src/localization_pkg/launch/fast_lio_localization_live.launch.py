@@ -31,8 +31,6 @@ def generate_launch_description():
         DeclareLaunchArgument("initial_yaw", default_value="0.0"),
         DeclareLaunchArgument("with_fast_lio", default_value="false"),
         DeclareLaunchArgument("use_fast_lio_hint", default_value="false"),
-        DeclareLaunchArgument("scan_min_height", default_value="-0.8"),
-        DeclareLaunchArgument("scan_max_height", default_value="-0.3"),
     ]
 
     include_main = IncludeLaunchDescription(
@@ -46,8 +44,6 @@ def generate_launch_description():
             "with_fast_lio": LaunchConfiguration("with_fast_lio"),
             "use_fast_lio_hint": LaunchConfiguration("use_fast_lio_hint"),
             "use_sim_time": "false",
-            "scan_min_height": LaunchConfiguration("scan_min_height"),
-            "scan_max_height": LaunchConfiguration("scan_max_height"),
         }.items(),
     )
 

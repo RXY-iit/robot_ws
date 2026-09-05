@@ -24,6 +24,7 @@
 
 #include "driver_node.h"
 #include "lddc.h"
+#include "livox_lidar_api.h"
 
 namespace livox_ros {
 
@@ -32,14 +33,23 @@ DriverNode& DriverNode::GetNode() noexcept {
 }
 
 DriverNode::~DriverNode() {
+#ifdef BUILDING_ROS2
+  if (lidar_health_timer_) {
+    lidar_health_timer_->cancel();
+  }
+  // Stop SDK callbacks before the health cache/mutex members are destroyed.
+  SetLivoxLidarInfoCallback(nullptr, nullptr);
+#endif
   lddc_ptr_->lds_->RequestExit();
   exit_signal_.set_value();
   pointclouddata_poll_thread_->join();
   imudata_poll_thread_->join();
+  // Uninitialize SDK2 while all callback-owned members are still alive.
+  // Lddc's destructor sees lds_ == nullptr and will not deinitialize twice.
+  lddc_ptr_->PrepareExit();
 }
 
 } // namespace livox_ros
-
 
 
 

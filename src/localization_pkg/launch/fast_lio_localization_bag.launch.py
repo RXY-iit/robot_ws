@@ -1,7 +1,7 @@
 """Rosbag-replay entrypoint for GICP localization.
 
 Use this only with `ros2 bag play --clock`. It forces simulated time
-(`use_sim_time:=true`) so TF, scans, and /clock share the bag timestamp axis.
+(`use_sim_time:=true`) so TF, sensor data, and /clock share the bag timestamp axis.
 """
 
 import os
@@ -31,8 +31,6 @@ def generate_launch_description():
         DeclareLaunchArgument("initial_yaw", default_value="0.0"),
         DeclareLaunchArgument("with_fast_lio", default_value="false"),
         DeclareLaunchArgument("use_fast_lio_hint", default_value="false"),
-        DeclareLaunchArgument("scan_min_height", default_value="-0.8"),
-        DeclareLaunchArgument("scan_max_height", default_value="-0.3"),
     ]
 
     include_main = IncludeLaunchDescription(
@@ -46,8 +44,6 @@ def generate_launch_description():
             "with_fast_lio": LaunchConfiguration("with_fast_lio"),
             "use_fast_lio_hint": LaunchConfiguration("use_fast_lio_hint"),
             "use_sim_time": "true",
-            "scan_min_height": LaunchConfiguration("scan_min_height"),
-            "scan_max_height": LaunchConfiguration("scan_max_height"),
         }.items(),
     )
 

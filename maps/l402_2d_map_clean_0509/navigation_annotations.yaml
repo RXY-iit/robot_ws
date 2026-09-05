@@ -1,0 +1,267 @@
+map_id: l402_2d_map_clean_0509
+frame_id: map
+schema_version: 1
+status: calibrated_enabled_20260714
+narrow_passages:
+- id: sofa_bookshelf_passage
+  enabled: true
+  description: User-verified real L402 narrow route between sofa / meeting area and
+    right-side furniture.
+  tags:
+  - sofa
+  - bookshelf
+  - lab_center
+  entry:
+    x: -2.27
+    y: 0.5649
+    yaw: -2.0861038461380166
+  exit:
+    x: -4.1283
+    y: -2.7163
+    yaw: -2.0861038461380166
+  centerline:
+  - x: -2.27
+    y: 0.5649
+  - x: -4.1283
+    y: -2.7163
+  alignment_zones:
+  - id: sofa_bookshelf_entry_alignment
+    enabled: true
+    side: entry
+    type: navigation_alignment_zone
+    description: Open area before entering sofa/bookshelf passage from lab center
+      side.
+    polygon:
+    - x: -2.2433
+      y: 0.9402
+    - x: -1.4753
+      y: 0.6609
+    - x: -1.7546
+      y: 0.1722
+    - x: -2.4876
+      y: 0.4864
+    pose:
+      x: -2.27
+      y: 0.5649
+      yaw: -2.0856684561332237
+    xy_goal_tolerance_m: 0.45
+    yaw_goal_tolerance_rad: 0.34906585
+    timeout_sec: 16.0
+    use_policy:
+      skip_if_robot_near_pose_m: 0.12
+  - id: sofa_bookshelf_exit_alignment
+    enabled: true
+    side: exit
+    type: navigation_alignment_zone
+    description: Open area before entering sofa/bookshelf passage from sofa side.
+    polygon:
+    - x: -4.5122
+      y: -2.2015
+    - x: -3.5348
+      y: -2.5505
+    - x: -3.7094
+      y: -3.2138
+    - x: -4.7566
+      y: -2.8996
+    pose:
+      x: -4.1283
+      y: -2.7163
+      yaw: 0.9933033071367251
+    xy_goal_tolerance_m: 0.45
+    yaw_goal_tolerance_rad: 0.34906585
+    timeout_sec: 16.0
+    use_policy:
+      skip_if_robot_near_pose_m: 0.12
+  expected_width_m: 0.843
+  waypoint:
+    use_opposite_side_as_waypoint: true
+    xy_goal_tolerance_m: 0.45
+    yaw_goal_tolerance_rad: 0.34906585
+    timeout_sec: 20
+  trigger_policy:
+    min_remaining_goal_distance_m: 0.8
+    skip_if_robot_near_exit_m: 0.45
+  traversal_policy:
+    preferred_motion: forward_dominant
+    allow_lateral_assist: true
+    max_speed_mps: 0.09
+    centerline_tolerance_m: 0.08
+    note: Face the passage centerline first, then move toward the exit before resuming
+      the original goal.
+  calibrated: true
+  pose_source: alignment_zone_polygon_centers
+- id: left_cabinet_toolbox_passage
+  enabled: true
+  description: User-verified real L402 tight corridor near left wall cabinets, toolbox/cart,
+    and table edges.
+  tags:
+  - tool_box
+  - wall_cabinet
+  - left_wall
+  entry:
+    x: -2.15
+    y: 1.16
+    yaw: 0.9897229120923375
+  exit:
+    x: -0.3
+    y: 3.9771
+    yaw: 0.9897229120923375
+  centerline:
+  - x: -2.15
+    y: 1.16
+  - x: -0.3
+    y: 3.9771
+  alignment_zones:
+  - id: left_cabinet_toolbox_entry_alignment
+    enabled: true
+    side: entry
+    type: navigation_alignment_zone
+    description: Open area before entering the left cabinet/toolbox passage from upper
+      side.
+    polygon:
+    - x: -2.3731
+      y: 1.5277
+    - x: -1.5766
+      y: 1.209
+    - x: -1.6961
+      y: 0.5718
+    - x: -2.7714
+      y: 0.9302
+    pose:
+      x: -2.15
+      y: 1.16
+      yaw: 0.9948376736367678
+    xy_goal_tolerance_m: 0.45
+    yaw_goal_tolerance_rad: 0.34906585
+    timeout_sec: 16.0
+    use_policy:
+      skip_if_robot_near_pose_m: 0.12
+  - id: left_cabinet_toolbox_exit_alignment
+    enabled: true
+    side: exit
+    type: navigation_alignment_zone
+    description: Open area before entering the left cabinet/toolbox passage from lower
+      side.
+    polygon:
+    - x: -0.4216
+      y: 4.5944
+    - x: -0.8198
+      y: 3.9572
+    - x: -0.0233
+      y: 3.3996
+    - x: 0.375
+      y: 4.1165
+    pose:
+      x: -0.3
+      y: 3.9771
+      yaw: -2.1467549799530254
+    xy_goal_tolerance_m: 0.45
+    yaw_goal_tolerance_rad: 0.34906585
+    timeout_sec: 16.0
+    use_policy:
+      skip_if_robot_near_pose_m: 0.12
+  expected_width_m: 0.744
+  waypoint:
+    use_opposite_side_as_waypoint: true
+    xy_goal_tolerance_m: 0.45
+    yaw_goal_tolerance_rad: 0.34906585
+    timeout_sec: 20
+  trigger_policy:
+    min_remaining_goal_distance_m: 0.8
+    skip_if_robot_near_exit_m: 0.45
+  traversal_policy:
+    preferred_motion: forward_dominant
+    allow_lateral_assist: true
+    max_speed_mps: 0.09
+    centerline_tolerance_m: 0.08
+    note: Use this waypoint before trying to reach tool_box or desks behind the left-side
+      furniture cluster.
+  calibrated: true
+  pose_source: alignment_zone_polygon_centers
+- id: center_right_table_passage
+  enabled: true
+  description: User-verified real L402 passage through the center-right table/chair
+    cluster.
+  tags:
+  - desk_hyk
+  - desk_mkr
+  - desk_tks
+  - desk_ysd
+  entry:
+    x: -4.1554
+    y: -3.5425
+    yaw: -0.4644282997536579
+  exit:
+    x: -2.0042
+    y: -4.6201
+    yaw: -0.4644282997536579
+  centerline:
+  - x: -4.1554
+    y: -3.5425
+  - x: -2.0042
+    y: -4.6201
+  alignment_zones:
+  - id: center_right_table_entry_alignment
+    enabled: true
+    side: entry
+    type: navigation_alignment_zone
+    description: Open area before entering center-right table passage from upper side.
+    polygon:
+    - x: -4.0206
+      y: -4.044
+    - x: -4.7137
+      y: -3.685
+    - x: -4.2745
+      y: -3.0365
+    - x: -3.6126
+      y: -3.4045
+    pose:
+      x: -4.1554
+      y: -3.5425
+      yaw: -0.4644282997536579
+    xy_goal_tolerance_m: 0.45
+    yaw_goal_tolerance_rad: 0.34906585
+    timeout_sec: 16.0
+    use_policy:
+      skip_if_robot_near_pose_m: 0.12
+  - id: center_right_table_exit_alignment
+    enabled: true
+    side: exit
+    type: navigation_alignment_zone
+    description: Open area before entering center-right table passage from lower side.
+    polygon:
+    - x: -1.7876
+      y: -5.1278
+    - x: -2.5654
+      y: -4.8267
+    - x: -2.2265
+      y: -4.1225
+    - x: -1.4375
+      y: -4.4036
+    pose:
+      x: -2.0042
+      y: -4.6201
+      yaw: 2.6771643538361354
+    xy_goal_tolerance_m: 0.45
+    yaw_goal_tolerance_rad: 0.34906585
+    timeout_sec: 16.0
+    use_policy:
+      skip_if_robot_near_pose_m: 0.12
+  expected_width_m: 0.794
+  waypoint:
+    use_opposite_side_as_waypoint: true
+    xy_goal_tolerance_m: 0.45
+    yaw_goal_tolerance_rad: 0.34906585
+    timeout_sec: 24
+  trigger_policy:
+    min_remaining_goal_distance_m: 0.8
+    skip_if_robot_near_exit_m: 0.45
+  traversal_policy:
+    preferred_motion: forward_dominant
+    allow_lateral_assist: true
+    max_speed_mps: 0.09
+    centerline_tolerance_m: 0.08
+    note: Prefer exiting this passage before making a large heading correction toward
+      the final semantic target.
+  calibrated: true
+  pose_source: alignment_zone_polygon_centers

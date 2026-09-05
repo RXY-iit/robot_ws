@@ -1,0 +1,33 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>camera_pan_tilt_calibration</name>
+  <version>0.1.0</version>
+  <description>Read-only ChArUco capture tool and RViz panel for camera pan/tilt calibration.</description>
+  <maintainer email="matsunaga-h@todo.todo">matsunaga-h</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <depend>pluginlib</depend>
+  <depend>rclcpp</depend>
+  <depend>rviz_common</depend>
+  <depend>std_msgs</depend>
+
+  <exec_depend>cv_bridge</exec_depend>
+  <exec_depend>joy</exec_depend>
+  <exec_depend>python3-opencv</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>realsense2_camera</exec_depend>
+  <exec_depend>robot_bringup</exec_depend>
+  <exec_depend>so101_arm_control</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>serial_transciever</exec_depend>
+  <exec_depend>tf2_msgs</exec_depend>
+  <exec_depend>usb_cam</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+    <rviz plugin="${prefix}/plugin_description.xml"/>
+  </export>
+</package>

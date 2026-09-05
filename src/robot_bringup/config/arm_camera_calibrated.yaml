@@ -1,0 +1,31 @@
+# Measured from 130 ChArUco views captured on 2026-09-03.
+# Board: 7x5, DICT_5X5_100, square=0.0335 m, marker=0.0165 m.
+# OpenCV calibrateCamera RMS reprojection error: 0.314985 px.
+image_width: 640
+image_height: 480
+camera_name: arm_camera
+camera_matrix:
+  rows: 3
+  cols: 3
+  data: [342.4928009270401, 0.0, 344.2424428446007,
+         0.0, 342.25261365048414, 269.7607822861153,
+         0.0, 0.0, 1.0]
+distortion_model: plumb_bob
+distortion_coefficients:
+  rows: 1
+  cols: 5
+  data: [0.08090679160594598, -0.12540903277271184,
+         0.0028112082992145463, -0.0007586537951381124,
+         0.04216681295187851]
+rectification_matrix:
+  rows: 3
+  cols: 3
+  data: [1.0, 0.0, 0.0,
+         0.0, 1.0, 0.0,
+         0.0, 0.0, 1.0]
+projection_matrix:
+  rows: 3
+  cols: 4
+  data: [342.4928009270401, 0.0, 344.2424428446007, 0.0,
+         0.0, 342.25261365048414, 269.7607822861153, 0.0,
+         0.0, 0.0, 1.0, 0.0]

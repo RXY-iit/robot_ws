@@ -17,7 +17,7 @@ class ICheckIdShareMode {
   virtual void chkRangeShareWriteAddress(int addr) = 0;
   virtual void chkDataNumWriteQueryIdShareMode(const int write_data_num) = 0;
   virtual void chkDataNumReadWriteQueryIdShareMode(const int write_data_num) = 0;
-  ~ICheckIdShareMode(){};
+  virtual ~ICheckIdShareMode() = default;
 };
 
 }  // namespace om_modbusRTU_node

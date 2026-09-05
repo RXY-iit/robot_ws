@@ -1,0 +1,137 @@
+touch_observation_node:
+  ros__parameters:
+    color_topic: /camera/camera/color/image_raw
+    depth_topic: /camera/camera/aligned_depth_to_color/image_raw
+    camera_info_topic: /camera/camera/color/camera_info
+    arm_color_topic: /arm_camera/color/image_raw
+    arm_camera_info_topic: /arm_camera/color/camera_info
+    target_frame: base_link
+    # RealSense ROS publishes the configured Z16 stream in millimetres on this
+    # robot. Keep the conversion explicit because 16UC1 does not encode units.
+    depth_scale_m_per_unit: 0.001
+    maximum_sync_skew_sec: 0.05
+    # A stable Freeze may use the latest dynamic pan/tilt TF when the image is
+    # only slightly newer. The actual transform stamp and skew remain evidence.
+    maximum_tf_fallback_skew_sec: 0.05
+    minimum_target_depth_m: 0.15
+    maximum_target_depth_m: 1.50
+    maximum_depth_mad_m: 0.025
+    maximum_plane_p95_m: 0.020
+    sam_config: configs/sam2.1/sam2.1_hiera_t.yaml
+    sam_checkpoint: /home/matsunaga-h/robot_ws/models/sam2/sam2.1_hiera_tiny.pt
+    sam_idle_unload_sec: 180.0
+    # A 640x480 local benchmark used ~447% CPU at the unrestricted default.
+    # Two threads took ~2.6 s but kept Nav2/localization CPU headroom.
+    sam_cpu_threads: 2
+    # Entering Touch Mode sends this initial view exactly once. It is not an
+    # arrival gate: the operator may adjust it for visibility, and no automatic
+    # retry or feedback correction is performed.
+    touch_camera_pan_deg: 267.0
+    touch_camera_tilt_deg: 40.0
+    # Fresh feedback and a short stable interval are still required so the
+    # captured TF evidence matches the frozen camera frame.
+    camera_motion_settle_sec: 0.75
+    # Prepare-pose numbers are observed reference feedback, not calibrated
+    # OpenRB command coordinates.  After motion becomes stationary, a newly
+    # frozen D435 frame and target re-detection are the acceptance gate.
+    d435_reacquire_max_target_shift_m: 0.06
+    pre_touch_far_distance_m: 0.08
+    pre_touch_near_distance_m: 0.03
+    # About 20 raw ticks of headroom on shoulder_lift in the current mapping.
+    ik_joint_limit_margin_rad: 0.03
+    # FAR -> NEAR is latched after a completed step has produced at least
+    # 35 mm of measured +X travel.  Do not shorten the final FAR step merely to
+    # land exactly on this boundary; overshoot is expected and accepted.
+    approach_large_max_lateral_step_m: 0.060
+    approach_step_distance_m: 0.005
+    approach_aligned_press_step_distance_m: 0.025
+    approach_press_entry_tolerance_px: 20.0
+    approach_near_advance_distance_m: 0.035
+    # Mask percentage is not a NEAR trigger. It is only an independent
+    # too-close guard: at >=15%, retreat a small 5 mm step (never behind FAR).
+    approach_too_close_mask_fraction: 0.15
+    approach_too_close_retreat_m: 0.005
+    # Independent final travel bound because the current-based contact threshold
+    # is not calibrated yet. The confirmed test object is intentionally movable;
+    # allow repeated 25 mm PRESS steps, bounded to 100 mm past the retained D435
+    # plane. Strong repeated colour change remains the primary stop/success signal.
+    approach_max_press_past_target_m: 0.100
+    # Y/Z correction remains active on every waypoint, including the slow press
+    # phase; the pixel deadband suppresses only already-negligible corrections.
+    approach_alignment_tolerance_m: 0.003
+    approach_max_lateral_step_m: 0.005
+    approach_max_ik_error_m: 0.003
+    # Fixed Touch prepare/approach opening requested from real hardware:
+    # 1.045 rad / 59.9 deg. This is gripper_joint, not wrist roll.
+    touch_gripper_position_rad: 1.045
+    # One explicit human confirmation authorizes the bounded stop-observe loop.
+    # Every step is independently previewed/validated by the Arm gateway; any
+    # tracking, IK, feedback or execution failure pauses without another move.
+    automatic_approach_after_confirmation: true
+    automatic_approach_max_steps: 24
+    automatic_approach_timeout_sec: 180.0
+    automatic_approach_settle_sec: 0.75
+    # Test-stage continuity envelope. SAM score, valid mask and image bounds
+    # still apply, but perspective growth close to the object is expected.
+    # Reject abrupt SAM region switches before appearance change can be
+    # considered Touch success.
+    automatic_arm_target_max_shift_px: 90.0
+    automatic_arm_target_min_area_ratio: 0.35
+    automatic_arm_target_max_area_ratio: 3.0
+    # Validate the measured Cartesian endpoint after joint-trajectory SUCCESS.
+    approach_cartesian_coarse_max_error_m: 0.040
+    approach_cartesian_press_max_error_m: 0.020
+    # Diagnostic reference only. Endpoint error is the primary gate; residual
+    # correction blocks only clearly negative progress on requests >=15 mm.
+    approach_cartesian_min_progress_ratio: 0.30
+    # Residuals inside this wider envelope are not accepted as accurate. They
+    # trigger at most three measured-tip re-observe/re-plan cycles. Larger or
+    # wrong-direction outcomes remain blocked.
+    approach_cartesian_correctable_max_error_m: 0.060
+    approach_cartesian_max_correction_retries: 3
+    arm_sam_minimum_mask_pixels: 40
+    arm_sam_minimum_score: 0.40
+    # Close objects may be cropped and receive a low SAM score. Once the mask
+    # occupies >=25% of the image, accept a much lower score while retaining
+    # continuity and minimum-area checks.
+    arm_sam_large_mask_fraction: 0.25
+    arm_sam_large_mask_minimum_score: 0.15
+    # During PRESS, partial occlusion by the gripper is expected. Preserve a
+    # plausible mask down to this score; colour evidence remains authoritative.
+    arm_sam_press_minimum_score: 0.05
+    # Primary Touch evidence: at least 65% of the mask changes by Lab delta >=60
+    # for two stationary frames. X distance and pixel alignment are recorded as
+    # diagnostic references, but do not veto this strong visual evidence.
+    touch_success_lab_delta: 60.0
+    touch_success_changed_fraction: 0.65
+    touch_success_max_x_remaining_m: 0.010
+    touch_success_max_center_error_px: 15.0
+    touch_success_required_observations: 2
+    touch_success_minimum_step: 1
+    arm_projection_image_margin_px: 8
+    # FAR handoff uses the D435 projection as the first Arm Camera SAM prompt.
+    # The operator still confirms the mask and can replace it with a click.
+    arm_projection_auto_prompt: true
+    # Normalized raw-image location of the rigid lower-jaw tip. Initial values
+    # were measured from the operator-provided 2026-09-04 Arm Camera frame;
+    # verify the cyan marker against one native-resolution frame before contact.
+    # Fixed left/lower jaw front tip measured directly in the 640x480 wrist
+    # image from the 2026-09-04 real run: approximately pixel (317, 352).
+    arm_fixed_tip_u_ratio: 0.496
+    arm_fixed_tip_v_ratio: 0.735
+    approach_pixel_alignment_tolerance_px: 8.0
+    # Count only material regressions (>12 px), not merely slow improvement.
+    approach_min_pixel_progress_px: -12.0
+    approach_nonconverging_step_limit: 6
+    # base_link Y: FRONT is within +/-0.12 m; positive is LEFT, negative RIGHT.
+    prepare_front_half_width_m: 0.12
+    # Human-confirmed Arm-camera target: total Y/Z plausibility envelope.
+    # Actual correction is <=15 mm with a large forward step, otherwise <=5 mm.
+    maximum_arm_lateral_correction_m: 0.20
+    # Operator-cleared phase-1 test: this unlocks only the explicit 80 mm FAR
+    # move through the existing guarded Arm gateway. Near/target are not sent.
+    allow_pre_touch_far_execution: true
+    # Operator-reviewed execution through Arm gateway. After FAR, +X is locked
+    # until strict fixed-tip/mask alignment passes; PRESS is rechecked per step.
+    allow_approach_execution: true
+    artifact_root: /home/matsunaga-h/robot_ws/debug-output/touch-anything

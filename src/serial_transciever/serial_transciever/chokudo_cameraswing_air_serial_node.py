@@ -1,6 +1,8 @@
+import json
+
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Float32
+from std_msgs.msg import Empty, Float32, String
 import serial
 
 class DualMotorSerialNode(Node):
@@ -11,6 +13,12 @@ class DualMotorSerialNode(Node):
         self.angle1_pub = self.create_publisher(Float32, '/chokudomotor/angle', 10)
         self.angle2_pub = self.create_publisher(Float32, '/cameraswingmotor/angle', 10)
         self.pressure_pub = self.create_publisher(Float32, '/sensor/pressure', 10)
+        # This reports bytes accepted by the local serial driver.  It is not
+        # evidence that the OpenRB firmware or motor reached the target.
+        self.serial_tx_pub = self.create_publisher(
+            String, '/camera_pan_tilt/serial_tx_status', 10
+        )
+        self.serial_tx_sequence = 0
 
         # 指令値保持
         self.angle1_cmd = 160
@@ -40,6 +48,16 @@ class DualMotorSerialNode(Node):
             self.swing_callback,
             10
         )
+        # Normal target callbacks suppress an unchanged pair to avoid flooding
+        # the OpenRB.  Recovery logic must use this explicit channel when the
+        # feedback has stalled and the same target really needs to be sent
+        # again over USB serial.
+        self.force_resend_sub = self.create_subscription(
+            Empty,
+            '/camera_pan_tilt/force_resend',
+            self.force_resend_callback,
+            10,
+        )
 
         # Serial接続
         try:
@@ -64,6 +82,9 @@ class DualMotorSerialNode(Node):
         self.angle2_cmd = msg.data
         self.send_angles()
 
+    def force_resend_callback(self, _msg):
+        self.send_angles(force=True)
+
     # def send_angles(self):
     #     if self.ser and self.ser.is_open:
     #         data_str = f"{self.angle1_cmd:.2f},{self.angle2_cmd:.2f}\n"
@@ -71,17 +92,30 @@ class DualMotorSerialNode(Node):
     #         self.get_logger().info(f'Sent: {data_str.strip()}')
     #     else:
     #         self.get_logger().warn('Serial port not open.')
-    def send_angles(self):
+    def send_angles(self, *, force=False):
         if self.ser and self.ser.is_open:
             # 同じ値を連続送信しないように判定
-            if (self.prev_angle1_cmd == self.angle1_cmd and
+            if (not force and
+                self.prev_angle1_cmd == self.angle1_cmd and
                 self.prev_angle2_cmd == self.angle2_cmd):
                 return  # 指令が変わっていなければ送らない
 
             # 送信処理
             data_str = f"{self.angle1_cmd:.2f},{self.angle2_cmd:.2f}\n"
             self.ser.write(data_str.encode('utf-8'))
-            self.get_logger().info(f'Sent: {data_str.strip()}')
+            self.serial_tx_sequence += 1
+            stamp = self.get_clock().now().to_msg()
+            status = {
+                'sequence': self.serial_tx_sequence,
+                'pan_target_deg': float(self.angle1_cmd),
+                'tilt_target_deg': float(self.angle2_cmd),
+                'forced_resend': bool(force),
+                'stamp': stamp.sec + stamp.nanosec * 1e-9,
+            }
+            self.serial_tx_pub.publish(String(data=json.dumps(status, separators=(',', ':'))))
+            self.get_logger().info(
+                f"Sent{' (forced resend)' if force else ''}: {data_str.strip()}"
+            )
 
             # 更新
             self.prev_angle1_cmd = self.angle1_cmd
@@ -141,13 +175,14 @@ def main(args=None):
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
-        node.get_logger().info('Shutting down')
+        if rclpy.ok():
+            node.get_logger().info('Shutting down')
     finally:
         if node.ser and node.ser.is_open:
             node.ser.close()
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 if __name__ == '__main__':
     main()
-

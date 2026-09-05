@@ -1,0 +1,20 @@
+allowed_task_types:
+  sim:
+    - robot_status
+    - list_known_targets
+    - navigate_to_place
+    - navigate_to_object
+    - inspect_place
+    - search_object_near_place
+    - cancel
+  real:
+    - robot_status
+    - list_known_targets
+    - navigate_to_place
+    - navigate_to_object
+    - inspect_place
+    - cancel
+blocked_until_implemented:
+  - press_button
+  - grasp_object
+  - place_object

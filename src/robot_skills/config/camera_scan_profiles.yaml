@@ -1,0 +1,28 @@
+profiles:
+  shelf_label:
+    description: Nine-view scan after navigation stops; covers ground, middle, and upper bands.
+    poses:
+      - {id: ground_left, pan_deg: -35.0, tilt_deg: 80.0}
+      - {id: ground_center, pan_deg: 0.0, tilt_deg: 80.0}
+      - {id: ground_right, pan_deg: 35.0, tilt_deg: 80.0}
+      - {id: middle_left, pan_deg: -35.0, tilt_deg: 25.0}
+      - {id: middle_center, pan_deg: 0.0, tilt_deg: 25.0}
+      - {id: middle_right, pan_deg: 35.0, tilt_deg: 25.0}
+      - {id: upper_left, pan_deg: -35.0, tilt_deg: -20.0}
+      - {id: upper_center, pan_deg: 0.0, tilt_deg: -20.0}
+      - {id: upper_right, pan_deg: 35.0, tilt_deg: -20.0}
+    return_pose: {id: return_home, pan_deg: 0.0, tilt_deg: 67.0}
+
+  shelf_object:
+    description: Look across shelf/body region for boxes or tools.
+    poses:
+      - {id: left_mid, pan_deg: -25.0, tilt_deg: 95.0}
+      - {id: center_mid, pan_deg: 0.0, tilt_deg: 95.0}
+      - {id: right_mid, pan_deg: 25.0, tilt_deg: 95.0}
+
+  floor_object:
+    description: Camera normally looks downward while driving; use this for floor-level search.
+    poses:
+      - {id: left_floor, pan_deg: -20.0, tilt_deg: 110.0}
+      - {id: center_floor, pan_deg: 0.0, tilt_deg: 110.0}
+      - {id: right_floor, pan_deg: 20.0, tilt_deg: 110.0}

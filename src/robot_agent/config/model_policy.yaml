@@ -1,0 +1,36 @@
+policy: local_first_hybrid
+providers:
+  embedding_parser:
+    provider: sentence_transformers
+    model: intfloat/multilingual-e5-small
+    # Retuned 2026-07-13: under the old 0.94/0.75, an Embedding miss (ambiguous
+    # or score < accept_threshold) terminated the whole pipeline at ask_human
+    # without ever trying the LLM layer. Now that HybridParser always routes a
+    # non-accepted Embedding result on to LLM Fallback (which itself always
+    # resolves to ask_human with top-3 candidates + cancel, never a dead end),
+    # accept_threshold can be lower without risking a bad silent auto-accept:
+    # a clearly-dominant single-template match still short-circuits cheaply,
+    # while anything genuinely unclear now safely falls through to the LLM
+    # instead of getting stuck. clarify_threshold also feeds _is_ambiguous's
+    # floor check directly (see embedding_parser.py), so raising it slightly
+    # narrows the "close enough to flag as a tie" band. First-pass values --
+    # expect to retune again after the next real dry-run batch.
+    accept_threshold: 0.90
+    clarify_threshold: 0.78
+  llama_cpp_parser:
+    provider: llama_cpp
+    endpoint: http://127.0.0.1:8080/v1/chat/completions
+    model: qwen2.5-3b-instruct-q4_k_m
+    temperature: 0
+    # Bumped from 2.0 on 2026-07-13: with the LLM now on the critical path for
+    # every non-accepted Embedding result (not an occasional fallback), a cold
+    # local llama.cpp process occasionally needs more than 2s for its first
+    # few completions even though steady-state responses land around 0.5-1.5s
+    # on this machine; a too-tight timeout was producing spurious
+    # llm_unreachable/SKIPPED rows unrelated to the actual parsing logic.
+    timeout_sec: 8.0
+    allowed_for_contact: false
+control_critical:
+  provider: local
+  llm_can_authorize_motion: false
+  llm_can_override_safety: false

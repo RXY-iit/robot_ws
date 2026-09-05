@@ -1,0 +1,23 @@
+# Valid CameraInfo placeholder for the SO101 wrist camera.
+# K[0] == 0 explicitly means "uncalibrated" in sensor_msgs/CameraInfo. These
+# zeros must not be used for geometry, projection, or hand-eye calculations.
+image_width: 640
+image_height: 480
+camera_name: arm_camera
+camera_matrix:
+  rows: 3
+  cols: 3
+  data: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+distortion_model: plumb_bob
+distortion_coefficients:
+  rows: 1
+  cols: 5
+  data: [0.0, 0.0, 0.0, 0.0, 0.0]
+rectification_matrix:
+  rows: 3
+  cols: 3
+  data: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+projection_matrix:
+  rows: 3
+  cols: 4
+  data: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]

@@ -180,6 +180,46 @@
     </inertial>
   </link>
 
+  <!-- Fixed root of the D435 Pan assembly.  Lift/Arm is an independent
+       base_link child tree and must never be attached below this mechanism. -->
+  <link name="camera_pan_mount_base"/>
+  <joint name="camera_pan_mount_base_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="camera_pan_mount_base"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+
+  <!-- Calibrated camera mechanism.  The two measured axes are perpendicular
+       to each other, but neither is assumed parallel/perpendicular to the
+       ground.  Their offset origins make the camera translate and rotate on a
+       spherical-like path.  Joint zero is raw Pan/Tilt 267.1/101.8 and exactly
+       preserves the previously accepted reference camera pose. -->
+  <link name="camera_pan_yaw_link"/>
+  <joint name="camera_pan_joint" type="continuous">
+    <parent link="camera_pan_mount_base"/>
+    <child link="camera_pan_yaw_link"/>
+    <origin xyz="0.275347145321 -0.000438733450 0.622500000000"
+            rpy="-0.089556855403 0.579262362186 -0.049115982794"/>
+    <axis xyz="0 0 1"/>
+  </joint>
+
+  <link name="camera_tilt_link"/>
+  <joint name="camera_tilt_joint" type="continuous">
+    <parent link="camera_pan_yaw_link"/>
+    <child link="camera_tilt_link"/>
+    <origin xyz="0.001737198863 -0.002619645084 0.042896615248"
+            rpy="-1.570796326795 -0.581108340978 0.004638247831"/>
+    <axis xyz="0 0 1"/>
+  </joint>
+
+  <link name="realsense_holder_link"/>
+  <joint name="realsense_holder_joint" type="fixed">
+    <parent link="camera_tilt_link"/>
+    <child link="realsense_holder_link"/>
+    <origin xyz="0.017905936677 0.026217766275 0.002718024006"
+            rpy="1.560992063022 -0.025811462780 0.744796019674"/>
+  </joint>
+
   <!-- ============================================================
        WHEELS  — visual only, fixed joints
        rpy="1.5708 0 0" rotates cylinder axis from Z to Y
@@ -269,12 +309,11 @@
          camera_link, camera_color_frame, camera_color_optical_frame,
          camera_depth_frame, camera_depth_optical_frame, etc.
   ============================================================ -->
-  <xacro:sensor_d435 parent="base_link"
+  <xacro:sensor_d435 parent="realsense_holder_link"
                      name="camera"
                      use_nominal_extrinsics="true"
                      use_mesh="true">
-    <origin xyz="${camera_x} ${camera_y} ${camera_z}"
-            rpy="0 ${camera_pitch} 0"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
   </xacro:sensor_d435>
 
 </robot>

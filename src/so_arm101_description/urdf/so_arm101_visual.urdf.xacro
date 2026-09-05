@@ -1,0 +1,19 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="so_arm101_visual">
+  <xacro:arg name="prefix" default="" />
+  <xacro:arg name="joint_prefix" default="" />
+  <xacro:arg name="parent" default="world" />
+  <xacro:arg name="color" default="0.15 0.75 0.82 1.0" />
+  <xacro:arg name="wrist_camera" default="false" />
+
+  <xacro:include filename="$(find so_arm101_description)/urdf/so_arm101_macro.xacro" />
+
+  <link name="$(arg parent)" />
+  <xacro:so_arm101
+    prefix="$(arg prefix)"
+    joint_prefix="$(arg joint_prefix)"
+    parent="$(arg parent)"
+    color="$(arg color)"
+    wrist_camera="$(arg wrist_camera)"
+  />
+</robot>

@@ -3,7 +3,7 @@
 livox_custom_to_pc2_node.py — Relay: Livox CustomMsg → PointCloud2.
 
 Required when xfer_format=1 (fast_lio_mode): FAST-LIO needs CustomMsg on
-/livox/lidar, but GICP and pointcloud_to_laserscan need PointCloud2.
+/livox/lidar, but GICP needs PointCloud2.
 
 Topics:
   Input:  /livox/lidar      livox_ros_driver2/msg/CustomMsg

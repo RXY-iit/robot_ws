@@ -26,11 +26,16 @@ int main(int argc, char **argv)
     // 0.2秒の待機（スリープ）
     rclcpp::sleep_for(std::chrono::milliseconds(200));
 
-    // ループのレートを60Hzに設定
+    // Keep motor command publication independent from the comparatively slow
+    // Dynamixel position service.  The previous synchronous service call
+    // blocked this loop and produced visible gaps in /drive_vel.
     rclcpp::Rate loop(100);
+    bool steer_request_pending = false;
+    auto last_steer_request = node->now();
 
     while (rclcpp::ok())
     {
+        rclcpp::spin_some(node);
         node->enforceCmdVelTimeout();
 
         // set steer motor position
@@ -44,37 +49,35 @@ int main(int argc, char **argv)
         drive.vel3 = node->drive_vel[2];
 
         node->steer_ang_pub->publish(steer);
-        RCLCPP_INFO(node->get_logger(), "Updated steer_phi in callback: [%f, %f, %f]", node->steer_phi[0], node->steer_phi[1], node->steer_phi[2]);
         node->drive_vel_pub->publish(drive);
-        RCLCPP_INFO(node->get_logger(), "Published drive_vel: [%f, %f, %f]", drive.vel1, drive.vel2, drive.vel3);
 
-        // RCLCPP_INFO(this->get_logger(), "Received cmd_vel: vx=%f, vy=%f, vth=%f", vx, vy, vth);
-
-        // サービス呼び出し
-        if (node->steer_client->wait_for_service(std::chrono::seconds(1)))
+        // At most one asynchronous steer-position request every 50 ms.  Never
+        // wait here: stopping /drive_vel must not depend on this service.
+        if (!steer_request_pending &&
+            (node->now() - last_steer_request).seconds() >= 0.05 &&
+            node->steer_client->service_is_ready())
         {
-            auto future = node->steer_client->async_send_request(get_pos_request);
-            if (rclcpp::spin_until_future_complete(node, future) == rclcpp::FutureReturnCode::SUCCESS)
-            {
-                auto response = future.get();
-                // diff_posを計算する関数
-                node->calcDiffPos(response);
-            }
-            else
-            {
-                RCLCPP_ERROR(node->get_logger(), "Failed to call service get_position");
-            }
-        }
-        else
-        {
-            RCLCPP_ERROR(node->get_logger(), "Service not available");
+            steer_request_pending = true;
+            last_steer_request = node->now();
+            node->steer_client->async_send_request(
+                get_pos_request,
+                [&node, &steer_request_pending](
+                    rclcpp::Client<dynamixel_sdk_custom_interfaces::srv::GetPosition>::SharedFuture future)
+                {
+                    steer_request_pending = false;
+                    try {
+                        node->calcDiffPos(future.get());
+                    } catch (const std::exception & exc) {
+                        RCLCPP_ERROR(node->get_logger(),
+                            "get_position response failed: %s", exc.what());
+                    }
+                });
         }
 
         // Publish
         // NavToMotor.right_rear_vel_pub->publish(right_rear_drive);
         // NavToMotor.left_vel_pub->publish(left_drive);
 
-        rclcpp::spin_some(node);
         loop.sleep();
     }
 

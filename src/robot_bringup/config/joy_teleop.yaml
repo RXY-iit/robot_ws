@@ -21,10 +21,10 @@ teleop_twist_joy_node:
     axis_angular:
       yaw: 3        # right stick left/right → rotation
     scale_linear:
-      x: 0.3        # max forward speed  [m/s]
+      x: 0.6        # max forward speed  [m/s]
       y: 0.3        # max lateral speed  [m/s]
     scale_linear_turbo:
-      x: 0.6
+      x: 1.2
       y: 0.6
     scale_angular:
       yaw: 0.5      # max yaw rate [rad/s]

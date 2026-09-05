@@ -13,7 +13,7 @@ Panels:
         - /Odometry (wheel_odom)1
         - /Camera (Color)1
       Splitter Ratio: 0.6772615909576416
-    Tree Height: 218
+    Tree Height: 313
   - Class: rviz_common/Selection
     Name: Selection
   - Class: rviz_common/Tool Properties
@@ -25,6 +25,8 @@ Panels:
       - /Current View1
     Name: Views
     Splitter Ratio: 0.5
+  - Class: touch_anything/TouchPanel
+    Name: Touch Anything
 Visualization Manager:
   Class: ""
   Displays:
@@ -173,6 +175,8 @@ Visualization Manager:
           Value: true
         livox_frame:
           Value: true
+        map:
+          Value: true
         odom:
           Value: true
         wheel_back:
@@ -187,31 +191,33 @@ Visualization Manager:
       Show Axes: true
       Show Names: true
       Tree:
-        odom:
-          base_footprint:
-            base_link:
-              camera_bottom_screw_frame:
-                camera_link:
-                  camera_color_frame:
-                    camera_color_optical_frame:
-                      {}
-                  camera_depth_frame:
-                    camera_depth_optical_frame:
-                      {}
-                  camera_infra1_frame:
-                    camera_infra1_optical_frame:
-                      {}
-                  camera_infra2_frame:
-                    camera_infra2_optical_frame:
-                      {}
-              livox_frame:
-                {}
-              wheel_back:
-                {}
-              wheel_left:
-                {}
-              wheel_right:
-                {}
+        base_footprint:
+          base_link:
+            camera_bottom_screw_frame:
+              camera_link:
+                camera_color_frame:
+                  camera_color_optical_frame:
+                    {}
+                camera_depth_frame:
+                  camera_depth_optical_frame:
+                    {}
+                camera_infra1_frame:
+                  camera_infra1_optical_frame:
+                    {}
+                camera_infra2_frame:
+                  camera_infra2_optical_frame:
+                    {}
+            livox_frame:
+              {}
+            wheel_back:
+              {}
+            wheel_left:
+              {}
+            wheel_right:
+              {}
+        map:
+          odom:
+            {}
       Update Interval: 0
       Value: true
     - Alpha: 1
@@ -300,6 +306,32 @@ Visualization Manager:
         History Policy: Keep Last
         Reliability Policy: Best Effort
         Value: /camera/camera/color/image_raw
+      Value: true
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Marker Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /touch_anything/markers
+      Name: Touch target preview
+      Namespaces:
+        touch_target: true
+      Value: true
+    - Class: rviz_default_plugins/Image
+      Enabled: true
+      Max Value: 1
+      Median window: 5
+      Min Value: 0
+      Name: Arm Camera RGB
+      Normalize Range: true
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Value: /arm_camera/color/image_raw
       Value: true
     - Alpha: 0.800000011920929
       Autocompute Intensity Bounds: true
@@ -404,7 +436,7 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 3.197293519973755
+      Distance: 8.484284400939941
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
@@ -589,18 +621,18 @@ Window Geometry:
     collapsed: false
   Displays:
     collapsed: false
-  Height: 1440
+  Height: 1016
   Hide Left Dock: false
   Hide Right Dock: false
   Image:
     collapsed: false
-  QMainWindow State: 000000ff00000000fd0000000200000000000001da00000287fc0200000004fb000000100044006900730070006c00610079007301000002fe00000163000000c700fffffffb0000001200530065006c0065006300740069006f006e0000000268000000d20000005c00fffffffb0000001e0054006f006f006c002000500072006f007000650072007400690065007300000002d1000000fb0000005c00fffffffb0000000a0056006900650077007301000004670000011e000000a000ffffff000000020000063d000002bdfc0100000002fb0000001c00430061006d006500720061002000280043006f006c006f007200290100000000000003940000009000fffffffb0000000a0049006d006100670065010000039a000002a30000005a00ffffff0000045d0000028700000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
+  QMainWindow State: 000000ff00000000fd0000000200000000000001da00000332fc0200000004fb000000100044006900730070006c00610079007301000000ab000001c2000000c700fffffffb0000001200530065006c0065006300740069006f006e0000000268000000d20000005c00fffffffb0000001e0054006f006f006c002000500072006f007000650072007400690065007300000002d1000000fb0000005c00fffffffb0000000a0056006900650077007301000002730000016a000000a000ffffff000000020000073a0000006afc0100000002fb0000001c00430061006d006500720061002000280043006f006c006f007200290100000000000004260000009000fffffffb0000000a0049006d006100670065010000042c0000030e0000005a00ffffff0000055a0000033200000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
   Selection:
     collapsed: false
   Tool Properties:
     collapsed: false
   Views:
     collapsed: false
-  Width: 1597
-  X: 120
-  Y: 77
+  Width: 1850
+  X: 70
+  Y: 27

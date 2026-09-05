@@ -1,0 +1,7 @@
+<library path="so101_calibration_capture_panel">
+  <class name="so101_kinematic_handeye_calibration/CapturePanel"
+         type="so101_kinematic_handeye_calibration::CapturePanel"
+         base_class_type="rviz_common::Panel">
+    <description>Read-only SO101 calibration evidence capture panel.</description>
+  </class>
+</library>

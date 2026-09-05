@@ -11,6 +11,7 @@ PickingRobotOdom::PickingRobotOdom()
     is_first_callback(true),
     has_steer_msg(false),
     has_drive_msg(false),
+    last_drive_msg_time(this->get_clock()->now()),
     size(3),
     KinemaMatrix()    
 {
@@ -50,6 +51,7 @@ void PickingRobotOdom::driveCallback(const my_messages::msg::DriveMotor::ConstSh
     std::lock_guard<std::mutex> lock(msg_mutex);
     latest_drive_msg = *msg;
     has_drive_msg = true;
+    last_drive_msg_time = this->get_clock()->now();
     RCLCPP_DEBUG(this->get_logger(), "drive_odom received: vel=[%.4f, %.4f, %.4f]", 
                  msg->vel1, msg->vel2, msg->vel3);
 }
@@ -58,11 +60,9 @@ void PickingRobotOdom::timerCallback()
 {
     std::lock_guard<std::mutex> lock(msg_mutex);
     
-    static int count = 0;
-    if (count % 10 == 0) {
-        RCLCPP_INFO(this->get_logger(), "Timer: has_steer=%d, has_drive=%d", has_steer_msg, has_drive_msg);
-    }
-    count++;
+    RCLCPP_DEBUG_THROTTLE(
+        this->get_logger(), *this->get_clock(), 5000,
+        "Timer: has_steer=%d, has_drive=%d", has_steer_msg, has_drive_msg);
     
     if (!has_steer_msg || !has_drive_msg) {
         return;
@@ -70,21 +70,25 @@ void PickingRobotOdom::timerCallback()
 
     std::array<float, 3> steer_phi = {latest_steer_msg.phi1, latest_steer_msg.phi2, latest_steer_msg.phi3};
     std::array<double, 3> drive_vel = {latest_drive_msg.vel1, latest_drive_msg.vel2, latest_drive_msg.vel3};
+    const auto now = this->get_clock()->now();
+    const double drive_age = (now - last_drive_msg_time).seconds();
+    if (drive_age > 0.3) {
+        drive_vel = {0.0, 0.0, 0.0};
+        RCLCPP_WARN_THROTTLE(
+            this->get_logger(), *this->get_clock(), 2000,
+            "drive_odom stale for %.3f s; forcing wheel odometry velocity to zero",
+            drive_age);
+    }
 
-    RCLCPP_INFO(this->get_logger(), "Input: drive_vel=[%.4f, %.4f, %.4f], steer_phi=[%.4f, %.4f, %.4f]",
+    RCLCPP_DEBUG(this->get_logger(), "Input: drive_vel=[%.4f, %.4f, %.4f], steer_phi=[%.4f, %.4f, %.4f]",
                 drive_vel[0], drive_vel[1], drive_vel[2],
                 steer_phi[0], steer_phi[1], steer_phi[2]);
 
     KinemaMatrix.calcRobotVelocity(vx, vy, vth, drive_vel.data(), steer_phi.data());
 
-    // Match ROS base_link convention and the verified cmd_vel direction:
-    // +X is the robot's real forward direction.  Motor feedback currently
-    // reconstructs the X component with the opposite sign, while Y is correct.
-    vx = -vx;
+    RCLCPP_DEBUG(this->get_logger(), "Calculated: vx=%.4f, vy=%.4f, vth=%.4f", vx, vy, vth);
     
-    RCLCPP_INFO(this->get_logger(), "Calculated: vx=%.4f, vy=%.4f, vth=%.4f", vx, vy, vth);
-    
-    calcOdometry(this->get_clock()->now());
+    calcOdometry(now);
 }
 
 
@@ -93,14 +97,16 @@ void PickingRobotOdom::calcOdometry(const rclcpp::Time& current_time)
     double dt = (current_time - last_time).seconds();
 
     if (is_first_callback) {
-        RCLCPP_INFO(this->get_logger(), "First callback, skipping integration. Setting last_time.");
+        RCLCPP_DEBUG(this->get_logger(), "First callback, skipping integration. Setting last_time.");
         last_time = current_time;
         is_first_callback = false;
         return;
     }
 
     if (dt <= 0.0 || dt > 10.0) {
-        RCLCPP_INFO(this->get_logger(), "Skipping calc: dt=%.6f (out of range)", dt);
+        RCLCPP_WARN_THROTTLE(
+            this->get_logger(), *this->get_clock(), 5000,
+            "Skipping calc: dt=%.6f (out of range)", dt);
         last_time = current_time;
         return;
     }
@@ -109,16 +115,16 @@ void PickingRobotOdom::calcOdometry(const rclcpp::Time& current_time)
     double dy = (vx * sin(th) + vy * cos(th)) * dt;
     double dth = vth * dt;
 
-    RCLCPP_INFO(this->get_logger(), "Integration: dt=%.6f, delta=[dx=%.6f, dy=%.6f, dth=%.6f]", 
+    RCLCPP_DEBUG(this->get_logger(), "Integration: dt=%.6f, delta=[dx=%.6f, dy=%.6f, dth=%.6f]",
                 dt, dx, dy, dth);
-    RCLCPP_INFO(this->get_logger(), "Before: pos=[%.6f, %.6f, %.6f], vel=[%.6f, %.6f, %.6f]",
+    RCLCPP_DEBUG(this->get_logger(), "Before: pos=[%.6f, %.6f, %.6f], vel=[%.6f, %.6f, %.6f]",
                 x, y, th, vx, vy, vth);
 
     x += dx;
     y += dy;
     th += dth;
 
-    RCLCPP_INFO(this->get_logger(), "After: pos=[%.6f, %.6f, %.6f]", x, y, th);
+    RCLCPP_DEBUG(this->get_logger(), "After: pos=[%.6f, %.6f, %.6f]", x, y, th);
 
     last_time = current_time;
 
@@ -139,7 +145,7 @@ void PickingRobotOdom::calcOdometry(const rclcpp::Time& current_time)
     odom.twist.twist.angular.z = vth;
 
     odom_pub->publish(odom);
-    RCLCPP_INFO(this->get_logger(), "Published wheel_odom: x=%.4f, y=%.4f, th=%.4f", x, y, th);
+    RCLCPP_DEBUG(this->get_logger(), "Published wheel_odom: x=%.4f, y=%.4f, th=%.4f", x, y, th);
 
     geometry_msgs::msg::TransformStamped tf_msg;
     tf_msg.header.stamp = current_time;

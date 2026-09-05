@@ -5,7 +5,8 @@ Panels:
     Property Tree Widget:
       Expanded:
         - /Global Options1
-        - /RobotModel1
+        - /SO101 Arm1
+        - /SO101 Preview1
         - /2D Map1
         - /Global Costmap1
         - /Local Costmap1
@@ -14,15 +15,16 @@ Panels:
         - /Robot Footprint1
         - /Odometry1
         - /GICP Saved PLY Map1
-        - /PointCloud21
         - /Camera RGB1
       Splitter Ratio: 0.550000011920929
-    Tree Height: 646
+    Tree Height: 336
   - Class: rviz_common/Views
     Expanded:
       - /Current View1
     Name: Views
     Splitter Ratio: 0.5
+  - Class: touch_anything/TouchPanel
+    Name: Touch Anything
 Visualization Manager:
   Class: ""
   Displays:
@@ -43,7 +45,7 @@ Visualization Manager:
       Plane: XY
       Plane Cell Count: 30
       Reference Frame: <Fixed Frame>
-      Value: false
+      Value: true
     - Alpha: 0.800000011920929
       Class: rviz_default_plugins/RobotModel
       Collision Enabled: false
@@ -112,11 +114,27 @@ Visualization Manager:
           Show Axes: false
           Show Trail: false
           Value: true
+        camera_pan_mount_base:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        camera_pan_yaw_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        camera_tilt_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
         livox_frame:
           Alpha: 1
           Show Axes: false
           Show Trail: false
           Value: true
+        realsense_holder_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
         wheel_back:
           Alpha: 1
           Show Axes: false
@@ -135,7 +153,7 @@ Visualization Manager:
       Mass Properties:
         Inertia: false
         Mass: false
-      Name: RobotModel
+      Name: Mobile Robot
       TF Prefix: ""
       Update Interval: 0
       Value: true
@@ -145,76 +163,153 @@ Visualization Manager:
       Frame Timeout: 15
       Frames:
         All Enabled: true
-        base_footprint:
-          Value: true
-        base_link:
-          Value: true
-        camera_bottom_screw_frame:
-          Value: true
-        camera_color_frame:
-          Value: true
-        camera_color_optical_frame:
-          Value: true
-        camera_depth_frame:
-          Value: true
-        camera_depth_optical_frame:
-          Value: true
-        camera_infra1_frame:
-          Value: true
-        camera_infra1_optical_frame:
-          Value: true
-        camera_infra2_frame:
-          Value: true
-        camera_infra2_optical_frame:
-          Value: true
-        camera_link:
-          Value: true
-        livox_frame:
-          Value: true
-        map:
-          Value: true
-        odom:
-          Value: true
-        wheel_back:
-          Value: true
-        wheel_left:
-          Value: true
-        wheel_right:
-          Value: true
       Marker Scale: 0.5
       Name: TF
       Show Arrows: true
       Show Axes: true
       Show Names: true
       Tree:
-        map:
-          odom:
-            base_footprint:
-              base_link:
-                camera_bottom_screw_frame:
-                  camera_link:
-                    camera_color_frame:
-                      camera_color_optical_frame:
-                        {}
-                    camera_depth_frame:
-                      camera_depth_optical_frame:
-                        {}
-                    camera_infra1_frame:
-                      camera_infra1_optical_frame:
-                        {}
-                    camera_infra2_frame:
-                      camera_infra2_optical_frame:
-                        {}
-                livox_frame:
-                  {}
-                wheel_back:
-                  {}
-                wheel_left:
-                  {}
-                wheel_right:
-                  {}
+        {}
       Update Interval: 0
       Value: false
+    - Alpha: 1
+      Class: rviz_default_plugins/RobotModel
+      Collision Enabled: false
+      Description File: ""
+      Description Source: Topic
+      Description Topic:
+        Depth: 5
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /arm/robot_description
+      Enabled: true
+      Links:
+        All Links Enabled: true
+        Expand Joint Details: false
+        Expand Link Details: false
+        Expand Tree: false
+        Link Tree Style: Links in Alphabetic Order
+        arm/base_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        arm/gripper_frame_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        arm/gripper_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        arm/jaw_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        arm/lower_arm_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        arm/shoulder_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        arm/upper_arm_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        arm/world:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        arm/wrist_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+      Mass Properties:
+        Inertia: false
+        Mass: false
+      Name: SO101 Arm
+      TF Prefix: ""
+      Update Interval: 0
+      Value: true
+      Visual Enabled: true
+    - Alpha: 0.6499999761581421
+      Class: rviz_default_plugins/RobotModel
+      Collision Enabled: false
+      Description File: ""
+      Description Source: Topic
+      Description Topic:
+        Depth: 5
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /arm/candidate/robot_description
+      Enabled: true
+      Links:
+        All Links Enabled: true
+        Expand Joint Details: false
+        Expand Link Details: false
+        Expand Tree: false
+        Link Tree Style: Links in Alphabetic Order
+        arm_preview/base_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        arm_preview/gripper_frame_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        arm_preview/gripper_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        arm_preview/jaw_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        arm_preview/lower_arm_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        arm_preview/shoulder_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        arm_preview/upper_arm_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        arm_preview/world:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        arm_preview/wrist_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+      Mass Properties:
+        Inertia: false
+        Mass: false
+      Name: SO101 Preview
+      TF Prefix: ""
+      Update Interval: 0
+      Value: true
+      Visual Enabled: true
     - Alpha: 0.699999988079071
       Class: rviz_default_plugins/Map
       Color Scheme: map
@@ -300,7 +395,8 @@ Visualization Manager:
       Shaft Length: 0.10000000149011612
       Topic:
         Depth: 5
-        Durability Policy: Volatile
+        Durability Policy: Transient Local
+        Filter size: 10
         History Policy: Keep Last
         Reliability Policy: Reliable
         Value: /plan
@@ -319,7 +415,7 @@ Visualization Manager:
       Offset:
         X: 0
         Y: 0
-        Z: 0.080000000000000002
+        Z: 0.07999999821186066
       Pose Color: 255; 85; 255
       Pose Style: None
       Radius: 0.029999999329447746
@@ -328,6 +424,7 @@ Visualization Manager:
       Topic:
         Depth: 5
         Durability Policy: Volatile
+        Filter size: 10
         History Policy: Keep Last
         Reliability Policy: Reliable
         Value: /local_plan
@@ -344,13 +441,51 @@ Visualization Manager:
         Reliability Policy: Reliable
         Value: /FollowPath/trajectories
       Value: true
-    - Class: rviz_default_plugins/Polygon
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: Agent Navigation Goals
+      Namespaces:
+        {}
+      Topic:
+        Depth: 1
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /robot_skills/navigation_goal_markers
+      Value: true
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: Agent Narrow Route
+      Namespaces:
+        {}
+      Topic:
+        Depth: 1
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /robot_skills/navigation_route_markers
+      Value: true
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: Touch target preview
+      Namespaces:
+        {}
+      Topic:
+        Depth: 5
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /touch_anything/markers
+      Value: true
+    - Alpha: 1
+      Class: rviz_default_plugins/Polygon
       Color: 255; 255; 0
       Enabled: true
       Name: Robot Footprint
       Topic:
         Depth: 5
         Durability Policy: Volatile
+        Filter size: 10
         History Policy: Keep Last
         Reliability Policy: Reliable
         Value: /local_costmap/published_footprint
@@ -443,7 +578,7 @@ Visualization Manager:
       Enabled: true
       Invert Rainbow: false
       Max Color: 255; 255; 255
-      Max Intensity: 177
+      Max Intensity: 163
       Min Color: 0; 0; 0
       Min Intensity: 0
       Name: Livox PC2 Relay
@@ -475,6 +610,34 @@ Visualization Manager:
         History Policy: Keep Last
         Reliability Policy: Reliable
         Value: /camera/camera/color/image_raw
+      Value: true
+    - Class: rviz_default_plugins/Image
+      Enabled: true
+      Max Value: 1
+      Median window: 5
+      Min Value: 0
+      Name: Arm Camera RGB
+      Normalize Range: true
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Value: /arm_camera/color/image_raw
+      Value: true
+    - Class: rviz_default_plugins/Image
+      Enabled: true
+      Max Value: 1
+      Median window: 5
+      Min Value: 0
+      Name: Image
+      Normalize Range: true
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /camera/camera/depth/image_rect_raw
       Value: true
   Enabled: true
   Global Options:
@@ -514,37 +677,43 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 13.63320541381836
+      Distance: 3.892934799194336
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
         Swap Stereo Eyes: false
         Value: false
       Focal Point:
-        X: -0.2687201201915741
-        Y: -0.7697800397872925
-        Z: -0.06174587458372116
+        X: -0.22996939718723297
+        Y: -0.719310998916626
+        Z: -0.5898368954658508
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 1.5697963237762451
+      Pitch: 0.1197967380285263
       Target Frame: map
       Value: Orbit (rviz)
-      Yaw: 2.3700006008148193
+      Yaw: 0.9600017666816711
     Saved: ~
 Window Geometry:
+  Arm Camera RGB:
+    collapsed: false
   Camera RGB:
     collapsed: false
   Displays:
     collapsed: false
-  Height: 1596
+  Height: 1652
   Hide Left Dock: false
   Hide Right Dock: false
-  QMainWindow State: 000000ff00000000fd00000001000000000000019b000005e6fc0200000003fb000000100044006900730070006c006100790073010000003b00000307000000c700fffffffb0000000a005600690065007700730100000348000001f5000000a000fffffffb0000001400430061006d00650072006100200052004700420100000543000000de0000002800ffffff00000703000005e600000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
+  Image:
+    collapsed: false
+  QMainWindow State: 000000ff00000000fd0000000200000000000001890000034ffc0200000002fb000000100044006900730070006c006100790073010000030a000001d1000000c700fffffffb0000000a0056006900650077007301000004e100000178000000a000ffffff000000020000070b000002c9fc0100000004fb0000000a0049006d0061006700650100000000000001070000005a00fffffffb0000001c00410072006d002000430061006d0065007200610020005200470042010000010d000001fb0000009e00fffffffb0000001400430061006d0065007200610020005200470042010000030e0000020a0000008100fffffffb0000001c0054006f00750063006800200041006e0079007400680069006e0067010000051e000001ed0000018900ffffff0000057c0000034f00000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
+  Touch Anything:
+    collapsed: false
   Views:
     collapsed: false
-  Width: 2212
-  X: 584
-  Y: 337
+  Width: 1803
+  X: 70
+  Y: 27

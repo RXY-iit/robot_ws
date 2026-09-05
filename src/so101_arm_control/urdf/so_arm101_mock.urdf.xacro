@@ -1,0 +1,50 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="so_arm101_mock">
+  <xacro:include filename="$(find so_arm101_description)/urdf/so_arm101_macro.xacro" />
+
+  <link name="world" />
+  <xacro:so_arm101
+    prefix=""
+    joint_prefix=""
+    parent="world"
+    color="0.15 0.75 0.82 1.0"
+  />
+
+  <!-- Intentionally mock-only. There is no real-hardware plugin branch here. -->
+  <ros2_control name="SO101MockSystem" type="system">
+    <hardware>
+      <plugin>mock_components/GenericSystem</plugin>
+      <param name="calculate_dynamics">false</param>
+    </hardware>
+    <joint name="shoulder_pan_joint">
+      <command_interface name="position" />
+      <state_interface name="position"><param name="initial_value">0.0</param></state_interface>
+      <state_interface name="velocity"><param name="initial_value">0.0</param></state_interface>
+    </joint>
+    <joint name="shoulder_lift_joint">
+      <command_interface name="position" />
+      <state_interface name="position"><param name="initial_value">0.0</param></state_interface>
+      <state_interface name="velocity"><param name="initial_value">0.0</param></state_interface>
+    </joint>
+    <joint name="elbow_flex_joint">
+      <command_interface name="position" />
+      <state_interface name="position"><param name="initial_value">0.0</param></state_interface>
+      <state_interface name="velocity"><param name="initial_value">0.0</param></state_interface>
+    </joint>
+    <joint name="wrist_flex_joint">
+      <command_interface name="position" />
+      <state_interface name="position"><param name="initial_value">0.0</param></state_interface>
+      <state_interface name="velocity"><param name="initial_value">0.0</param></state_interface>
+    </joint>
+    <joint name="wrist_roll_joint">
+      <command_interface name="position" />
+      <state_interface name="position"><param name="initial_value">0.0</param></state_interface>
+      <state_interface name="velocity"><param name="initial_value">0.0</param></state_interface>
+    </joint>
+    <joint name="gripper_joint">
+      <command_interface name="position" />
+      <state_interface name="position"><param name="initial_value">0.85</param></state_interface>
+      <state_interface name="velocity"><param name="initial_value">0.0</param></state_interface>
+    </joint>
+  </ros2_control>
+</robot>

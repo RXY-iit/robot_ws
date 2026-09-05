@@ -1,0 +1,75 @@
+map_id: l402_2d_map_clean_0509
+name: L402 real robot map (2026-05-09 clean)
+environment: real
+frame_id: map
+status: semantic_partial_calibration
+nav2_map: ../l402_2d_map_clean_0509.yaml
+nav2_image: ../l402_2d_map_clean_0509.pgm
+semantic_map: semantic_map.yaml
+semantic_segments: semantic_segments.yaml
+navigation_annotations: navigation_annotations.yaml
+notes:
+- The existing flat Nav2 map remains the navigation baseline.
+- Fourteen user-verified real-map objects are authoritative and navigation-ready.
+- Remaining semantic objects were transformed from sim_real_lab_001 and are disabled
+  for navigation until calibrated.
+- Narrow passages and alignment zones were enabled after user verification on 2026-07-14;
+  first motion tests still require operator supervision.
+semantic_import:
+  reference_map: sim_real_lab_001
+  method: 2d_similarity_from_manual_fixed_landmarks
+  manual_landmarks:
+  - front-door
+  - back-door
+  - sofa
+  - rxy-table
+  manual_objects_preserved:
+  - front-door
+  - back-door
+  - sofa
+  - tool-box
+  - rxy-table
+  provisional_objects_imported:
+  - trash_bin
+  - meeting_table
+  - wall_cabinet_left_upper
+  - wall_cabinet_left_lower
+  - desk_ire
+  - desk_tkd
+  - desk_tcb
+  - desk_min
+  - desk_hyk
+  - desk_mkr
+  - desk_tks
+  - desk_ysd
+  - desk_ikr
+  - desk_myj
+  - desk_isz
+  - desk_sek
+  - desk_tym
+  scale: 0.992182
+  yaw_deg: 150.930352
+  translation_x: -2.121758
+  translation_y: 0.507979
+  landmark_rms_error_m: 0.326115
+  landmark_max_error_m: 0.507961
+semantic_refinement:
+  method: local_idw_from_calibrated_real_objects
+  calibrated_anchor_count: 13
+  excluded_anchor: tool-box (movable)
+  neighbor_count: 4
+  refined_objects:
+  - trash_bin
+  - desk_tks
+  - desk_ysd
+  - desk_ikr
+  - desk_myj
+  - desk_isz
+  - desk_sek
+  - desk_tym
+  note: Geometry is still provisional and remains disabled until individually verified.
+navigation_annotation_status:
+  verified_by_user: true
+  enabled: true
+  calibrated: true
+  enabled_on: '2026-07-14'

@@ -6,17 +6,20 @@ Nodes launched:
   gicp_localizer_node        — GICP scan-to-map, publishes map→odom TF
   map_server                 — serves /map (OccupancyGrid) for Nav2 global planner
   lifecycle_manager          — activates map_server
-  pointcloud_to_laserscan    — lidar → /scan for Nav2 obstacle_layer
   [with_fast_lio=true only]
     fast_lio                 — LiDAR-IMU odometry (needs fast_lio pkg built)
     livox_custom_to_pc2_node — relay: /livox/lidar (CustomMsg) → /livox/lidar_pc2 (PointCloud2)
-    (gicp and laserscan automatically remapped to /livox/lidar_pc2)
+    (GICP is automatically remapped to /livox/lidar_pc2)
 
 Topic routing:
-  with_fast_lio=false  (default):  GICP + laserscan ← /livox/lidar (PointCloud2, xfer_format=0)
+  with_fast_lio=false  (default):  GICP ← /livox/lidar (PointCloud2, xfer_format=0)
   with_fast_lio=true:              FAST-LIO ← /livox/lidar (CustomMsg, xfer_format=1)
                                    relay converts to /livox/lidar_pc2 (PointCloud2)
-                                   GICP + laserscan ← /livox/lidar_pc2
+                                   GICP ← /livox/lidar_pc2
+
+Nav2 obstacle detection is intentionally not fed by this LiDAR.  The installed
+LiDAR has a near-field blind region; the active local costmap is fed by the
+RealSense depth point cloud configured in nav_pkg/config/nav2_params.yaml.
 
 Launch arguments:
   map              2D map yaml path (for Nav2 costmap / map_server)
@@ -90,21 +93,10 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "use_sim_time", default_value="false",
         ),
-        DeclareLaunchArgument(
-            "scan_min_height", default_value="-0.8",
-            description="min z in base_footprint frame for /scan slice (m). "
-                        "LiDAR at 1.3 m: -0.8 → ground+0.5 m. "
-                        "Captures wall mid-section, avoids floor/ceiling.",
-        ),
-        DeclareLaunchArgument(
-            "scan_max_height", default_value="-0.3",
-            description="max z in base_footprint frame for /scan slice (m). "
-                        "-0.3 → ground+1.0 m. Stays below ceiling.",
-        ),
     ]
 
     # When with_fast_lio=true, Livox publishes CustomMsg; relay converts to
-    # /livox/lidar_pc2.  GICP and laserscan must read from there instead.
+    # /livox/lidar_pc2.  GICP must read from there instead.
     lidar_input_topic = PythonExpression(
         ["'/livox/lidar_pc2' if '", LaunchConfiguration("with_fast_lio"), "' == 'true' else '/livox/lidar'"]
     )
@@ -164,46 +156,11 @@ def generate_launch_description():
         ],
     )
 
-    # ── pointcloud_to_laserscan → /scan ──────────────────────────────────────
-    # /scan height slice targets wall mid-section in base_footprint frame.
-    # LiDAR is at ~1.3 m above ground.  In base_footprint frame (origin at ground):
-    #   ground+0.5 m = base_footprint z  0.5 m  = LiDAR z  -0.8 m
-    #   ground+1.0 m = base_footprint z  1.0 m  = LiDAR z  -0.3 m
-    # (LiDAR z: positive = up from sensor, which is 1.3 m above base_footprint)
-    # This slice is visible from >1.4 m away (LiDAR 30° downward tilt blind zone).
-    pointcloud_to_scan = Node(
-        package="pointcloud_to_laserscan",
-        executable="pointcloud_to_laserscan_node",
-        name="pointcloud_to_laserscan",
-        output="screen",
-        remappings=[
-            ("cloud_in", lidar_input_topic),
-            ("scan", "/scan"),
-        ],
-        parameters=[
-            {
-                "use_sim_time": LaunchConfiguration("use_sim_time"),
-                "target_frame": "base_footprint",
-                "transform_tolerance": 0.05,
-                "min_height": LaunchConfiguration("scan_min_height"),
-                "max_height": LaunchConfiguration("scan_max_height"),
-                "angle_min": -3.14159,
-                "angle_max": 3.14159,
-                "angle_increment": 0.0087,
-                "scan_time": 0.1,
-                "range_min": 0.80,
-                "range_max": 25.0,
-                "use_inf": True,
-                "inf_epsilon": 1.0,
-            }
-        ],
-    )
-
     # ── FAST-LIO2 + relay (optional, requires bringup fast_lio_mode:=true) ───
     # Requires: tools/setup_fast_lio.sh has been run and fast_lio pkg is built.
     # When active:
     #   - fast_lio subscribes /livox/lidar (CustomMsg, xfer_format=1)
-    #   - relay converts /livox/lidar → /livox/lidar_pc2 (PointCloud2) for GICP + laserscan
+    #   - relay converts /livox/lidar → /livox/lidar_pc2 (PointCloud2) for GICP
     #   - /fast_lio/odometry used as GICP initial-pose hint (delta-based)
     fast_lio_group = GroupAction(
         condition=IfCondition(LaunchConfiguration("with_fast_lio")),
@@ -241,7 +198,6 @@ def generate_launch_description():
             gicp_node,
             map_server,
             lifecycle_manager,
-            pointcloud_to_scan,
             fast_lio_group,
         ]
     )

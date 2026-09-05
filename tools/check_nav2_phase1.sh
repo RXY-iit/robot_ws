@@ -51,7 +51,7 @@ done
 echo
 
 echo "--- critical topics ---"
-for t in /map /scan /goal_pose /plan /local_costmap/costmap /global_costmap/costmap /nav2/cmd_vel /teleop/cmd_vel /cmd_vel_raw /cmd_vel /safety_status /robot_mode /wheel_odom; do
+for t in /map /camera/depth/points /goal_pose /plan /local_costmap/costmap /global_costmap/costmap /nav2/cmd_vel /teleop/cmd_vel /cmd_vel_raw /cmd_vel /safety_status /robot_mode /wheel_odom; do
   printf "%-30s " "$t"
   ros2 topic info "$t" 2>/dev/null || echo "missing"
 done
@@ -87,6 +87,8 @@ echo
 echo "Expected before RViz 2D Goal Pose:"
 echo "  - map_server/planner_server/controller_server/behavior_server/bt_navigator are active"
 echo "  - /map exists"
+echo "  - /camera/depth/points exists; it is the current local-costmap obstacle input"
+echo "  - /scan and pointcloud_to_laserscan are not required by the current GICP stack"
 echo "  - /goal_pose exists after bt_navigator starts"
 echo "  - /plan appears after a valid goal"
 echo "  - /nav2/cmd_vel may be silent until a valid goal is actively followed"

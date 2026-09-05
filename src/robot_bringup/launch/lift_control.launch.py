@@ -3,7 +3,7 @@ lift_control.launch.py — Standalone launch for the vertical lift mechanism.
 
 Starts:
   lift_serial_node  Serial bridge to Arduino (AZD-KD JOG control via GPIO).
-  lift_joy_node     Maps Joy-Con L1+Y → UP, L1+A → DOWN on /lift/command.
+  lift_joy_node     Maps hold LT → UP, hold RT → DOWN on /lift/command.
 
 The joy_node (publishing /joy) must already be running — either from
 teleop.launch.py or test_all.launch.py with joy:=true.
@@ -27,10 +27,11 @@ Key topics:
 
 Confirm Joy-Con button mapping with:
   ros2 topic echo /joy
-Then adjust up_button / down_button args if needed.
+Then adjust up_axis / down_axis / trigger_active_below if needed.
 """
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
+from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
@@ -38,8 +39,9 @@ from launch_ros.actions import Node
 def generate_launch_description():
     args = [
         DeclareLaunchArgument(
-            'serial_port', default_value='/dev/ttyACM0',
-            description='Serial port for the Arduino (e.g. /dev/ttyACM0 or /dev/ttyACM1)',
+            'serial_port',
+            default_value='/dev/serial/by-id/usb-Arduino__www.arduino.cc__0043_03536383236351E062C1-if00',
+            description='Stable by-id path for the verified lift Arduino UNO',
         ),
         DeclareLaunchArgument(
             'position_min_mm', default_value='0.0',
@@ -54,6 +56,14 @@ def generate_launch_description():
             description='Position value assigned after homing completes [mm].',
         ),
         DeclareLaunchArgument(
+            'initial_position_mm', default_value='0.0',
+            description='Unreferenced startup estimate [mm]',
+        ),
+        DeclareLaunchArgument(
+            'initial_position_reference', default_value='UNREFERENCED_SOFTWARE_ESTIMATE',
+            description='Evidence label; confirm endpoints with SET_MIN or SET_MAX',
+        ),
+        DeclareLaunchArgument(
             'auto_home_on_start', default_value='false',
             description='If true, perform homing automatically 2.5 s after node startup.',
         ),
@@ -66,16 +76,52 @@ def generate_launch_description():
             description='AZD-KD JOG speed [mm/s]. Must match driver parameter 21.',
         ),
         DeclareLaunchArgument(
-            'enable_button', default_value='4',
-            description='Joy-Con dead-man button index (default 4 = L1).',
+            'enable_abzo_monitor', default_value='false',
+            description='Start the read-only AZD-KD Modbus monitor. Requires a separate USB-RS485 path.',
         ),
         DeclareLaunchArgument(
-            'up_button', default_value='3',
-            description='Joy-Con UP button index (default 3 = Y). Verify with: ros2 topic echo /joy',
+            'abzo_serial_port', default_value='',
+            description='Stable /dev/serial/by-id path for the isolated AZD-KD USB-RS485 adapter.',
         ),
         DeclareLaunchArgument(
-            'down_button', default_value='0',
-            description='Joy-Con DOWN button index (default 0 = A). Verify with: ros2 topic echo /joy',
+            'abzo_slave_id', default_value='1',
+            description='AZD-KD Modbus device address (1..31; address 0 is broadcast).',
+        ),
+        DeclareLaunchArgument(
+            'abzo_baud_rate', default_value='115200',
+            description='Must match the AZD-KD BAUD switch.',
+        ),
+        DeclareLaunchArgument(
+            'abzo_position_mm_per_step', default_value='0.0',
+            description='Signed mm/step calibration. Zero keeps the output truthfully raw/uncalibrated.',
+        ),
+        DeclareLaunchArgument(
+            'abzo_position_offset_mm', default_value='0.0',
+            description='Position offset [mm], applied only after mm/step is confirmed.',
+        ),
+        DeclareLaunchArgument(
+            'abzo_physical_limits_configured', default_value='false',
+            description='Set true only after FW-LS/RV-LS/HOMES wiring and MEXE02 assignment are verified.',
+        ),
+        DeclareLaunchArgument(
+            'abzo_software_limits_configured', default_value='false',
+            description='Set true only after AZD-KD software-limit values are verified in MEXE02.',
+        ),
+        DeclareLaunchArgument(
+            'up_axis', default_value='2',
+            description='Joy LT axis for UP (default 2; released +1, pressed toward -1).',
+        ),
+        DeclareLaunchArgument(
+            'down_axis', default_value='5',
+            description='Joy RT axis for DOWN (default 5; released +1, pressed toward -1).',
+        ),
+        DeclareLaunchArgument(
+            'trigger_active_below', default_value='-0.5',
+            description='A lift trigger is active only below this axis value.',
+        ),
+        DeclareLaunchArgument(
+            'joy_timeout_sec', default_value='0.30',
+            description='Send STOP if /joy disappears while lift motion is commanded.',
         ),
     ]
 
@@ -91,8 +137,14 @@ def generate_launch_description():
             'position_min_mm':    LaunchConfiguration('position_min_mm'),
             'position_max_mm':    LaunchConfiguration('position_max_mm'),
             'home_position_mm':   LaunchConfiguration('home_position_mm'),
+            'initial_position_mm': LaunchConfiguration('initial_position_mm'),
+            'initial_position_reference': LaunchConfiguration(
+                'initial_position_reference'),
             'auto_home_on_start': LaunchConfiguration('auto_home_on_start'),
             'enable_soft_limits': LaunchConfiguration('enable_soft_limits'),
+            'expected_usb_vendor_id': '2341',
+            'expected_usb_product_id': '0043',
+            'require_usb_identity': True,
         }],
     )
 
@@ -102,10 +154,29 @@ def generate_launch_description():
         name='lift_joy_node',
         output='screen',
         parameters=[{
-            'enable_button': LaunchConfiguration('enable_button'),
-            'up_button':     LaunchConfiguration('up_button'),
-            'down_button':   LaunchConfiguration('down_button'),
+            'up_axis': LaunchConfiguration('up_axis'),
+            'down_axis': LaunchConfiguration('down_axis'),
+            'trigger_active_below': LaunchConfiguration('trigger_active_below'),
+            'joy_timeout_sec': LaunchConfiguration('joy_timeout_sec'),
         }],
     )
 
-    return LaunchDescription(args + [lift_serial, lift_joy])
+    lift_abzo_monitor = Node(
+        package='serial_transciever',
+        executable='lift_abzo_monitor_node',
+        name='lift_abzo_monitor_node',
+        condition=IfCondition(LaunchConfiguration('enable_abzo_monitor')),
+        output='screen',
+        parameters=[{
+            'serial_port': LaunchConfiguration('abzo_serial_port'),
+            'slave_id': LaunchConfiguration('abzo_slave_id'),
+            'baud_rate': LaunchConfiguration('abzo_baud_rate'),
+            'poll_rate_hz': 5.0,
+            'position_mm_per_step': LaunchConfiguration('abzo_position_mm_per_step'),
+            'position_offset_mm': LaunchConfiguration('abzo_position_offset_mm'),
+            'physical_limit_inputs_configured': LaunchConfiguration('abzo_physical_limits_configured'),
+            'software_limits_configured': LaunchConfiguration('abzo_software_limits_configured'),
+        }],
+    )
+
+    return LaunchDescription(args + [lift_serial, lift_joy, lift_abzo_monitor])

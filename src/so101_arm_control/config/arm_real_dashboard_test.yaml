@@ -1,0 +1,229 @@
+schema_version: 1
+mode: REAL_DASHBOARD_TEST
+model_id: so_arm101
+calibration:
+  id: follower_12v_recal_20260831_v2
+  sha256: 276e40239a27baa4b910d9f1f384e934bf70265e8f558fbc51e4266ffcf5f68c
+  usage: VERIFIED_REAL_FEEDBACK_AND_MICRO_MOVE
+hardware:
+  kit_voltage: 12
+  follower_usb_id: "1a86:55d3"
+  follower_serial: "5AE6054086"
+  follower_stable_port: /dev/serial/by-id/usb-1a86_USB_Single_Serial_5AE6054086-if00
+  real_hardware_enabled: true
+leader:
+  enabled: true
+  kit_voltage: 5
+  usb_id: "1a86:55d3"
+  serial: "5AE6084777"
+  stable_port: /dev/serial/by-id/usb-1a86_USB_Single_Serial_5AE6084777-if00
+  calibration:
+    id: leader_5v_recal_20260831_v2
+    path: /home/matsunaga-h/.cache/huggingface/lerobot/calibration/teleoperators/so_leader/leader_5v_recal_20260831_v2.json
+    sha256: 21142f7adc69b0dbb0da5c6f8549a5dc3c9ab427af22698a16902977034695ab
+  publish_rate_hz: 20.0
+  health_rate_hz: 5.0
+  reconnect_period_sec: 1.0
+teleoperation:
+  feedback_timeout_sec: 0.35
+  command_rate_hz: 20.0
+  mapping: absolute_align_then_follow
+  # Initial absolute alignment remains controlled because its travel can be
+  # large. Once ACTIVE, the follower may use the faster streaming profile so
+  # it does not visibly lag ordinary Leader motion. These do not alter the
+  # conservative code2real&sim trajectory limits below.
+  alignment_max_joint_velocity_rad_s:
+    shoulder_pan: 0.80
+    shoulder_lift: 0.60
+    elbow_flex: 0.70
+    wrist_flex: 0.90
+    wrist_roll: 1.20
+    gripper: 0.90
+  follow_max_joint_velocity_rad_s:
+    shoulder_pan: 1.50
+    shoulder_lift: 1.20
+    elbow_flex: 1.40
+    wrist_flex: 1.80
+    wrist_roll: 2.50
+    gripper: 1.80
+  # Ignore sub-degree hand jitter while retaining responsive deliberate motion.
+  leader_deadband_norm: 0.20
+  # Streaming targets naturally lead the measured servo position. Keep the
+  # rigid 50-tick/3-sample rule for code2 HOLD, but only treat a much larger,
+  # sustained teleop following error as a position disturbance. Current,
+  # temperature and torque-loss protections remain unchanged and immediate.
+  position_error_ticks: 250
+  position_error_samples: 10
+  alignment_tolerance_ticks: 45
+safety:
+  max_duration_sec: 20.0
+  max_joint_velocity_rad_s:
+    shoulder_pan: 0.40
+    shoulder_lift: 0.25
+    elbow_flex: 0.30
+    wrist_flex: 0.40
+    wrist_roll: 0.60
+    gripper: 0.40
+  # Normal endpoint drift reference reported in recovery evidence. Commanded
+  # targets remain inset by 20 ticks; the hard diagnostic read window is below.
+  max_outside_calibration_ticks: 15
+  # A torque-off fall may pass the hand-measured calibration endpoint. Keep
+  # publishing bounded read-only feedback within this larger diagnostic window
+  # so the operator can command an inward-only recovery. This never expands the
+  # commandable range.
+  max_recovery_outside_calibration_ticks: 100
+  monitor_rate_hz: 20.0
+  hard_current_raw: 300
+  resistance_current_raw:
+    shoulder_pan: 80
+    shoulder_lift: 140
+    elbow_flex: 120
+    wrist_flex: 90
+    wrist_roll: 80
+    gripper: 80
+  resistance_samples: 3
+  resistance_following_error_ticks: 12
+  resistance_max_progress_ticks: 1
+  current_grace_sec: 0.25
+  max_temperature_c: 55
+  # A sync-read spike must persist, then be confirmed through direct reads of
+  # only the suspected motor before torque is released. Communication failure
+  # during confirmation remains a safety fault.
+  temperature_consecutive_samples: 5
+  temperature_confirmation_reads: 3
+  temperature_confirmation_min_hot_reads: 2
+  # Dashboard-only 12 V supply advisory band (±10%). These limits color the
+  # readout but do not stop motion; current/temperature protections below remain
+  # the authoritative automatic stop conditions.
+  voltage_warning_min_deci_v: 108
+  voltage_warning_max_deci_v: 132
+  target_limit_margin_ticks: 20
+  settle_timeout_sec: 0.75
+  # After the normal settle window, retain the same target once (do not resend
+  # a trajectory) only when every violating motor remains below the independent
+  # 50-tick HOLD disturbance boundary and has converged from the first settle
+  # sample. Current, temperature, communication and resistance checks stay live.
+  near_goal_settle_extension_sec: 0.75
+  # HOLD admission accounts for measured servo backlash/gravity settling. The
+  # commanded target stays active after success, so the servos may keep
+  # converging while HOLD current/temperature/position protection remains armed.
+  goal_acceptance_tolerance_ticks:
+    shoulder_pan: 12
+    # 2026-09-05 Touch trials reached the lightweight target with a measured
+    # final error of -30 ticks. Accept up to 45 ticks at HOLD admission so the
+    # visual press loop can continue. This remains below the independent
+    # 50-tick HOLD disturbance threshold; current, temperature and command-
+    # envelope protections are unchanged.
+    shoulder_lift: 45
+    elbow_flex: 45
+    wrist_flex: 20
+    wrist_roll: 12
+    gripper: 12
+  boundary_learning_window_ticks: 160
+  boundary_backoff_ticks: 25
+  soft_limit_state_file: /home/matsunaga-h/robot_ws/todo-my/arm-baseline/so101_learned_soft_limits.json
+  hold_monitor_rate_hz: 10.0
+  hold_current_samples: 5
+  hold_position_error_ticks: 50
+  hold_position_error_samples: 3
+default_control_mode: real2sim
+control_modes:
+  - id: real2sim
+    label: real2sim
+    available: true
+    description: Human moves the unpowered follower; real feedback drives RViz and Dashboard.
+  - id: code2real&sim
+    label: code2real&sim
+    available: true
+    description: Dashboard/code/VLA goals drive guarded real motion and the RViz digital twin.
+  - id: teleoperate
+    label: teleoperate
+    available: true
+    description: The calibrated 5 V leader drives the guarded 12 V follower; follower torque remains ON while active.
+joints:
+  - {name: shoulder_pan_joint, motor_name: shoulder_pan, label: Shoulder pan, lower: -1.91986, upper: 1.91986}
+  - {name: shoulder_lift_joint, motor_name: shoulder_lift, label: Shoulder lift, lower: -1.74533, upper: 1.74533}
+  - {name: elbow_flex_joint, motor_name: elbow_flex, label: Elbow flex, lower: -1.69, upper: 1.54}
+  - {name: wrist_flex_joint, motor_name: wrist_flex, label: Wrist flex, lower: -1.6, upper: 1.6}
+  - {name: wrist_roll_joint, motor_name: wrist_roll, label: Wrist roll, lower: -2.3, upper: 2.3}
+  - {name: gripper_joint, motor_name: gripper, label: Gripper, lower: 0.0, upper: 1.7}
+presets:
+  - id: home
+    description: Operator-captured home pose after the level-base remount; 2026-09-02.
+    review_state: OPERATOR_CAPTURED
+    allowed_modes: [REAL_DASHBOARD_TEST]
+    positions:
+      shoulder_pan_joint: -0.036
+      shoulder_lift_joint: -1.583
+      elbow_flex_joint: 1.367
+      wrist_flex_joint: 0.783
+      wrist_roll_joint: -0.124
+      gripper_joint: 0.222
+  - id: see_ground
+    description: Operator-captured ground observation pose after the level-base remount; 2026-09-02.
+    review_state: OPERATOR_CAPTURED
+    allowed_modes: [REAL_DASHBOARD_TEST]
+    positions:
+      shoulder_pan_joint: -0.181
+      shoulder_lift_joint: -0.202
+      elbow_flex_joint: 0.893
+      wrist_flex_joint: 0.241
+      wrist_roll_joint: -1.109
+      gripper_joint: 0.223
+  - id: see_front
+    description: Operator-captured front observation pose after the level-base remount; 2026-09-02.
+    review_state: OPERATOR_CAPTURED
+    allowed_modes: [REAL_DASHBOARD_TEST]
+    positions:
+      shoulder_pan_joint: -0.014
+      shoulder_lift_joint: -0.704
+      elbow_flex_joint: 1.285
+      wrist_flex_joint: -0.665
+      wrist_roll_joint: -1.109
+      gripper_joint: 0.222
+  - id: see_right
+    description: Operator-captured right observation pose after the level-base remount; 2026-09-02.
+    review_state: OPERATOR_CAPTURED
+    allowed_modes: [REAL_DASHBOARD_TEST]
+    positions:
+      shoulder_pan_joint: 0.933
+      shoulder_lift_joint: -0.706
+      elbow_flex_joint: 1.285
+      wrist_flex_joint: -0.665
+      wrist_roll_joint: -1.109
+      gripper_joint: 0.222
+  - id: see_left
+    description: Operator-captured left observation pose after the level-base remount; 2026-09-02.
+    review_state: OPERATOR_CAPTURED
+    allowed_modes: [REAL_DASHBOARD_TEST]
+    positions:
+      shoulder_pan_joint: -1.050
+      shoulder_lift_joint: -0.706
+      elbow_flex_joint: 1.287
+      wrist_flex_joint: -0.665
+      wrist_roll_joint: -1.109
+      gripper_joint: 0.222
+  - id: see_upside
+    description: Operator-captured upward observation pose after the level-base remount; 2026-09-02.
+    review_state: OPERATOR_CAPTURED
+    allowed_modes: [REAL_DASHBOARD_TEST]
+    positions:
+      shoulder_pan_joint: 0.046
+      shoulder_lift_joint: -0.845
+      elbow_flex_joint: 0.770
+      wrist_flex_joint: -0.432
+      wrist_roll_joint: -1.108
+      gripper_joint: 0.225
+triggers:
+  - id: touch_anything
+    label: Touch Anything / 任意対象にタッチ
+    state: BLOCKED
+    reason: Runtime state is supplied by /touch_anything/state
+  - id: observe_around
+    label: Observe around / 周囲を観察
+    state: BLOCKED
+    reason: Automated observe-around sequence is not implemented; captured poses remain individually selectable
+  - id: press_button_test
+    label: Press-button test / ボタン押下試験
+    state: BLOCKED
+    reason: Contact-aware PressButton action is not implemented

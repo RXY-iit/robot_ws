@@ -36,6 +36,15 @@ class CameraMotorJoyNode(Node):
         self.tilt_pub = self.create_publisher(Float32, '/cameraswingmotor/target_angle', 10)
         self.create_subscription(Float32, '/chokudomotor/angle', self._pan_angle_cb, 10)
         self.create_subscription(Float32, '/cameraswingmotor/angle', self._tilt_angle_cb, 10)
+        # Keep Joy's incremental target synchronized with commands issued by
+        # Touch Anything or other guarded camera skills. Without this, the
+        # first later Joy input would jump back to this node's startup target.
+        self.create_subscription(
+            Float32, '/chokudomotor/target_angle', self._pan_target_cb, 10
+        )
+        self.create_subscription(
+            Float32, '/cameraswingmotor/target_angle', self._tilt_target_cb, 10
+        )
         self.create_subscription(Joy, '/joy', self._joy_cb, 10)
 
         self.create_timer(self.command_period_sec, self._command_timer_cb)
@@ -51,6 +60,16 @@ class CameraMotorJoyNode(Node):
 
     def _tilt_angle_cb(self, msg):
         self.current_tilt = float(msg.data)
+
+    def _pan_target_cb(self, msg):
+        value = float(msg.data)
+        if math.isfinite(value):
+            self.target_pan = value
+
+    def _tilt_target_cb(self, msg):
+        value = float(msg.data)
+        if math.isfinite(value):
+            self.target_tilt = value
 
     def _joy_cb(self, msg):
         self.last_joy = msg
@@ -122,7 +141,8 @@ def main(args=None):
         pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':

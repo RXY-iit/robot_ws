@@ -1,30 +1,68 @@
 # Personal / agent state
-.agents/
-.claude/
-.codex
-.codex/
-note-rxy.md
+/.agents/
+/.claude/
+/.codex
+/.codex/
+.vscode/
+.idea/
+/diary/
+/note-rxy.md
 
-# Local notes and task docs not for this repository
-diary/
-
-# ROS generated outputs
+# ROS / colcon generated outputs
 build/
 install/
 log/
 
-# Runtime debug / bags
-debug-output/
-debug-ouput/
-slam_bag/
+# Runtime logs and diagnostics
+/debug-output/
+/debug-ouput/
+*.log
+*.pid
 
-# Python / editor noise
+# ROS bags and local recordings
+/slam_bag/
+/sim_bag/
+/calib_bags/
+rosbag2_*/
+*.bag
+*.db3
+*.mcap
+
+# Downloaded model assets (keep model code/configuration under src/ tracked)
+/models/
+/third_party/sam2/
+/third_party/sam2_runtime_deps/
+/src/robot_agent/web/node_modules/
+/src/robot_agent/web/tsconfig.tsbuildinfo
+/tools/camera_pan_tilt_calibration/output/
+/tools/so101_kinematic_handeye_calibration/output/
+
+# Local scratch/reference material
+/temp-ref/
+
+# Editor and temporary backups
+*.bak
+*.orig
+*.rej
+*.swp
+*.swo
+*~
+*.tmp
+*.temp
+*.manual-*.yaml
+
+# Python caches and test outputs
 __pycache__/
 *.py[cod]
+*.egg-info/
 .pytest_cache/
 .mypy_cache/
-.vscode/
-.idea/
+.ruff_cache/
+.tox/
+.nox/
+.coverage
+coverage.xml
+htmlcov/
 
-# Large/local visualization state
-imgui.ini
+# Local visualization state
+/imgui.ini

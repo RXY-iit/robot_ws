@@ -12,7 +12,9 @@
 #ifndef OM_BASE_H
 #define OM_BASE_H
 
+#include <atomic>
 #include <string>
+#include <thread>
 
 #include "om_modbus_master/ICheckData.hpp"
 #include "om_modbus_master/ICheckIdShareMode.hpp"
@@ -50,7 +52,9 @@ class Base : public ISetMessage {
   om_msgs::msg::State state_msg_;
   rclcpp::Node::SharedPtr node_;
 
-  bool is_enabled_;
+  std::atomic<bool> is_enabled_;
+  std::atomic<bool> stop_requested_;
+  std::thread comm_thread_;
   std::chrono::time_point<std::chrono::high_resolution_clock> last_execution_time;//6/4MRI自作
   int socket_fd_;
   std::string topic_com_;

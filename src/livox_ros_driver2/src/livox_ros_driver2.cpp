@@ -24,6 +24,7 @@
 
 #include <iostream>
 #include <chrono>
+#include <map>
 #include <vector>
 #include <csignal>
 #include <thread>
@@ -33,6 +34,13 @@
 #include "driver_node.h"
 #include "lddc.h"
 #include "lds_lidar.h"
+#include "livox_lidar_api.h"
+
+#ifdef BUILDING_ROS2
+#include "rapidjson/document.h"
+#include "rapidjson/stringbuffer.h"
+#include "rapidjson/writer.h"
+#endif
 
 using namespace livox_ros;
 
@@ -154,6 +162,10 @@ DriverNode::DriverNode(const rclcpp::NodeOptions & node_options)
   }
 
   future_ = exit_signal_.get_future();
+  lidar_health_publisher_ =
+    this->create_publisher<std_msgs::msg::String>("/livox/device_health", 10);
+  lidar_health_timer_ = this->create_wall_timer(
+    std::chrono::seconds(1), std::bind(&DriverNode::PublishLidarHealth, this));
 
   /** Lidar data distribute control and lidar data source set */
   lddc_ptr_ = std::make_unique<Lddc>(xfer_format, multi_topic, data_src, output_type, publish_freq, frame_id);
@@ -173,6 +185,11 @@ DriverNode::DriverNode(const rclcpp::NodeOptions & node_options)
     lddc_ptr_->RegisterLds(static_cast<Lds *>(read_lidar));
 
     if ((read_lidar->InitLdsLidar(user_config_path))) {
+      // SDK2 already owns the command/status UDP path in this process.  Use
+      // its native periodic state callback instead of opening a second SDK
+      // client.  The callback only caches the small JSON state; ROS output is
+      // deliberately limited to 1 Hz by lidar_health_timer_.
+      SetLivoxLidarInfoCallback(DriverNode::LidarHealthInfoCallback, this);
       DRIVER_INFO(*this, "Init lds lidar success!");
     } else {
       DRIVER_ERROR(*this, "Init lds lidar fail!");
@@ -183,6 +200,86 @@ DriverNode::DriverNode(const rclcpp::NodeOptions & node_options)
 
   pointclouddata_poll_thread_ = std::make_shared<std::thread>(&DriverNode::PointCloudDataPollThread, this);
   imudata_poll_thread_ = std::make_shared<std::thread>(&DriverNode::ImuDataPollThread, this);
+}
+
+void DriverNode::LidarHealthInfoCallback(
+  uint32_t handle, uint8_t device_type, const char * info, void * client_data)
+{
+  auto * node = static_cast<DriverNode *>(client_data);
+  if (node != nullptr) {
+    node->StoreLidarHealth(handle, device_type, info);
+  }
+}
+
+void DriverNode::StoreLidarHealth(
+  uint32_t handle, uint8_t device_type, const char * info)
+{
+  if (info == nullptr) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(lidar_health_mutex_);
+  auto & sample = lidar_health_samples_[handle];
+  sample.device_type = device_type;
+  sample.callback_count += 1;
+  sample.sdk_state_json.assign(info);
+  sample.received_at = std::chrono::steady_clock::now();
+}
+
+void DriverNode::PublishLidarHealth()
+{
+  std::map<uint32_t, LidarHealthSample> samples;
+  {
+    std::lock_guard<std::mutex> lock(lidar_health_mutex_);
+    samples = lidar_health_samples_;
+  }
+  if (samples.empty()) {
+    // Absence is meaningful: health_monitor will leave the source UNKNOWN
+    // until the first native SDK2 state frame has actually been observed.
+    return;
+  }
+
+  rapidjson::Document output(rapidjson::kObjectType);
+  auto & allocator = output.GetAllocator();
+  output.AddMember("schema_version", 1, allocator);
+  output.AddMember(
+    "source",
+    rapidjson::Value("Livox SDK2 SetLivoxLidarInfoCallback", allocator),
+    allocator);
+  output.AddMember("publish_rate_hz", 1.0, allocator);
+  rapidjson::Value devices(rapidjson::kArrayType);
+  const auto now = std::chrono::steady_clock::now();
+
+  for (const auto & entry : samples) {
+    const uint32_t handle = entry.first;
+    const auto & sample = entry.second;
+    rapidjson::Value device(rapidjson::kObjectType);
+    device.AddMember("handle", handle, allocator);
+    const std::string ip = IpNumToString(handle);
+    device.AddMember("ip", rapidjson::Value(ip.c_str(), allocator), allocator);
+    device.AddMember("device_type", sample.device_type, allocator);
+    device.AddMember("callback_count", sample.callback_count, allocator);
+    const double age = std::chrono::duration<double>(now - sample.received_at).count();
+    device.AddMember("push_age_sec", age, allocator);
+
+    rapidjson::Document sdk_state;
+    sdk_state.Parse(sample.sdk_state_json.c_str());
+    const bool valid = !sdk_state.HasParseError() && sdk_state.IsObject();
+    device.AddMember("state_json_valid", valid, allocator);
+    if (valid) {
+      rapidjson::Value state(rapidjson::kObjectType);
+      state.CopyFrom(sdk_state, allocator);
+      device.AddMember("state", state, allocator);
+    }
+    devices.PushBack(device, allocator);
+  }
+  output.AddMember("devices", devices, allocator);
+
+  rapidjson::StringBuffer buffer;
+  rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+  output.Accept(writer);
+  std_msgs::msg::String message;
+  message.data = buffer.GetString();
+  lidar_health_publisher_->publish(message);
 }
 
 }  // namespace livox_ros

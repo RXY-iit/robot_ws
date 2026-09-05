@@ -25,7 +25,17 @@
 #ifndef LIVOX_DRIVER_NODE_H
 #define LIVOX_DRIVER_NODE_H
 
+#include <chrono>
+#include <cstdint>
+#include <map>
+#include <mutex>
+#include <string>
+
 #include "include/ros_headers.h"
+
+#ifdef BUILDING_ROS2
+#include <std_msgs/msg/string.hpp>
+#endif
 
 namespace livox_ros {
 
@@ -62,14 +72,29 @@ class DriverNode final : public rclcpp::Node {
   DriverNode& GetNode() noexcept;
 
  private:
+  struct LidarHealthSample {
+    uint8_t device_type{0};
+    uint64_t callback_count{0};
+    std::string sdk_state_json;
+    std::chrono::steady_clock::time_point received_at;
+  };
+
   void PointCloudDataPollThread();
   void ImuDataPollThread();
+  static void LidarHealthInfoCallback(
+    uint32_t handle, uint8_t device_type, const char * info, void * client_data);
+  void StoreLidarHealth(uint32_t handle, uint8_t device_type, const char * info);
+  void PublishLidarHealth();
 
   std::unique_ptr<Lddc> lddc_ptr_;
   std::shared_ptr<std::thread> pointclouddata_poll_thread_;
   std::shared_ptr<std::thread> imudata_poll_thread_;
   std::shared_future<void> future_;
   std::promise<void> exit_signal_;
+  std::mutex lidar_health_mutex_;
+  std::map<uint32_t, LidarHealthSample> lidar_health_samples_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr lidar_health_publisher_;
+  rclcpp::TimerBase::SharedPtr lidar_health_timer_;
 };
 #endif
 

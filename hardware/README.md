@@ -8,6 +8,7 @@ Each file documents: physical specs, network/serial config, ROS2 topics, TF fram
 | [livox_mid360.md](livox_mid360.md) | Livox MID360 3D LiDAR |
 | [realsense_d435.md](realsense_d435.md) | Intel RealSense D435 depth camera |
 | [blv_r_drive_motors.md](blv_r_drive_motors.md) | Oriental Motor BLV-R drive motors x3 (Modbus) |
+| [motor-image/](motor-image/) | Per-position BLVD-KRD and GFS5G30FR nameplate evidence for IDs 1/2/3 |
 | [dynamixel_steer_motors.md](dynamixel_steer_motors.md) | Dynamixel steer motors x3 |
 | [linear_motor.md](linear_motor.md) | Linear motor / Chokudo (serial via OpenRB-150) |
 | [camera_swing_motor.md](camera_swing_motor.md) | Camera swing motor (serial via OpenRB-150) |

@@ -16,6 +16,7 @@ find_package(dynamixel_sdk REQUIRED)
 find_package(dynamixel_sdk_custom_interfaces REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
 
 include_directories(include)
 
@@ -26,6 +27,7 @@ ament_target_dependencies(read_write_node
   dynamixel_sdk
   geometry_msgs
   rclcpp
+  std_msgs
 )
 add_executable(cmd_vel_to_set_position src/cmd_vel_to_set_position.cpp)
 ament_target_dependencies(cmd_vel_to_set_position

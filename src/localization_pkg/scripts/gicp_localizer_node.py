@@ -36,6 +36,7 @@ Backend (auto-detected at startup):
 import os
 import sys
 import threading
+import time
 
 import numpy as np
 import rclpy
@@ -251,6 +252,9 @@ class GicpLocalizer(Node):
         self.declare_parameter("initial_yaw", 0.0)
         self.declare_parameter("use_fast_lio_hint", False)
         self.declare_parameter("fast_lio_odom_topic", "/fast_lio/odometry")
+        self.declare_parameter("initialpose_accumulation_sec", 2.5)
+        self.declare_parameter("initialpose_min_scans", 10)
+        self.declare_parameter("initialpose_max_scans", 30)
 
         p = self.get_parameter
         self._map_path   = p("map_path").value
@@ -265,6 +269,14 @@ class GicpLocalizer(Node):
         self._odom_frame = p("odom_frame").value
         self._base_frame = p("base_frame").value
         self._lidar_frame = p("lidar_frame").value
+        self._initialpose_accumulation_sec = max(
+            0.0, float(p("initialpose_accumulation_sec").value)
+        )
+        self._initialpose_min_scans = max(1, int(p("initialpose_min_scans").value))
+        self._initialpose_max_scans = max(
+            self._initialpose_min_scans,
+            int(p("initialpose_max_scans").value),
+        )
 
         # Initial T_map_odom from 2-D startup pose params
         x   = p("initial_x").value
@@ -316,6 +328,9 @@ class GicpLocalizer(Node):
 
         # latest scan buffer (consumed each localize cycle)
         self._latest_scan: np.ndarray | None = None
+        self._scan_lock = threading.Lock()
+        self._initialpose_accumulation_started = 0.0
+        self._initialpose_scans: list[np.ndarray] = []
 
         # ── load map ──────────────────────────────────────────────────────────
         self._map_cloud = self._load_map(self._map_path)
@@ -338,7 +353,9 @@ class GicpLocalizer(Node):
             f"[gicp_localizer] started  backend={_BACKEND}  "
             f"period={self._period}s  "
             f"tf_period={self._tf_period}s  "
-            f"map_voxel={self._map_voxel}m  scan_voxel={self._scan_voxel}m"
+            f"map_voxel={self._map_voxel}m  scan_voxel={self._scan_voxel}m  "
+            f"initialpose_accumulation={self._initialpose_accumulation_sec}s/"
+            f"{self._initialpose_min_scans} scans"
         )
 
     # ── map loading ───────────────────────────────────────────────────────────
@@ -411,7 +428,28 @@ class GicpLocalizer(Node):
 
     def _scan_cb(self, msg: PointCloud2):
         arr = _pc2_to_numpy(msg)
-        if arr.shape[0] > 0:
+        if arr.shape[0] == 0:
+            return
+        with self._scan_lock:
+            if self._initialpose_accumulation_started:
+                if len(self._initialpose_scans) < self._initialpose_max_scans:
+                    self._initialpose_scans.append(arr)
+                elapsed = time.monotonic() - self._initialpose_accumulation_started
+                if (
+                    elapsed < self._initialpose_accumulation_sec
+                    or len(self._initialpose_scans) < self._initialpose_min_scans
+                ):
+                    return
+                scan_count = len(self._initialpose_scans)
+                self._latest_scan = np.concatenate(self._initialpose_scans, axis=0)
+                self._initialpose_scans = []
+                self._initialpose_accumulation_started = 0.0
+                self.get_logger().info(
+                    f"[gicp_localizer] /initialpose accumulated {scan_count} scans, "
+                    f"{self._latest_scan.shape[0]} points in {elapsed:.2f}s; "
+                    "starting GICP validation"
+                )
+                return
             self._latest_scan = arr
 
     def _initialpose_cb(self, msg: PoseWithCovarianceStamped):
@@ -440,11 +478,19 @@ class GicpLocalizer(Node):
 
         with self._lock:
             self._T_map_odom = T_map_odom
-        self._latest_scan = None
+            # A manual pose is a new absolute anchor. Old FAST-LIO/GICP
+            # correction snapshots must not override it on the next cycle.
+            self._fast_lio_T_at_correction = None
+            self._T_map_lidar_at_correction = None
+        with self._scan_lock:
+            self._latest_scan = None
+            self._initialpose_scans = []
+            self._initialpose_accumulation_started = time.monotonic()
         self._broadcast()
         self.get_logger().info(
             f"[gicp_localizer] /initialpose reset {self._map_frame}->{self._odom_frame}: "
-            f"robot x={p.x:.2f} y={p.y:.2f}"
+            f"robot x={p.x:.2f} y={p.y:.2f}; clearing old FAST-LIO hint and "
+            f"accumulating {self._initialpose_accumulation_sec:.1f}s of scans"
         )
 
     def _fast_lio_cb(self, msg: Odometry):
@@ -459,11 +505,13 @@ class GicpLocalizer(Node):
     # ── localization timer ────────────────────────────────────────────────────
 
     def _localize(self):
-        if self._map_cloud is None or self._latest_scan is None:
+        if self._map_cloud is None:
             return
-
-        scan_pts = self._latest_scan
-        self._latest_scan = None
+        with self._scan_lock:
+            if self._latest_scan is None:
+                return
+            scan_pts = self._latest_scan
+            self._latest_scan = None
 
         # Lookup odom → livox_frame
         try:

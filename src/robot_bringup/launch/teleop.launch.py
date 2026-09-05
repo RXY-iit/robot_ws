@@ -51,6 +51,7 @@ def generate_launch_description():
             executable='joy_node',
             name='joy_node',
             parameters=[{'dev': joy_dev}],
+            remappings=[('joy', '/joy/physical')],
             output='screen',
         ),
 

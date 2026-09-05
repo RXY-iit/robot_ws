@@ -8,11 +8,13 @@ from launch_ros.parameter_descriptions import ParameterValue
 def generate_launch_description():
     return LaunchDescription(
         [
-            # DeclareLaunchArgument("com", default_value="/dev/serial/by-id/usb-FTDI_USB-RS485_Cable_FT7E9M3C-if00-port0"),
-            DeclareLaunchArgument("com", default_value="/dev/ttyUSB0"),
+            DeclareLaunchArgument(
+                "com",
+                default_value="/dev/serial/by-id/usb-FTDI_USB-RS485_Cable_FT7E9M3C-if00-port0",
+            ),
             DeclareLaunchArgument("topicID", default_value="0"),
             DeclareLaunchArgument("baudrate", default_value="230400"),
-            DeclareLaunchArgument("updateRate", default_value="100"),
+            DeclareLaunchArgument("updateRate", default_value="10"),
             DeclareLaunchArgument("firstGen", default_value=""),
             DeclareLaunchArgument("secondGen", default_value="1,2,3"),
             DeclareLaunchArgument("globalID", default_value="10"),

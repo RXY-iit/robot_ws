@@ -1,0 +1,31 @@
+profiles:
+  fine:
+    description: Default Nav2 precision. Do not relax task acceptance.
+    xy_goal_tolerance_m: null
+    yaw_goal_tolerance_rad: null
+  medium:
+    description: Moderate relaxation for inspection / approach tasks.
+    xy_goal_tolerance_m: 0.18
+    yaw_goal_tolerance_rad: 0.25
+  loose:
+    description: Loose relaxation for visual confirmation tasks where nearby arrival is enough.
+    xy_goal_tolerance_m: 0.25
+    yaw_goal_tolerance_rad: 0.35
+  shelf_approach:
+    description: Shelf label-side approach. The next perception step confirms the shelf number.
+    xy_goal_tolerance_m: 0.25
+    yaw_goal_tolerance_rad: 0.35
+
+rules:
+  - id: shelf_approach_after_timeout
+    task_types:
+      - navigate_to_object
+      - inspect_place
+      - search_object_near_place
+    target_patterns:
+      - shelf
+      - 棚
+      - '0[1-9]'
+      - '[1-9]番'
+    profile: shelf_approach
+    retry_limit: 1

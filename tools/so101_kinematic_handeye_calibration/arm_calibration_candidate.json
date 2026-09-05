@@ -1,0 +1,88 @@
+{
+  "schema_version": 1,
+  "status": "CANDIDATE_NOT_DEPLOYED",
+  "sample_count": 47,
+  "setups": [
+    "1",
+    "2",
+    "3",
+    "4"
+  ],
+  "board_dimensions_m": {
+    "square": 0.0338,
+    "marker": 0.0165
+  },
+  "split": "every fifth within each board setup held out",
+  "old_metrics_all": {
+    "count": 47,
+    "translation_rms_m": 0.007914048349650704,
+    "translation_median_m": 0.007751835606435973,
+    "translation_max_m": 0.01414546943622431,
+    "rotation_rms_deg": 1.3521764794274715,
+    "rotation_median_deg": 0.896201920906285,
+    "rotation_max_deg": 2.676979263158439
+  },
+  "candidate_train": {
+    "count": 37,
+    "translation_rms_m": 0.004235680357919861,
+    "translation_median_m": 0.003707226286423086,
+    "translation_max_m": 0.009449829859340005,
+    "rotation_rms_deg": 0.8752077511986599,
+    "rotation_median_deg": 0.7110716624491241,
+    "rotation_max_deg": 1.6358713323743685
+  },
+  "candidate_validation": {
+    "count": 10,
+    "translation_rms_m": 0.0036799007518470658,
+    "translation_median_m": 0.002415102691270759,
+    "translation_max_m": 0.006856303485987457,
+    "rotation_rms_deg": 0.7187959444013076,
+    "rotation_median_deg": 0.5670332450420743,
+    "rotation_max_deg": 1.238662989303737
+  },
+  "candidate_all": {
+    "count": 47,
+    "translation_rms_m": 0.0041237074181913165,
+    "translation_median_m": 0.0033212326444389297,
+    "translation_max_m": 0.009449829859340005,
+    "rotation_rms_deg": 0.8443586837903443,
+    "rotation_median_deg": 0.7016989057538926,
+    "rotation_max_deg": 1.6358713323743685
+  },
+  "solution": {
+    "scale": {
+      "shoulder_pan_joint": 1.0642740565970414,
+      "shoulder_lift_joint": 1.0225823378138021,
+      "elbow_flex_joint": 1.0156842687470935,
+      "wrist_flex_joint": 1.083955420493,
+      "wrist_roll_joint": 1.3663034512798975
+    },
+    "offset_rad": {
+      "shoulder_pan_joint": 0.0,
+      "shoulder_lift_joint": 0.09842437585106671,
+      "elbow_flex_joint": -0.052102814132610975,
+      "wrist_flex_joint": 0.023105072091396325,
+      "wrist_roll_joint": -0.3361107058855241
+    },
+    "gripper_to_arm_camera_optical_xyz_m": [
+      0.00482286185246282,
+      0.0582567097939258,
+      -0.0581509590876708
+    ],
+    "gripper_to_arm_camera_optical_rpy_rad": [
+      2.5282275746832994,
+      0.022960183036963455,
+      -0.14882226657493408
+    ]
+  },
+  "observability": {
+    "shoulder_pan_offset": "FIXED_GAUGE_UNOBSERVABLE_WITH_UNKNOWN_BOARD_POSES",
+    "wrist_roll_offset": "FIXED_GAUGE_COUPLED_TO_EYE_ROTATION",
+    "link_geometry": "FIXED_TO_MEASURED_URDF_TO_AVOID_OVERPARAMETERIZATION"
+  },
+  "optimizer": {
+    "success": true,
+    "message": "`ftol` termination condition is satisfied.",
+    "cost": 40.100605056805705
+  }
+}

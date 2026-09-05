@@ -65,16 +65,9 @@ using namespace std::chrono_literals;
 
 namespace om_modbusRTU_node {
 
-RosMessage::RosMessage() : stop_thread_(false){ 
-  isCommEnabled_ = false;
-}
+RosMessage::RosMessage() { isCommEnabled_ = false; }
 
-RosMessage::~RosMessage() { timer_.reset(); 
-  stop_thread_ = true;
-  if(monitoring_thread_.joinable()){//MRI6/13
-    monitoring_thread_.join();
-  }
-}
+RosMessage::~RosMessage() { timer_.reset(); }
 
 /*---------------------------------------------------------------------------*/
 /** アドレスの範囲確認
@@ -367,8 +360,6 @@ void RosMessage::init(Base *pObj, std::shared_ptr<ICheckData> check_obj[], IChec
   check_data_ = check_obj;
   check_idshare_mode_ = check_idshare_obj;
 
-  monitoring_thread_ = std::thread(&RosMessage::monitoringFunction,this);//MRI/6/13
-
   string topic_name;
   om_msgs::msg::State::SharedPtr comm_msg;
 
@@ -424,7 +415,6 @@ void RosMessage::init(Base *pObj, std::shared_ptr<ICheckData> check_obj[], IChec
 void RosMessage::queryCallback(const om_msgs::msg::Query::SharedPtr msg) {
   //こいつがとまる
   // RCLCPP_INFO(node_->get_logger(), "queryCallback is executed");
-  last_execution_time = std::chrono::high_resolution_clock::now();//実行時刻を保持MRI6/16
   if (false == isCommEnabled_) {
     // RCLCPP_INFO(node_->get_logger(), "Callback");
     isCommEnabled_ = true;
@@ -446,26 +436,9 @@ void RosMessage::queryCallback(const om_msgs::msg::Query::SharedPtr msg) {
     }
     // RCLCPP_INFO(node_->get_logger(), "check end\n");
   } else if (true == isCommEnabled_) {
-    RCLCPP_INFO(node_->get_logger(), "Driver is busy");
-  }
-}
-
-void RosMessage::monitoringFunction(){
-  while (!stop_thread_)//メインが終了するまで実行するサブスレッドのフラグ6/16MRI
-  {
-    auto now = std::chrono::high_resolution_clock::now();
-    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_execution_time);
-    if (duration.count() > 300)//もし0.5秒間実行されなかったら...
-    {
-      RCLCPP_INFO(node_->get_logger(),"Not callback execution");
-      ISetMessage *pObj = base_obj_;  // Base型
-      pObj->setQueryData(2,0);
-      pObj->setQueryData(8,0);
-      // RCLCPP_INFO(node_->get_logger(), "set");
-      // base_obj_->setQueryData(2,0);
-      // base_obj_->setQueryData(8,0);
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));//10msごとにチェック
+    RCLCPP_WARN_THROTTLE(
+      node_->get_logger(), *node_->get_clock(), 5000,
+      "Driver is busy; repeated messages are suppressed for 5 s");
   }
 }
 
@@ -507,7 +480,14 @@ void RosMessage::timerCallback() { state_pub_->publish(state_msg_); }
 * @attention
 * @note
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
-void RosMessage::setResponse(const om_msgs::msg::Response res) { response_pub_->publish(res); }
+void RosMessage::setResponse(const om_msgs::msg::Response res) {
+  // transRead/transWrite call this before Base::exeComm() releases its busy
+  // flags.  Publishing here allowed a fast ROS subscriber to submit the next
+  // query while the driver still rejected it as busy.  Buffer the response;
+  // setCommEnabled(false) publishes it only after Base has returned to ready.
+  std::lock_guard<std::mutex> lock(pending_response_mutex_);
+  pending_responses_.push_back(res);
+}
 
 /*---------------------------------------------------------------------------*/
 /** インターフェイス
@@ -518,7 +498,25 @@ void RosMessage::setResponse(const om_msgs::msg::Response res) { response_pub_->
 * @attention
 * @note
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
-void RosMessage::setCommEnabled(bool val) { isCommEnabled_ = val; }
+void RosMessage::setCommEnabled(bool val) {
+  isCommEnabled_ = val;
+  if (val) {
+    return;
+  }
+
+  // Base updates state_msg_ to DRIVER_NONE before this callback.  Publish the
+  // ready snapshot immediately, then release buffered transaction responses.
+  // A received /om_response therefore becomes a reliable completion signal.
+  state_pub_->publish(state_msg_);
+  std::vector<om_msgs::msg::Response> completed;
+  {
+    std::lock_guard<std::mutex> lock(pending_response_mutex_);
+    completed.swap(pending_responses_);
+  }
+  for (const auto & response : completed) {
+    response_pub_->publish(response);
+  }
+}
 
 /*---------------------------------------------------------------------------*/
 /** インターフェイス

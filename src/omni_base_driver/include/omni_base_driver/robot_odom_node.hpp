@@ -46,9 +46,9 @@ private:
     my_messages::msg::SteerMotor latest_steer_msg;
     my_messages::msg::DriveMotor latest_drive_msg;
     bool has_steer_msg, has_drive_msg;
+    rclcpp::Time last_drive_msg_time;
     std::mutex msg_mutex;
     
     const int size;
     PickingRobotMatrix KinemaMatrix;
 };
-

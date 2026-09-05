@@ -1,0 +1,92 @@
+schema_version: 1
+mode: MOCK
+model_id: so_arm101
+calibration:
+  id: follower_12v_recal_20260831_v2
+  sha256: 276e40239a27baa4b910d9f1f384e934bf70265e8f558fbc51e4266ffcf5f68c
+  usage: EVIDENCE_ONLY_IN_MOCK
+hardware:
+  kit_voltage: 12
+  follower_usb_id: "1a86:55d3"
+  follower_serial: "5AE6054086"
+  follower_stable_port: /dev/serial/by-id/usb-1a86_USB_Single_Serial_5AE6054086-if00
+  real_hardware_enabled: false
+joints:
+  - name: shoulder_pan_joint
+    motor_name: shoulder_pan
+    label: Shoulder pan
+    lower: -1.91986
+    upper: 1.91986
+  - name: shoulder_lift_joint
+    motor_name: shoulder_lift
+    label: Shoulder lift
+    lower: -1.74533
+    upper: 1.74533
+  - name: elbow_flex_joint
+    motor_name: elbow_flex
+    label: Elbow flex
+    lower: -1.69
+    upper: 1.54
+  - name: wrist_flex_joint
+    motor_name: wrist_flex
+    label: Wrist flex
+    lower: -1.6
+    upper: 1.6
+  - name: wrist_roll_joint
+    motor_name: wrist_roll
+    label: Wrist roll
+    lower: -2.3
+    upper: 2.3
+  - name: gripper_joint
+    motor_name: gripper
+    label: Gripper
+    lower: 0.0
+    upper: 1.7
+presets:
+  - id: mock_neutral
+    description: Mock-only neutral pose
+    review_state: MOCK_ONLY
+    allowed_modes: [MOCK]
+    positions:
+      shoulder_pan_joint: 0.0
+      shoulder_lift_joint: 0.0
+      elbow_flex_joint: 0.0
+      wrist_flex_joint: 0.0
+      wrist_roll_joint: 0.0
+      gripper_joint: 0.85
+  - id: mock_observe_left
+    description: Mock-only left observation preview
+    review_state: MOCK_ONLY
+    allowed_modes: [MOCK]
+    positions:
+      shoulder_pan_joint: 0.7
+      shoulder_lift_joint: -0.35
+      elbow_flex_joint: 0.45
+      wrist_flex_joint: 0.15
+      wrist_roll_joint: 0.0
+      gripper_joint: 0.85
+  - id: mock_observe_right
+    description: Mock-only right observation preview
+    review_state: MOCK_ONLY
+    allowed_modes: [MOCK]
+    positions:
+      shoulder_pan_joint: -0.7
+      shoulder_lift_joint: -0.35
+      elbow_flex_joint: 0.45
+      wrist_flex_joint: 0.15
+      wrist_roll_joint: 0.0
+      gripper_joint: 0.85
+  - id: stow
+    description: Must be captured from this follower and reviewed before real execution
+    review_state: UNMEASURED
+    allowed_modes: []
+    positions: {}
+triggers:
+  - id: observe_around
+    label: 观察四周
+    state: BLOCKED
+    reason: ObserveRegion action is scheduled for Step F
+  - id: press_button_test
+    label: 按按钮测试
+    state: BLOCKED
+    reason: PressButton action is scheduled for Step G
