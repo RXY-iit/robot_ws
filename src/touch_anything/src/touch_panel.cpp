@@ -91,6 +91,8 @@ TouchPanel::TouchPanel(QWidget * parent)
   acquire_arm_button_(new QPushButton("Acquire arm-camera target / 腕カメラ対象を取得", this)),
   confirm_arm_button_(new QPushButton(
       "Confirm & start auto approach / 確認して自動接近開始", this)),
+  confirm_press_button_(new QPushButton(
+      "Confirm PRESS / 押下を確認して実行", this)),
   plan_approach_button_(new QPushButton("Plan next visual step / 次の視覚ステップを計画", this)),
   execute_approach_button_(new QPushButton("Execute one step / 1ステップ実行", this)),
   exit_button_(new QPushButton("Exit Touch Mode / Touch Mode終了", this)),
@@ -111,6 +113,7 @@ TouchPanel::TouchPanel(QWidget * parent)
   execute_button_->setEnabled(false);
   acquire_arm_button_->setEnabled(false);
   confirm_arm_button_->setEnabled(false);
+  confirm_press_button_->setEnabled(false);
   plan_approach_button_->setEnabled(false);
   execute_approach_button_->setEnabled(false);
   exit_button_->setEnabled(false);
@@ -127,17 +130,19 @@ TouchPanel::TouchPanel(QWidget * parent)
   auto * handoff_row = new QHBoxLayout;
   handoff_row->addWidget(acquire_arm_button_);
   handoff_row->addWidget(confirm_arm_button_);
+  auto * press_row = new QHBoxLayout;
+  press_row->addWidget(confirm_press_button_);
   // Manual one-step commands remain implemented for diagnostics, but the V1
   // operator workflow is one explicit object confirmation followed by the
   // bounded automatic stop-observe loop.
   plan_approach_button_->setVisible(false);
   execute_approach_button_->setVisible(false);
   auto * auto_approach_label = new QLabel(
-    "After FAR: centre the SAM mask while advancing 40 mm to NEAR. At 15% mask "
-    "occupancy retreat 5 mm. In NEAR, lock X, align image centre then the fixed tip; PRESS advances "
-    "+X by 25 mm only after alignment. / "
-    "FAR後はSAMマスクを中央へ寄せながら40 mm進んでNEARへ入り、占有率15%以上では5 mm後退します。"
-    "NEARではXを固定し、画面中央と爪先をY/Z整列後のみPRESSで+Xへ25 mm進みます。", this);
+    "After FAR: centre the SAM mask while advancing 35 mm to NEAR. Mask shrinkage "
+    "does not stop NEAR. Too-close retreat occurs only while unaligned. After tip "
+    "alignment, operator confirmation is required before +X PRESS. / "
+    "FAR後はSAMマスクを中央へ寄せながら35 mm進んでNEARへ入ります。マスク縮小では停止しません。"
+    "過近後退は未整列時のみ行い、爪先整列後は人の確認後にPRESSします。", this);
   auto_approach_label->setWordWrap(true);
   auto * layout = new QVBoxLayout;
   layout->addWidget(new QLabel("Touch Anything — human point prompt", this));
@@ -151,6 +156,7 @@ TouchPanel::TouchPanel(QWidget * parent)
   layout->addLayout(action_row);
   layout->addLayout(reach_row);
   layout->addLayout(handoff_row);
+  layout->addLayout(press_row);
   layout->addWidget(auto_approach_label);
   layout->addWidget(exit_button_);
   layout->addWidget(help_label_);
@@ -163,6 +169,7 @@ TouchPanel::TouchPanel(QWidget * parent)
   connect(execute_button_, &QPushButton::clicked, this, &TouchPanel::executePreTouchFar);
   connect(acquire_arm_button_, &QPushButton::clicked, this, &TouchPanel::acquireArmTarget);
   connect(confirm_arm_button_, &QPushButton::clicked, this, &TouchPanel::confirmArmTarget);
+  connect(confirm_press_button_, &QPushButton::clicked, this, &TouchPanel::confirmPress);
   connect(plan_approach_button_, &QPushButton::clicked, this, &TouchPanel::planApproachStep);
   connect(execute_approach_button_, &QPushButton::clicked, this, &TouchPanel::executeApproachStep);
   connect(exit_button_, &QPushButton::clicked, this, &TouchPanel::exitTouchMode);
@@ -223,6 +230,7 @@ void TouchPanel::planPreTouchFar() {publishCommand("plan_pre_touch_far");}
 void TouchPanel::executePreTouchFar() {publishCommand("execute_pre_touch_far");}
 void TouchPanel::acquireArmTarget() {publishCommand("acquire_arm_target");}
 void TouchPanel::confirmArmTarget() {publishCommand("confirm_arm_target");}
+void TouchPanel::confirmPress() {publishCommand("confirm_press");}
 void TouchPanel::planApproachStep() {publishCommand("plan_approach_step");}
 void TouchPanel::executeApproachStep() {publishCommand("execute_approach_step");}
 void TouchPanel::exitTouchMode() {publishCommand("exit");}
@@ -270,17 +278,20 @@ void TouchPanel::updateState(const std::string & text)
   const auto reach_plan = object.value("reach_plan").toObject();
   const bool execution_enabled = reach_plan.value("execution_enabled").toBool(false);
   const auto approach_plan = object.value("approach_plan").toObject();
+  const auto target_tracker = object.value("target_tracker").toObject();
   const QString step_kind = approach_plan.value("step_kind").toString();
   const bool approach_execution_enabled =
     approach_plan.value("execution_enabled").toBool(false);
   QMetaObject::invokeMethod(
     this,
-    [this, active, state, message, step_kind, approach_plan,
+    [this, active, state, message, step_kind, approach_plan, target_tracker,
       execution_enabled, approach_execution_enabled]() {
     active_ = active;
     QString phase = "TARGET / 対象選択";
     if (!active_) {
       phase = "INACTIVE / 停止";
+    } else if (state.contains("SEMANTIC_RECOVERY")) {
+      phase = "SAM RECOVERY: CONFIRM / SAM復旧確認";
     } else if (state == "AUTO_APPROACH_CARTESIAN_CORRECTING") {
       phase = "CARTESIAN CORRECTION / 直交残差修正";
     } else if (step_kind == "ALIGN_FIXED_TIP_YZ") {
@@ -289,6 +300,8 @@ void TouchPanel::updateState(const std::string & text)
       phase = "TOO CLOSE: RETREAT / 過近後退";
     } else if (step_kind == "ALIGNED_PRESS_FORWARD_WITH_FIXED_TIP_YZ") {
       phase = "PRESS / 押下";
+    } else if (step_kind == "PRESS_CONFIRMATION_REQUIRED") {
+      phase = "PRESS CONFIRM / 押下確認";
     } else if (step_kind == "COARSE_CENTER_AND_FORWARD_TO_NEAR") {
       phase = "FAR → NEAR 35 mm / 中央寄せ接近";
     } else if (state.contains("PRETOUCH") || state.contains("D435_TARGET_REACQUIRE")) {
@@ -299,6 +312,15 @@ void TouchPanel::updateState(const std::string & text)
       phase = "COMPLETE / 完了";
     }
     phase_label_->setText(QString("Phase / フェーズ: %1").arg(phase));
+    const auto tracker_result = target_tracker.value("last_result").toObject();
+    const QString tracker_status = tracker_result.value("status").toString("--");
+    const QString tracker_method = tracker_result.value("method").toString("--");
+    const int tracker_points = tracker_result.value("tracked_points").toInt(0);
+    const double tracker_ms = tracker_result.value("processing_ms").toDouble(-1.0);
+    const QString tracker_summary = QString("Tracker: %1 / %2 / %3 pts / %4 ms")
+      .arg(tracker_status, tracker_method)
+      .arg(tracker_points)
+      .arg(tracker_ms >= 0.0 ? QString::number(tracker_ms, 'f', 1) : "--");
     if (!approach_plan.isEmpty()) {
       const double mask = approach_plan.value("arm_mask_fraction").toDouble(-1.0);
       const double threshold =
@@ -310,15 +332,18 @@ void TouchPanel::updateState(const std::string & text)
       const bool near_reached = approach_plan.value("near_reached").toBool(false);
       const QString gate = too_close ? "TOO CLOSE" : (near_reached ? "NEAR" : "FAR");
       progress_label_->setText(
-        QString("Mask / マスク: %1%  |  Too close / 過近: %2%  |  FAR advance: %3/%4 mm  |  X to D435: %5 mm  |  %6")
+        QString("Mask / マスク: %1%  |  Too close / 過近: %2%  |  FAR advance: %3/%4 mm  |  X to D435: %5 mm  |  %6  |  %7")
           .arg(mask >= 0.0 ? QString::number(mask * 100.0, 'f', 1) : "--")
           .arg(threshold >= 0.0 ? QString::number(threshold * 100.0, 'f', 1) : "--")
           .arg(QString::number(advanced * 1000.0, 'f', 1))
           .arg(QString::number(near_distance * 1000.0, 'f', 1))
           .arg(QString::number(remaining * 1000.0, 'f', 1))
-          .arg(gate));
+          .arg(gate)
+          .arg(tracker_summary));
     } else {
-      progress_label_->setText("Mask / マスク: --  |  Too close / 過近: 15%  |  FAR advance: --");
+      progress_label_->setText(
+        QString("Mask / マスク: --  |  Too close / 過近: 15%  |  FAR advance: --  |  %1")
+          .arg(tracker_summary));
     }
     state_label_->setText(QString("%1 — %2").arg(state, message));
     freeze_button_->setEnabled(active_ && arm_code_mode_);
@@ -340,6 +365,8 @@ void TouchPanel::updateState(const std::string & text)
       state == "AUTO_APPROACH_STEP_LIMIT"));
     confirm_arm_button_->setEnabled(
       active_ && arm_code_mode_ && state == "ARM_TARGET_READY");
+    confirm_press_button_->setEnabled(
+      active_ && arm_code_mode_ && state == "PRESS_CONFIRMATION_REQUIRED");
     plan_approach_button_->setEnabled(
       active_ && arm_code_mode_ &&
       (state == "ARM_TARGET_CONFIRMED" || state == "APPROACH_GATEWAY_REJECTED"));

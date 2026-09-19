@@ -2,8 +2,449 @@
 
 from __future__ import annotations
 
+import ast
 import cv2
 import numpy as np
+
+
+def diagnostic_visualization_should_defer(
+    *, automatic_approach: bool, rolling_session_active: bool,
+    execute_request_active: bool,
+) -> bool:
+    """Keep diagnostic DDS publication outside the motion latency budget."""
+    return bool(
+        automatic_approach
+        or rolling_session_active
+        or execute_request_active
+    )
+
+
+def rolling_tracker_freshness_gate(
+    *, status: str, completed_age_sec: float,
+    maximum_completed_age_sec: float,
+    inflight_processing_age_sec: float | None,
+    inflight_input_age_sec: float | None,
+    maximum_inflight_processing_sec: float,
+) -> dict:
+    """Classify tracker freshness without racing an in-flight frame.
+
+    A rolling controller may consume only completed tracker output.  When that
+    output has just crossed its age limit, however, a newly received frame can
+    already be processing in the independent tracker callback.  In that case
+    the safe action is to send no new target and wait for the bounded in-flight
+    callback, rather than STOP based on the preceding completion timestamp.
+    """
+    healthy_status = status in {"INITIALIZED", "TRACKING", "RECOVERED"}
+    limits = np.asarray(
+        [maximum_completed_age_sec, maximum_inflight_processing_sec],
+        dtype=np.float64,
+    )
+    if not np.all(np.isfinite(limits)) or np.any(limits <= 0.0):
+        raise ValueError("tracker freshness limits must be finite and positive")
+    if not np.isfinite(completed_age_sec) and completed_age_sec != float("inf"):
+        raise ValueError("completed tracker age must be finite or +inf")
+    if completed_age_sec < 0.0:
+        raise ValueError("completed tracker age must be non-negative")
+    if healthy_status and completed_age_sec <= maximum_completed_age_sec:
+        decision = "FRESH"
+        reason = "latest completed tracker result is inside its age limit"
+    else:
+        inflight_values_valid = bool(
+            inflight_processing_age_sec is not None
+            and inflight_input_age_sec is not None
+            and np.isfinite(inflight_processing_age_sec)
+            and np.isfinite(inflight_input_age_sec)
+            and inflight_processing_age_sec >= 0.0
+            and inflight_input_age_sec >= 0.0
+        )
+        inflight_fresh = bool(
+            healthy_status
+            and inflight_values_valid
+            and float(inflight_processing_age_sec)
+            <= maximum_inflight_processing_sec
+            and float(inflight_input_age_sec) <= maximum_completed_age_sec
+        )
+        if inflight_fresh:
+            decision = "WAIT_INFLIGHT"
+            reason = (
+                "completed result is stale, but a fresh camera frame is "
+                "inside the bounded tracker processing deadline"
+            )
+        else:
+            decision = "STOP"
+            reason = (
+                "tracker status is unhealthy or neither a completed nor "
+                "bounded in-flight result is fresh"
+            )
+    return {
+        "decision": decision,
+        "reason": reason,
+        "status": status,
+        "completed_age_sec": float(completed_age_sec),
+        "maximum_completed_age_sec": float(maximum_completed_age_sec),
+        "inflight_processing_age_sec": (
+            None if inflight_processing_age_sec is None
+            else float(inflight_processing_age_sec)
+        ),
+        "inflight_input_age_sec": (
+            None if inflight_input_age_sec is None
+            else float(inflight_input_age_sec)
+        ),
+        "maximum_inflight_processing_sec": float(
+            maximum_inflight_processing_sec
+        ),
+    }
+
+
+def receding_joint_action_horizon(
+    *, current_positions: dict[str, float],
+    target_positions: dict[str, float],
+    current_velocities: dict[str, float],
+    joint_bounds: dict[str, tuple[float, float]],
+    steps: int, step_period_sec: float,
+    prediction_lead_sec: float,
+    maximum_prediction_velocity_rad_s: float,
+) -> dict:
+    """Build a smooth, replaceable joint-action chunk from predicted state.
+
+    The predicted start advances measured joint feedback by the bounded
+    perception/planning/transport lead.  Ten short targets are normally sent;
+    a newer observation replaces the unconsumed tail at the actuator server.
+    """
+    names = list(target_positions)
+    if (
+        not names
+        or set(current_positions) != set(names)
+        or set(current_velocities) != set(names)
+        or set(joint_bounds) != set(names)
+    ):
+        raise ValueError("horizon inputs must contain identical non-empty joints")
+    if not isinstance(steps, int) or not 2 <= steps <= 20:
+        raise ValueError("action horizon steps must be within [2, 20]")
+    scalars = np.asarray([
+        step_period_sec, prediction_lead_sec,
+        maximum_prediction_velocity_rad_s,
+    ], dtype=np.float64)
+    if (
+        not np.all(np.isfinite(scalars))
+        or step_period_sec <= 0.0
+        or prediction_lead_sec < 0.0
+        or maximum_prediction_velocity_rad_s <= 0.0
+    ):
+        raise ValueError("action horizon timing/velocity inputs are invalid")
+    predicted: dict[str, float] = {}
+    clipped_velocities: dict[str, float] = {}
+    for name in names:
+        lower, upper = (float(value) for value in joint_bounds[name])
+        current = float(current_positions[name])
+        target = float(target_positions[name])
+        velocity = float(current_velocities[name])
+        if not np.all(np.isfinite([lower, upper, current, target, velocity])):
+            raise ValueError(f"non-finite action horizon input for {name}")
+        if lower >= upper or not lower <= current <= upper or not lower <= target <= upper:
+            raise ValueError(f"action horizon joint {name} is outside its bounds")
+        velocity = float(np.clip(
+            velocity,
+            -maximum_prediction_velocity_rad_s,
+            maximum_prediction_velocity_rad_s,
+        ))
+        clipped_velocities[name] = velocity
+        predicted[name] = float(np.clip(
+            current + velocity * prediction_lead_sec,
+            lower,
+            upper,
+        ))
+    horizon: list[dict[str, float]] = []
+    for index in range(steps):
+        linear = float(index + 1) / float(steps)
+        blend = linear * linear * (3.0 - 2.0 * linear)
+        horizon.append({
+            name: float(
+                predicted[name]
+                + (float(target_positions[name]) - predicted[name]) * blend
+            )
+            for name in names
+        })
+    horizon[-1] = {name: float(target_positions[name]) for name in names}
+    return {
+        "positions": horizon,
+        "steps": steps,
+        "step_period_sec": float(step_period_sec),
+        "duration_sec": float(steps * step_period_sec),
+        "prediction_lead_sec": float(prediction_lead_sec),
+        "current_positions": {
+            name: float(current_positions[name]) for name in names
+        },
+        "clipped_velocities": clipped_velocities,
+        "predicted_start_positions": predicted,
+        "terminal_positions": {
+            name: float(target_positions[name]) for name in names
+        },
+    }
+
+
+def rolling_approach_phase(
+    *, advanced_from_far_m: float, near_distance_m: float,
+    press_authorized: bool,
+) -> str:
+    """Select the continuous visual-servo phase from measured progress."""
+    values = np.asarray([advanced_from_far_m, near_distance_m], dtype=np.float64)
+    if not np.all(np.isfinite(values)) or advanced_from_far_m < 0.0:
+        raise ValueError("rolling approach progress must be finite and non-negative")
+    if near_distance_m <= 0.0:
+        raise ValueError("near distance must be positive")
+    if press_authorized:
+        return "PRESS"
+    if advanced_from_far_m >= near_distance_m - 1.0e-3:
+        return "NEAR_ALIGN"
+    return "FAR_TRACK_AND_ADVANCE"
+
+
+def rolling_forward_target_x(
+    *, phase: str, actual_x_m: float, far_x_m: float,
+    near_distance_m: float, horizon_m: float,
+    target_plane_x_m: float | None = None,
+    maximum_press_past_target_m: float | None = None,
+) -> tuple[float, bool]:
+    """Return the next measured-frame X target and whether travel is complete."""
+    values = np.asarray(
+        [actual_x_m, far_x_m, near_distance_m, horizon_m], dtype=np.float64
+    )
+    if not np.all(np.isfinite(values)) or near_distance_m <= 0.0 or horizon_m < 0.0:
+        raise ValueError("rolling X inputs must be finite with non-negative horizon")
+    if phase == "FAR_TRACK_AND_ADVANCE":
+        near_x = far_x_m + near_distance_m
+        return float(min(actual_x_m + horizon_m, near_x)), False
+    if phase == "NEAR_ALIGN":
+        return float(actual_x_m), False
+    if phase == "PRESS":
+        if target_plane_x_m is None or maximum_press_past_target_m is None:
+            raise ValueError("PRESS requires target plane and maximum overtravel")
+        maximum_x = float(target_plane_x_m) + float(maximum_press_past_target_m)
+        if not np.isfinite(maximum_x) or maximum_press_past_target_m <= 0.0:
+            raise ValueError("PRESS maximum travel is invalid")
+        complete = actual_x_m >= maximum_x - 1.0e-3
+        return float(min(actual_x_m + horizon_m, maximum_x)), bool(complete)
+    raise ValueError(f"unknown rolling approach phase: {phase}")
+
+
+def rolling_z_motion_compensation(
+    *, visual_delta_z_m: float, previous_target_error_z_m: float,
+    nominal_x_horizon_m: float, phase: str,
+    residual_gain: float, far_z_per_x_gain: float,
+    maximum_compensation_m: float,
+    slowdown_start_error_m: float, slowdown_full_error_m: float,
+) -> dict:
+    """Carry unachieved Z motion forward and slow X while Z lags.
+
+    ``previous_target_error_z_m`` is the preceding Cartesian target minus the
+    newest measured tip.  Unlike a fixed bias, carrying this residual cannot
+    silently disappear when the next image update is generated from the
+    measured pose.  X-to-Z feedforward is active only while X advances.
+    """
+    values = np.asarray([
+        visual_delta_z_m, previous_target_error_z_m, nominal_x_horizon_m,
+        residual_gain, far_z_per_x_gain, maximum_compensation_m,
+        slowdown_start_error_m, slowdown_full_error_m,
+    ], dtype=np.float64)
+    if not np.all(np.isfinite(values)):
+        raise ValueError("rolling Z compensation inputs must be finite")
+    if (
+        nominal_x_horizon_m <= 0.0
+        or residual_gain < 0.0
+        or far_z_per_x_gain < 0.0
+        or maximum_compensation_m <= 0.0
+        or slowdown_start_error_m < 0.0
+        or slowdown_full_error_m <= slowdown_start_error_m
+    ):
+        raise ValueError("rolling Z compensation limits are invalid")
+    error = abs(previous_target_error_z_m)
+    horizon_scale = float(np.clip(
+        (slowdown_full_error_m - error)
+        / (slowdown_full_error_m - slowdown_start_error_m),
+        0.0, 1.0,
+    ))
+    advancing = phase in {"FAR_TRACK_AND_ADVANCE", "PRESS"}
+    scaled_horizon = nominal_x_horizon_m * horizon_scale if advancing else 0.0
+    model_feedforward = (
+        far_z_per_x_gain * scaled_horizon if advancing else 0.0
+    )
+    residual_carry = residual_gain * previous_target_error_z_m
+    compensation = float(np.clip(
+        residual_carry + model_feedforward,
+        -maximum_compensation_m,
+        maximum_compensation_m,
+    ))
+    return {
+        "visual_delta_z_m": float(visual_delta_z_m),
+        "previous_target_error_z_m": float(previous_target_error_z_m),
+        "residual_carry_z_m": float(residual_carry),
+        "model_feedforward_z_m": float(model_feedforward),
+        "compensation_z_m": compensation,
+        "command_delta_z_m": float(visual_delta_z_m + compensation),
+        "x_horizon_scale": horizon_scale,
+        "scaled_x_horizon_m": float(scaled_horizon),
+    }
+
+
+def mild_single_motor_hold_entry_overrun(
+    message: str, *, motor: str, maximum_excess_ticks: int
+) -> dict:
+    """Recognize a small, isolated post-motion HOLD-entry miss.
+
+    The Arm gateway embeds the violating-motor dictionary in its diagnostic
+    message.  Only an isolated requested motor is eligible; malformed text,
+    multiple violations, or a larger miss remain hard failures.
+    """
+    marker = "Final error exceeds per-motor HOLD-entry tolerance:"
+    suffix = "; all errors="
+    if marker not in message:
+        return {"eligible": False, "reason": "NOT_HOLD_ENTRY_ERROR"}
+    try:
+        encoded = message.split(marker, 1)[1].split(suffix, 1)[0].strip()
+        violations = ast.literal_eval(encoded)
+    except (ValueError, SyntaxError):
+        return {"eligible": False, "reason": "UNPARSEABLE_VIOLATIONS"}
+    if not isinstance(violations, dict) or set(violations) != {motor}:
+        return {"eligible": False, "reason": "NOT_ISOLATED_REQUESTED_MOTOR"}
+    entry = violations.get(motor)
+    if not isinstance(entry, dict):
+        return {"eligible": False, "reason": "INVALID_MOTOR_ENTRY"}
+    try:
+        error = abs(int(entry["error"]))
+        tolerance = abs(int(entry["tolerance"]))
+    except (KeyError, TypeError, ValueError):
+        return {"eligible": False, "reason": "INVALID_ERROR_OR_TOLERANCE"}
+    excess = error - tolerance
+    return {
+        "eligible": bool(0 < excess <= int(maximum_excess_ticks)),
+        "motor": motor,
+        "error_ticks": error,
+        "tolerance_ticks": tolerance,
+        "excess_ticks": excess,
+        "maximum_excess_ticks": int(maximum_excess_ticks),
+    }
+
+
+def phase_sam_minimum_score(
+    *,
+    operator_handoff_complete: bool,
+    near_phase_latched: bool,
+    press_phase_active: bool,
+    initial_score: float,
+    far_tracking_score: float,
+    near_tracking_score: float,
+    press_score: float,
+) -> float:
+    """Select a SAM score gate from approach phase, not apparent mask size.
+
+    Mask occupancy is view-dependent and is now only a too-close hint.  Once
+    the operator has confirmed the Arm Camera object, subsequent stopped-frame
+    tracking uses a lower phase-specific score while continuity and appearance
+    checks continue to guard object identity.
+    """
+    scores = np.asarray(
+        [initial_score, far_tracking_score, near_tracking_score, press_score],
+        dtype=np.float64,
+    )
+    if not np.all(np.isfinite(scores)) or np.any(scores < 0.0) or np.any(scores > 1.0):
+        raise ValueError("SAM score thresholds must be finite values in [0,1]")
+    if not operator_handoff_complete:
+        return float(initial_score)
+    if press_phase_active:
+        return float(press_score)
+    if near_phase_latched:
+        return float(near_tracking_score)
+    return float(far_tracking_score)
+
+
+def phase_tracking_area_ratio_bounds(
+    *,
+    near_phase_latched: bool,
+    far_minimum_ratio: float,
+    near_minimum_ratio: float,
+    maximum_ratio: float,
+    near_maximum_ratio: float | None = None,
+) -> tuple[float, float]:
+    """Return phase-aware mask continuity bounds for the wrist camera.
+
+    In NEAR, the fixed jaw occludes an increasing portion of the object and
+    SAM may return a stable visible fragment.  A small centroid shift remains
+    useful evidence, while the old global 0.35 area-ratio floor is not.
+    """
+    values = np.asarray(
+        [
+            far_minimum_ratio,
+            near_minimum_ratio,
+            maximum_ratio,
+            maximum_ratio if near_maximum_ratio is None else near_maximum_ratio,
+        ], dtype=np.float64
+    )
+    if not np.all(np.isfinite(values)):
+        raise ValueError("tracking area-ratio bounds must be finite")
+    minimum = near_minimum_ratio if near_phase_latched else far_minimum_ratio
+    maximum = (
+        maximum_ratio
+        if not near_phase_latched or near_maximum_ratio is None
+        else near_maximum_ratio
+    )
+    if minimum <= 0.0 or maximum < minimum:
+        raise ValueError("tracking area-ratio bounds are invalid")
+    return float(minimum), float(maximum)
+
+
+def should_retreat_for_too_close(
+    *, too_close: bool, press_alignment_ready: bool
+) -> bool:
+    """Retreat only when proximity and missing press alignment coexist."""
+    return bool(too_close and not press_alignment_ready)
+
+
+def compensated_cartesian_delta(
+    desired_delta_base_m: np.ndarray,
+    *,
+    x_hold_bias_m: float = 0.0,
+    y_gain: float = 1.0,
+    z_gain: float = 1.0,
+    z_up_bias_m: float = 0.0,
+    maximum_norm_m: float = 0.040,
+) -> dict:
+    """Return a bounded empirical command for a measured Cartesian residual.
+
+    ``desired_delta_base_m`` remains the evidence/acceptance target.  The
+    returned command only supplies feed-forward for the repeatable real-arm
+    under-travel observed in the local Touch pose.  A positive Z holding bias
+    is applied even when desired Z is zero because the measured error is a
+    gravity-direction offset, not merely a scale error.
+    """
+    desired = np.asarray(desired_delta_base_m, dtype=np.float64).reshape(3)
+    values = np.array(
+        [*desired, x_hold_bias_m, y_gain, z_gain, z_up_bias_m, maximum_norm_m],
+        dtype=np.float64,
+    )
+    if not np.all(np.isfinite(values)):
+        raise ValueError("Cartesian compensation inputs must be finite")
+    if y_gain <= 0.0 or z_gain <= 0.0 or maximum_norm_m <= 0.0:
+        raise ValueError("compensation gains and maximum norm must be positive")
+    command = np.array(
+        [
+            desired[0] + x_hold_bias_m,
+            desired[1] * y_gain,
+            desired[2] * z_gain + z_up_bias_m,
+        ],
+        dtype=np.float64,
+    )
+    unbounded = command.copy()
+    norm = float(np.linalg.norm(command))
+    if norm > maximum_norm_m:
+        command *= maximum_norm_m / norm
+    return {
+        "desired_delta_base_m": desired,
+        "command_delta_base_m": command,
+        "unbounded_command_delta_base_m": unbounded,
+        "bounded": bool(norm > maximum_norm_m),
+        "maximum_norm_m": float(maximum_norm_m),
+    }
 
 
 def adaptive_close_mask_fraction(

@@ -53,17 +53,21 @@ def test_ik_respects_gateway_effective_limits():
     assert result["joint_limits_source"] == "ARM_GATEWAY_EFFECTIVE_LIMITS"
 
 
-def test_near_alignment_locks_both_wrist_joints():
+def test_near_alignment_preserves_latched_camera_rotation_with_both_wrists():
     current = np.array([0.10, -0.70, 0.90, -0.30, 0.20])
     target_joint_pose = current.copy()
-    target_joint_pose[:3] += np.array([0.03, -0.02, 0.02])
+    target_joint_pose[:4] += np.array([0.01, -0.01, 0.01, -0.01])
     target = MODULE.tip_transform(target_joint_pose)[:3, 3]
     result = MODULE.solve_near_tip_alignment(current, target)
     positions = np.array([result["positions"][name] for name in MODULE.JOINT_NAMES])
     assert result["success"]
     assert result["position_error_m"] <= 0.008
-    np.testing.assert_allclose(positions[3:5], current[3:5], atol=1.0e-12)
-    assert result["prepare_strategy"] == "NEAR_LOCAL_SHOULDER_PAN_LIFT_ELBOW_ONLY"
+    assert result["rotation_error_deg"] <= 5.0
+    assert result["orientation_constrained"] is True
+    assert result["prepare_strategy"] == "NEAR_CAMERA_ROTATION_PRESERVING_LOCAL_IK"
+    assert result["compensation_joints"] == [
+        "wrist_flex_joint", "wrist_roll_joint"
+    ]
 
 
 def test_near_forward_press_locks_pan_and_roll():

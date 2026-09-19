@@ -1,0 +1,24 @@
+schema_version: 1
+coverage: SPARSE_EVENT_FRAMES
+notes:
+  - These sessions are real-robot event snapshots, not continuous video.
+  - Tracker loss during sparse replay is diagnostic and is not itself a gate failure.
+sessions:
+  - id: observation_86edefa4-5691-409e-ba18-9e4b37c4bb78
+    purpose: multi-step visual and motor-evidence sequence A
+    expect:
+      min_arm_frames: 10
+      min_approach_steps: 1
+      require_motor_evidence: true
+  - id: observation_f1dbb8fa-cbee-4137-8980-b70b680e385e
+    purpose: multi-step visual and motor-evidence sequence B
+    expect:
+      min_arm_frames: 8
+      min_approach_steps: 1
+      require_motor_evidence: true
+  - id: observation_0f748a25-4fb8-4e5a-ad18-b8bbb035aa53
+    purpose: recent short real-run sequence
+    expect:
+      min_arm_frames: 4
+      min_approach_steps: 1
+      require_motor_evidence: true

@@ -55,6 +55,20 @@ teleoperation:
   position_error_ticks: 250
   position_error_samples: 10
   alignment_tolerance_ticks: 45
+visual_servo:
+  protocol: SO101_VISUAL_SERVO_V1
+  command_rate_hz: 20.0
+  watchdog_sec: 0.35
+  max_session_sec: 20.0
+  position_error_ticks: 120
+  position_error_samples: 6
+  max_joint_velocity_rad_s:
+    shoulder_pan: 0.25
+    shoulder_lift: 0.18
+    elbow_flex: 0.22
+    wrist_flex: 0.30
+    wrist_roll: 0.40
+    gripper: 0.20
 safety:
   max_duration_sec: 20.0
   max_joint_velocity_rad_s:

@@ -13,6 +13,7 @@ import math
 import rclpy
 from geometry_msgs.msg import TransformStamped
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import Float32
 from tf2_ros import TransformBroadcaster
 
@@ -96,6 +97,15 @@ class ArmMountTfPublisher(Node):
             raise ValueError("publish_rate_hz must be positive")
 
         self._broadcaster = TransformBroadcaster(self)
+        mount_qos = QoSProfile(depth=1)
+        mount_qos.reliability = ReliabilityPolicy.RELIABLE
+        mount_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
+        # A direct latest-state source for control consumers.  The same pose
+        # is still broadcast on /tf for RViz, but a momentarily incomplete TF
+        # tree must not make Arm planning lose the physical mount evidence.
+        self._mount_pub = self.create_publisher(
+            TransformStamped, "/arm/mount_transform", mount_qos
+        )
         self.create_subscription(Float32, "/lift/position", self._on_lift_position, 10)
         self.create_timer(1.0 / self.publish_rate_hz, self._publish)
         self.get_logger().info(
@@ -141,6 +151,22 @@ class ArmMountTfPublisher(Node):
             transform.transform.rotation.w = qw
             transforms.append(transform)
         self._broadcaster.sendTransform(transforms)
+
+        # arm/world -> arm/base_link is an identity fixed joint in the
+        # visualization/kinematics URDF.  Publish the equivalent base mount
+        # directly as data (not as a second TF parent).
+        mount = TransformStamped()
+        mount.header.stamp = stamp
+        mount.header.frame_id = self.parent_frame
+        mount.child_frame_id = "arm/base_link"
+        mount.transform.translation.x = self.x_m
+        mount.transform.translation.y = self.y_m
+        mount.transform.translation.z = z_m
+        mount.transform.rotation.x = qx
+        mount.transform.rotation.y = qy
+        mount.transform.rotation.z = qz
+        mount.transform.rotation.w = qw
+        self._mount_pub.publish(mount)
 
 
 def main(args=None) -> None:

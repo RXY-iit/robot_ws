@@ -4,6 +4,11 @@ touch_observation_node:
     depth_topic: /camera/camera/aligned_depth_to_color/image_raw
     camera_info_topic: /camera/camera/color/camera_info
     arm_color_topic: /arm_camera/color/image_raw
+    # Never run SAM or plan motion from a buffered RGB frame after dropout.
+    # CameraInfo is cached calibration metadata; its stamp is not paired to
+    # each RGB frame. KLT/ORB consumes latest RGB only, while current TF is
+    # sampled at each planning boundary. Missing geometry waits without motion.
+    arm_camera_max_receive_age_sec: 1.0
     arm_camera_info_topic: /arm_camera/color/camera_info
     target_frame: base_link
     # RealSense ROS publishes the configured Z16 stream in millimetres on this
@@ -45,7 +50,8 @@ touch_observation_node:
     approach_large_max_lateral_step_m: 0.060
     approach_step_distance_m: 0.005
     approach_aligned_press_step_distance_m: 0.025
-    approach_press_entry_tolerance_px: 20.0
+    approach_press_entry_tolerance_px: 35.0
+    approach_tip_align_elbow_mild_excess_ticks: 5
     approach_near_advance_distance_m: 0.035
     # Mask percentage is not a NEAR trigger. It is only an independent
     # too-close guard: at >=15%, retreat a small 5 mm step (never behind FAR).
@@ -61,41 +67,116 @@ touch_observation_node:
     approach_alignment_tolerance_m: 0.003
     approach_max_lateral_step_m: 0.005
     approach_max_ik_error_m: 0.003
-    # Fixed Touch prepare/approach opening requested from real hardware:
-    # 1.045 rad / 59.9 deg. This is gripper_joint, not wrist roll.
-    touch_gripper_position_rad: 1.045
+    # Explicitly confirmed PRESS uses a wider IK residual envelope. The
+    # ordinary FAR/NEAR 3 mm gate remains unchanged; joint limits, +X direction
+    # and the total press-travel bound are still enforced.
+    approach_press_max_ik_error_m: 0.020
+    # On a failed PRESS, retreat in bounded steps to the retained NEAR X plane,
+    # then reacquire and resume camera-rotation-preserving tip alignment.
+    approach_press_recovery_step_m: 0.025
+    # Fixed Touch prepare/approach opening requested from real hardware.
+    # This is gripper_joint, not wrist roll.
+    touch_gripper_position_rad: 1.549
+    # NEAR aligns image horizontal error first (base Z), placing the target
+    # above the lower tip before correcting image vertical error (base Y).
+    approach_near_z_first_tolerance_px: 15.0
+    # Keep the NEAR-entry camera/tool attitude substantially level and stable.
+    approach_near_max_rotation_error_deg: 5.0
     # One explicit human confirmation authorizes the bounded stop-observe loop.
     # Every step is independently previewed/validated by the Arm gateway; any
     # tracking, IK, feedback or execution failure pauses without another move.
     automatic_approach_after_confirmation: true
     automatic_approach_max_steps: 24
     automatic_approach_timeout_sec: 180.0
+    # Legacy FAR hand-off delay.  Repeated wrist-camera approach steps use the
+    # measured 10 Hz stability gate below instead of always sleeping 0.75 s.
     automatic_approach_settle_sec: 0.75
+    automatic_approach_min_settle_sec: 0.20
+    automatic_approach_stability_window_sec: 0.30
+    automatic_approach_stability_span_m: 0.0025
+    automatic_approach_stability_max_wait_sec: 1.20
+    automatic_approach_stability_hard_span_m: 0.008
+    # Supervised demo policy: measured motion never terminates the visual loop.
+    # A finite span above the threshold is logged and used as the next real
+    # starting pose. Missing/non-finite TF is retried without blind motion.
+    automatic_approach_continue_when_unstable: true
     # Test-stage continuity envelope. SAM score, valid mask and image bounds
     # still apply, but perspective growth close to the object is expected.
     # Reject abrupt SAM region switches before appearance change can be
     # considered Touch success.
     automatic_arm_target_max_shift_px: 90.0
-    automatic_arm_target_min_area_ratio: 0.35
     automatic_arm_target_max_area_ratio: 3.0
+    # Once NEAR is latched, strong perspective growth and partial jaw
+    # occlusion are expected.  Keep a much wider growth-only identity guard;
+    # centroid continuity remains active and shrinkage is non-blocking.
+    automatic_arm_target_near_max_area_ratio: 12.0
+    # Phase-aware continuity: FAR still rejects major mask collapse. In NEAR,
+    # jaw occlusion may leave a stable visible fragment, so centroid continuity
+    # and the immutable appearance reference carry more weight.
+    automatic_arm_target_far_min_area_ratio: 0.20
+    # Diagnostic only after NEAR is latched: the runtime ignores shrinkage
+    # caused by jaw occlusion and rejects only centroid jumps/excessive growth.
+    automatic_arm_target_near_min_area_ratio: 0.001
     # Validate the measured Cartesian endpoint after joint-trajectory SUCCESS.
     approach_cartesian_coarse_max_error_m: 0.040
     approach_cartesian_press_max_error_m: 0.020
+    # NEAR image alignment must actually reach its current visual waypoint;
+    # otherwise the next camera observation compounds execution error.
+    approach_cartesian_align_max_error_m: 0.008
     # Diagnostic reference only. Endpoint error is the primary gate; residual
     # correction blocks only clearly negative progress on requests >=15 mm.
     approach_cartesian_min_progress_ratio: 0.30
     # Residuals inside this wider envelope are not accepted as accurate. They
-    # trigger at most three measured-tip re-observe/re-plan cycles. Larger or
-    # wrong-direction outcomes remain blocked.
+    # trigger at most three same-waypoint measured-tip corrections. A first
+    # wrong-direction NEAR result may be corrected; a non-improving retry is
+    # then blocked before commands can accumulate.
     approach_cartesian_correctable_max_error_m: 0.060
     approach_cartesian_max_correction_retries: 3
+    # The real servo server can delay /joint_states while its action owns the
+    # bus. Endpoint validation waits for fresh post-motion TF and does not
+    # spend a Cartesian correction retry on a transient tf2 cache gap.
+    approach_cartesian_feedback_max_age_sec: 0.75
+    approach_cartesian_feedback_wait_sec: 3.0
+    # Compare endpoint feedback with the gateway's terminal event timestamp,
+    # not with a possibly delayed Touch callback receive time. The slack only
+    # tolerates publication ordering around the same completion event.
+    approach_cartesian_completion_tf_slack_sec: 0.25
+    # Inner execution loop: retain the same absolute visual waypoint and
+    # compensate from measured touch-tip TF before acquiring another image.
+    approach_cartesian_correction_step_max_m: 0.030
+    approach_cartesian_correction_min_improvement_m: 0.003
+    approach_cartesian_correction_min_improvement_ratio: 0.20
+    # Independent from the 5 mm FAR/image-centering limit.
+    approach_near_lateral_step_max_m: 0.030
+    # Local inverse feed-forward refit from the latest four real sessions.
+    # Acceptance remains referenced to the uncompensated visual waypoint.
+    # X counters the repeatable drift while nominally holding X; Y gain
+    # corrects under-travel; positive Z bias/gain counters the loaded arm's
+    # systematic downward endpoint error. Every result is checked by TF and a
+    # non-converging retry stops rather than accumulating commands.
+    approach_near_feedforward_x_hold_m: 0.004
+    approach_near_feedforward_y_gain: 1.10
+    approach_near_feedforward_z_gain: 1.27
+    approach_near_feedforward_z_up_bias_m: 0.019
+    approach_near_feedforward_command_max_m: 0.050
+    # Latest Z alignment evidence gives approximately
+    # achieved_Z = 0.785 * commanded_Z - 14.5 mm.  Its bounded inverse is
+    # command_Z = 1.27 * desired_Z + 18.5 mm.  The previous 2.70x model caused
+    # sign-changing overshoot during same-waypoint correction.
+    approach_near_z_first_feedforward_z_gain: 1.27
+    approach_near_z_first_feedforward_z_bias_m: 0.019
+    approach_near_z_first_command_max_m: 0.050
+    # Latest FAR evidence: X/Y followed well, while actual Z was consistently
+    # about 21--25 mm below the visual command. Bias the command only; endpoint
+    # acceptance remains tied to the original visual waypoint.
+    approach_far_feedforward_z_up_bias_m: 0.022
     arm_sam_minimum_mask_pixels: 40
     arm_sam_minimum_score: 0.40
-    # Close objects may be cropped and receive a low SAM score. Once the mask
-    # occupies >=25% of the image, accept a much lower score while retaining
-    # continuity and minimum-area checks.
-    arm_sam_large_mask_fraction: 0.25
-    arm_sam_large_mask_minimum_score: 0.15
+    # After the first operator-confirmed Arm Camera handoff, score gates follow
+    # the approach phase rather than mask occupancy. Continuity, mask area and
+    # the immutable appearance reference still guard identity.
+    arm_sam_far_tracking_minimum_score: 0.20
+    arm_sam_near_tracking_minimum_score: 0.10
     # During PRESS, partial occlusion by the gripper is expected. Preserve a
     # plausible mask down to this score; colour evidence remains authoritative.
     arm_sam_press_minimum_score: 0.05
@@ -108,6 +189,73 @@ touch_observation_node:
     touch_success_max_center_error_px: 15.0
     touch_success_required_observations: 2
     touch_success_minimum_step: 1
+    # The operator-confirmed Arm Camera SAM mask initializes one continuous
+    # target state. Pyramidal KLT + partial-affine RANSAC propagates it at the
+    # camera rate; ORB/RANSAC is attempted only after KLT degenerates. Only if
+    # both fail is SAM invoked again, and that recovered mask always waits for
+    # an explicit operator confirmation before motion resumes.
+    continuous_tracker_enabled: true
+    continuous_tracker_period_sec: 0.04
+    # A healthy status before/after motion is insufficient. Every approach
+    # action records successful tracker image stamps inside its gateway event
+    # window and refuses the next move unless the window has both enough
+    # samples and no long blind interval.
+    approach_tracking_minimum_motion_frames: 3
+    approach_tracking_maximum_motion_gap_sec: 0.50
+    rolling_visual_servo_enabled: true
+    rolling_visual_servo_duration_sec: 2.5
+    rolling_visual_servo_continuous_until_press: true
+    rolling_visual_servo_session_timeout_sec: 15.0
+    rolling_visual_servo_forward_horizon_m: 0.006
+    rolling_visual_servo_alignment_frames: 3
+    rolling_visual_servo_max_yz_step_m: 0.003
+    # Real eye-in-hand motion signs measured on the robot.  The rendered-TF
+    # Jacobian remains telemetry-only during rolling control because the
+    # 2026-09-18 bag showed its Z sign was wrong for this camera pose.
+    rolling_visual_servo_empirical_m_per_px: 0.00020
+    rolling_visual_servo_z_residual_gain: 0.80
+    rolling_visual_servo_far_z_per_x_gain: 0.88
+    rolling_visual_servo_z_compensation_max_m: 0.025
+    rolling_visual_servo_z_slowdown_start_m: 0.006
+    rolling_visual_servo_z_slowdown_full_m: 0.020
+    # Independent last-resort guard. Compensation should keep this near zero;
+    # stop before the previous 44.8 mm fall can carry the object out of view.
+    rolling_visual_servo_max_z_drop_m: 0.012
+    rolling_visual_servo_max_tracker_age_sec: 0.20
+    # A completed result may cross 200 ms while a newly received frame is
+    # already being processed. Wait without sending a stale target for at most
+    # this interval; the independent 350 ms actuator watchdog remains active.
+    rolling_visual_servo_max_tracker_inflight_sec: 0.15
+    rolling_visual_servo_min_updates: 3
+    # VLA-style receding action chunk: perception/IK replaces this 500 ms
+    # tail at 10 Hz while the guarded server consumes it continuously at
+    # 20 Hz. The 350 ms watchdog still stops before an abandoned chunk ends.
+    rolling_visual_servo_horizon_steps: 10
+    rolling_visual_servo_horizon_step_period_sec: 0.05
+    # Predict the measured joint state to the expected command-application
+    # time using image processing age plus this scheduling/transport margin.
+    rolling_visual_servo_execution_lead_sec: 0.08
+    rolling_visual_servo_max_prediction_lead_sec: 0.25
+    rolling_visual_servo_max_prediction_velocity_rad_s: 1.0
+    tracker_max_features: 160
+    # The 2026-09-10 low-texture button produced 9 valid corners. Six is the
+    # guarded floor: partial-affine RANSAC still has redundant points, and the
+    # independent inlier/coverage/area gates remain mandatory.
+    tracker_minimum_tracks: 6
+    tracker_minimum_inlier_ratio: 0.50
+    tracker_minimum_coverage_ratio: 0.10
+    tracker_lk_fb_error_px: 1.5
+    tracker_orb_minimum_matches: 10
+    tracker_rolling_keyframe_interval_frames: 15
+    tracker_semantic_recovery_cooldown_sec: 1.0
+    # Elevator-button success evidence is evaluated on every tracked frame
+    # after an operator-authorized PRESS has actually been attempted. Require
+    # a strong colour/appearance change for three consecutive camera frames;
+    # D435 geometry remains diagnostic and cannot veto this evidence.
+    tracker_touch_lab_delta: 45.0
+    tracker_touch_changed_fraction: 0.50
+    tracker_touch_histogram_distance: 0.35
+    tracker_touch_required_frames: 3
     arm_projection_image_margin_px: 8
     # FAR handoff uses the D435 projection as the first Arm Camera SAM prompt.
     # The operator still confirms the mask and can replace it with a click.
@@ -132,6 +280,7 @@ touch_observation_node:
     # move through the existing guarded Arm gateway. Near/target are not sent.
     allow_pre_touch_far_execution: true
     # Operator-reviewed execution through Arm gateway. After FAR, +X is locked
-    # until strict fixed-tip/mask alignment passes; PRESS is rechecked per step.
+    # until strict fixed-tip/centroid alignment passes; binary-mask containment
+    # is diagnostic only. PRESS alignment is rechecked per step.
     allow_approach_execution: true
     artifact_root: /home/matsunaga-h/robot_ws/debug-output/touch-anything

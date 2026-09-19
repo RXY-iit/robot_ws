@@ -54,6 +54,7 @@ private Q_SLOTS:
   void executePreTouchFar();
   void acquireArmTarget();
   void confirmArmTarget();
+  void confirmPress();
   void planApproachStep();
   void executeApproachStep();
   void exitTouchMode();
@@ -78,6 +79,7 @@ private:
   QPushButton * execute_button_;
   QPushButton * acquire_arm_button_;
   QPushButton * confirm_arm_button_;
+  QPushButton * confirm_press_button_;
   QPushButton * plan_approach_button_;
   QPushButton * execute_approach_button_;
   QPushButton * exit_button_;

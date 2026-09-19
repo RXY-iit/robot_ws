@@ -11,6 +11,7 @@ import math
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import JointState
 
 
@@ -55,10 +56,24 @@ def corrected_position(name: str, value: float) -> float:
 class ArmVisualJointStateCalibrator(Node):
     def __init__(self) -> None:
         super().__init__("arm_visual_joint_state_calibrator")
-        self._publisher = self.create_publisher(
-            JointState, "/arm/visual_joint_states", 20
+        output_qos = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.VOLATILE,
         )
-        self.create_subscription(JointState, "/joint_states", self._on_state, 20)
+        input_qos = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            durability=DurabilityPolicy.VOLATILE,
+        )
+        self._publisher = self.create_publisher(
+            JointState, "/arm/visual_joint_states", output_qos
+        )
+        self.create_subscription(
+            JointState, "/joint_states", self._on_state, input_qos
+        )
         self.get_logger().info(
             "Vision-derived Arm joint scale correction enabled for visualization TF only"
         )

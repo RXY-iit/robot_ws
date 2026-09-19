@@ -115,12 +115,17 @@ def solve_near_tip_alignment(
     current_positions: Iterable[float], target_position: Iterable[float],
     lower_limits: Iterable[float] | None = None,
     upper_limits: Iterable[float] | None = None,
+    target_rotation: np.ndarray | None = None,
 ) -> dict:
-    """Solve a local NEAR correction with only shoulder pan/lift and elbow.
+    """Solve a local NEAR correction while preserving the wrist-camera pose.
 
-    Wrist flex and wrist roll are held at their measured values.  This avoids
-    the full pose/axis optimisation used for FAR and PRESS from turning a small
-    image-space Y/Z correction into a large wrist motion or X retreat.
+    The image servo assumes that a requested base Y/Z correction is a camera
+    translation.  Locking the wrist while moving shoulder/elbow violates that
+    assumption: the camera can rotate until target and tip merely look
+    collinear.  Allow wrist flex and wrist roll to compensate the proximal
+    joints while strongly preserving one latched NEAR-entry tool rotation.
+    This removes the cheap ``rotate the camera`` solution and prevents
+    stop-observe cycles from accumulating camera-attitude drift.
     """
     current = np.asarray(tuple(current_positions), dtype=float)
     target = np.asarray(tuple(target_position), dtype=float)
@@ -131,26 +136,45 @@ def solve_near_tip_alignment(
     if lower.shape != (5,) or upper.shape != (5,) or np.any(lower >= upper):
         raise ValueError("five valid lower/upper joint limits are required")
 
-    fixed_wrist = current[3:5].copy()
+    current_active = current.copy()
+    current_rotation = tip_transform(current)[:3, :3].copy()
+    desired_rotation = (
+        current_rotation if target_rotation is None
+        else np.asarray(target_rotation, dtype=float)
+    )
+    if desired_rotation.shape != (3, 3) or not np.all(np.isfinite(desired_rotation)):
+        raise ValueError("target_rotation must be a finite 3x3 matrix")
 
     def compose(active: np.ndarray) -> np.ndarray:
-        return np.concatenate((active, fixed_wrist))
+        return active
 
     def residual(active: np.ndarray) -> np.ndarray:
         q = compose(active)
-        position_error = tip_transform(q)[:3, 3] - target
-        # Position is primary. A light local-motion cost removes redundant
-        # solutions without introducing a prepare-pose or tool-axis objective.
-        return np.concatenate((position_error * 300.0,
-                               (active - current[:3]) * 0.015))
+        pose = tip_transform(q)
+        position_error = pose[:3, 3] - target
+        # Three cross products constrain the complete camera/tool rotation,
+        # not only one axis.  Position remains primary; wrist flex supplies
+        # the compensation that the old three-joint solver could not make.
+        rotation_error = np.concatenate(tuple(
+            np.cross(pose[:3, axis], desired_rotation[:, axis])
+            for axis in range(3)
+        ))
+        return np.concatenate((
+            position_error * 400.0,
+            rotation_error * 8.0,
+            (active - current_active) * 0.012,
+        ))
 
     result = least_squares(
-        residual, np.clip(current[:3], lower[:3], upper[:3]),
-        bounds=(lower[:3], upper[:3]), max_nfev=200,
+        residual, np.clip(current_active, lower, upper),
+        bounds=(lower, upper), max_nfev=300,
     )
     positions = compose(result.x)
     pose = tip_transform(positions)
     position_error = float(np.linalg.norm(pose[:3, 3] - target))
+    relative_rotation = desired_rotation.T @ pose[:3, :3]
+    rotation_cos = float(np.clip((np.trace(relative_rotation) - 1.0) * 0.5, -1.0, 1.0))
+    rotation_error_deg = math.degrees(math.acos(rotation_cos))
     return {
         "success": bool(result.success and position_error <= 0.008),
         "positions": {
@@ -159,14 +183,17 @@ def solve_near_tip_alignment(
         "tip_position": pose[:3, 3].tolist(),
         "tool_axis": pose[:3, 2].tolist(),
         "position_error_m": position_error,
-        "axis_error_deg": 0.0,
-        "orientation_constrained": False,
+        "axis_error_deg": rotation_error_deg,
+        "rotation_error_deg": rotation_error_deg,
+        "orientation_constrained": True,
+        "orientation_status": "SOFT_PRESERVE_LATCHED_NEAR_CAMERA_TOOL_ROTATION",
         "solver_status": int(result.status),
         "solver_message": str(result.message),
         "collision_checked": False,
         "tip_frame": "arm/touch_tip (operator-confirmed gripper_frame_link origin)",
-        "prepare_strategy": "NEAR_LOCAL_SHOULDER_PAN_LIFT_ELBOW_ONLY",
-        "locked_joints": ["wrist_flex_joint", "wrist_roll_joint"],
+        "prepare_strategy": "NEAR_CAMERA_ROTATION_PRESERVING_LOCAL_IK",
+        "compensation_joints": ["wrist_flex_joint", "wrist_roll_joint"],
+        "locked_joints": [],
     }
 
 

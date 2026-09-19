@@ -191,6 +191,13 @@ The leader adapter is a separate read-only process and publishes
 in the configured default `real2sim` mode; the Dashboard disables only the
 `teleoperate` button until fresh calibrated Leader feedback is available.
 
+Rolling visual servo accepts optional 2--20 point time-indexed action horizons;
+Touch uses 10 points at 50 ms each. The server skips transport-expired points,
+replaces only the unconsumed tail on each newer sequence, and still applies its
+per-joint velocity limits and 350 ms watchdog. Every STOP first reads the six
+measured motor positions, checks current/temperature/torque, seeds and verifies
+`Goal_Position` at that current pose, and only then acknowledges `HOLDING`.
+
 ```bash
 source /home/matsunaga-h/robot_ws/install/setup.bash
 ros2 launch so101_arm_control arm_real_dashboard_test.launch.py

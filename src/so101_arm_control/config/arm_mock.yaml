@@ -11,6 +11,20 @@ hardware:
   follower_serial: "5AE6054086"
   follower_stable_port: /dev/serial/by-id/usb-1a86_USB_Single_Serial_5AE6054086-if00
   real_hardware_enabled: false
+visual_servo:
+  protocol: SO101_VISUAL_SERVO_V1
+  command_rate_hz: 20.0
+  watchdog_sec: 0.35
+  max_session_sec: 20.0
+  position_error_ticks: 120
+  position_error_samples: 6
+  max_joint_velocity_rad_s:
+    shoulder_pan: 0.25
+    shoulder_lift: 0.18
+    elbow_flex: 0.22
+    wrist_flex: 0.30
+    wrist_roll: 0.40
+    gripper: 0.20
 joints:
   - name: shoulder_pan_joint
     motor_name: shoulder_pan

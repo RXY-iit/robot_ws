@@ -37,6 +37,7 @@ install(PROGRAMS
   scripts/touch_observation_node.py
   scripts/touch_kinematics.py
   scripts/approach_geometry.py
+  scripts/target_tracker.py
   DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY launch config DESTINATION share/${PROJECT_NAME})
 install(FILES plugin_description.xml README.md DESTINATION share/${PROJECT_NAME})

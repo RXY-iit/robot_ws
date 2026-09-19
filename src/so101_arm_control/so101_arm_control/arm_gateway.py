@@ -21,6 +21,11 @@ from std_msgs.msg import String
 from trajectory_msgs.msg import JointTrajectoryPoint
 
 from so101_arm_control.arm_visual_joint_state_calibrator import corrected_position
+from so101_arm_control.visual_servo import (
+    PROTOCOL as VISUAL_SERVO_PROTOCOL,
+    validate_command as validate_visual_servo_command,
+    validate_positions as validate_visual_servo_positions,
+)
 
 
 def validate_target(joint_specs: list[dict], positions: object) -> tuple[dict[str, float], list[str]]:
@@ -158,12 +163,20 @@ class ArmGateway(Node):
             if self._is_real
             else "mock gateway started; no hardware device is opened"
         )
+        self._task_event_ros_sec = (
+            float(self.get_clock().now().nanoseconds) * 1.0e-9
+        )
         self._last_request_id: str | None = None
         self._seen_request_ids: list[str] = []
         self._active_goal = None
         self._hardware_status: dict = {}
         self._touch_state: dict = {}
         self._last_touch_state_update: float | None = None
+        self._visual_servo_state: dict = {}
+        self._last_visual_servo_state_update: float | None = None
+        self._visual_servo_session_id: str | None = None
+        self._visual_servo_owner_request_id: str | None = None
+        self._visual_servo_last_sequence = -1
 
         self._state_pub = self.create_publisher(String, "/arm/dashboard_state", 10)
         mode_qos = QoSProfile(depth=1)
@@ -171,6 +184,9 @@ class ArmGateway(Node):
         mode_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
         self._control_mode_pub = self.create_publisher(String, "/arm/control_mode", mode_qos)
         self._hold_command_pub = self.create_publisher(String, "/arm/hold_command", 10)
+        self._visual_servo_command_pub = self.create_publisher(
+            String, "/arm/visual_servo_command", 50
+        )
         self._touch_command_pub = self.create_publisher(String, "/touch_anything/command", 10)
         self._candidate_pub = self.create_publisher(JointState, "/arm/candidate_joint_states", 10)
         self._planned_path_pub = self.create_publisher(DisplayTrajectory, "/display_planned_path", 10)
@@ -183,6 +199,9 @@ class ArmGateway(Node):
         )
         self.create_subscription(String, "/arm/dashboard_command", self._on_command, 20)
         self.create_subscription(String, "/arm/hardware_status", self._on_hardware_status, 10)
+        self.create_subscription(
+            String, "/arm/visual_servo_state", self._on_visual_servo_state, 20
+        )
         self.create_subscription(String, "/touch_anything/state", self._on_touch_state, 10)
         self._trajectory_client = ActionClient(
             self, FollowJointTrajectory, "/arm_controller/follow_joint_trajectory"
@@ -300,6 +319,12 @@ class ArmGateway(Node):
             self._select_preset(str(payload.get("preset_id", "")))
         elif command == "execute_candidate":
             self._execute_candidate(str(payload.get("candidate_id", "")), payload.get("duration_sec", 2.0))
+        elif command == "visual_servo_start":
+            self._visual_servo_start(payload, request_id)
+        elif command == "visual_servo_update":
+            self._visual_servo_update(payload)
+        elif command == "visual_servo_stop":
+            self._visual_servo_stop(payload)
         elif command == "cancel":
             self._cancel_active_goal()
         elif command == "release_hold":
@@ -320,7 +345,7 @@ class ArmGateway(Node):
         if requested not in self._valid_control_modes:
             self._set_event("BLOCKED", f"unknown control mode: {requested}")
             return
-        if self._active_goal is not None:
+        if self._active_goal is not None or self._visual_servo_session_id is not None:
             self._set_event("BLOCKED", "cannot switch control mode while a goal is active")
             return
         mode_spec = next(item for item in self._control_modes if item["id"] == requested)
@@ -448,8 +473,259 @@ class ArmGateway(Node):
             "bounded rejected IK pose rendered in orange; execution is disabled",
         )
 
-    def _execute_candidate(self, candidate_id: str, requested_duration: object) -> None:
+    def _visual_servo_ready(self) -> tuple[bool, str]:
+        age = (
+            None
+            if self._last_visual_servo_state_update is None
+            else time.monotonic() - self._last_visual_servo_state_update
+        )
+        if age is None or age > 0.6:
+            return False, "visual-servo server state is missing or stale"
+        if not bool(self._visual_servo_state.get("capable")):
+            return False, "trajectory server does not advertise visual-servo capability"
+        if str(self._visual_servo_state.get("protocol")) != VISUAL_SERVO_PROTOCOL:
+            return False, "visual-servo protocol mismatch"
         if self._active_goal is not None:
+            return False, "FollowJointTrajectory is active"
+        if self._is_real:
+            if self._control_mode != "code2real&sim":
+                return False, "visual servo requires code2real&sim"
+            feedback_age = (
+                math.inf
+                if self._last_joint_update is None
+                else time.monotonic() - self._last_joint_update
+            )
+            if feedback_age >= 0.5 or not self._actual:
+                return False, "real hardware feedback is missing or stale"
+            hold = self._hardware_status.get("hold", {})
+            if hold.get("state") == "FAULT":
+                return False, "hold protection is faulted"
+        return True, "visual-servo server is ready"
+
+    def _publish_visual_servo_command(
+        self,
+        *,
+        op: str,
+        session_id: str,
+        sequence: int,
+        positions: dict[str, float] | None = None,
+        action_horizon: list[dict[str, float]] | None = None,
+        horizon_step_period_sec: float | None = None,
+        horizon_plan_id: str | None = None,
+        observation_age_sec: float | None = None,
+        prediction_lead_sec: float | None = None,
+        tracker_stamp: object = None,
+        reason: str = "",
+    ) -> None:
+        payload: dict[str, object] = {
+            "protocol": VISUAL_SERVO_PROTOCOL,
+            "op": op,
+            "session_id": session_id,
+            "sequence": sequence,
+            "issued_ros_sec": float(self.get_clock().now().nanoseconds) * 1.0e-9,
+            "tracker_stamp": tracker_stamp,
+            "reason": reason,
+        }
+        if positions is not None:
+            payload["positions"] = positions
+        if action_horizon is not None:
+            payload.update({
+                "action_horizon": action_horizon,
+                "horizon_step_period_sec": horizon_step_period_sec,
+                "horizon_plan_id": horizon_plan_id,
+                "observation_age_sec": observation_age_sec,
+                "prediction_lead_sec": prediction_lead_sec,
+            })
+        self._visual_servo_command_pub.publish(
+            String(data=json.dumps(payload, ensure_ascii=False, allow_nan=False))
+        )
+
+    def _visual_servo_start(self, payload: dict, request_id: str) -> None:
+        if self._visual_servo_session_id is not None:
+            self._set_event("BLOCKED", "a visual-servo session is already active")
+            return
+        ready, reason = self._visual_servo_ready()
+        if not ready:
+            self._set_event("BLOCKED", reason)
+            return
+        candidate_id = str(payload.get("candidate_id", ""))
+        if not self._candidate_valid or candidate_id != self._candidate_id:
+            self._set_event("BLOCKED", "visual servo requires the current validated candidate")
+            return
+        session_id = str(payload.get("session_id", "")).strip()
+        if len(session_id) < 8 or len(session_id) > 128:
+            self._set_event("BLOCKED", "visual-servo session_id length must be 8..128")
+            return
+        positions, errors = validate_visual_servo_positions(
+            self._joint_specs, payload.get("positions", self._candidate)
+        )
+        action_horizon = None
+        horizon_fields: dict[str, object] = {}
+        if not errors and payload.get("action_horizon") is not None:
+            normalized, horizon_errors = validate_visual_servo_command({
+                "protocol": VISUAL_SERVO_PROTOCOL,
+                "op": "START",
+                "session_id": session_id,
+                "sequence": 0,
+                "positions": positions,
+                "action_horizon": payload.get("action_horizon"),
+                "horizon_step_period_sec": payload.get("horizon_step_period_sec"),
+                "horizon_plan_id": payload.get("horizon_plan_id"),
+                "observation_age_sec": payload.get("observation_age_sec", 0.0),
+                "prediction_lead_sec": payload.get("prediction_lead_sec", 0.0),
+                "issued_ros_sec": float(self.get_clock().now().nanoseconds) * 1.0e-9,
+            }, self._joint_specs)
+            errors.extend(horizon_errors)
+            if not horizon_errors:
+                action_horizon = normalized["action_horizon"]
+                horizon_fields = normalized
+        if not errors and self._actual:
+            errors.extend(
+                changed_command_limit_errors(
+                    self._effective_joint_specs(), self._actual, positions
+                )
+            )
+        if errors:
+            self._set_event("BLOCKED", "; ".join(errors))
+            return
+        self._visual_servo_session_id = session_id
+        self._visual_servo_owner_request_id = request_id
+        self._visual_servo_last_sequence = 0
+        self._task_state = "SENDING"
+        self._task_event_ros_sec = float(self.get_clock().now().nanoseconds) * 1.0e-9
+        self._task_message = "visual-servo START sent; waiting for server acknowledgement"
+        self._publish_visual_servo_command(
+            op="START",
+            session_id=session_id,
+            sequence=0,
+            positions=positions,
+            action_horizon=action_horizon,
+            horizon_step_period_sec=horizon_fields.get("horizon_step_period_sec"),
+            horizon_plan_id=horizon_fields.get("horizon_plan_id"),
+            observation_age_sec=horizon_fields.get("observation_age_sec"),
+            prediction_lead_sec=horizon_fields.get("prediction_lead_sec"),
+            tracker_stamp=payload.get("tracker_stamp"),
+        )
+        self._publish_state()
+
+    def _visual_servo_update(self, payload: dict) -> None:
+        session_id = str(payload.get("session_id", "")).strip()
+        if self._visual_servo_session_id is None or session_id != self._visual_servo_session_id:
+            self._set_event("BLOCKED", "visual-servo UPDATE session does not match active session")
+            return
+        try:
+            sequence = int(payload.get("sequence"))
+        except (TypeError, ValueError):
+            self._set_event("BLOCKED", "visual-servo sequence must be an integer")
+            return
+        if sequence <= self._visual_servo_last_sequence:
+            self._set_event("BLOCKED", "visual-servo UPDATE sequence is stale")
+            return
+        positions, errors = validate_visual_servo_positions(
+            self._joint_specs, payload.get("positions")
+        )
+        action_horizon = None
+        horizon_fields: dict[str, object] = {}
+        if not errors and payload.get("action_horizon") is not None:
+            normalized, horizon_errors = validate_visual_servo_command({
+                "protocol": VISUAL_SERVO_PROTOCOL,
+                "op": "UPDATE",
+                "session_id": session_id,
+                "sequence": sequence,
+                "positions": positions,
+                "action_horizon": payload.get("action_horizon"),
+                "horizon_step_period_sec": payload.get("horizon_step_period_sec"),
+                "horizon_plan_id": payload.get("horizon_plan_id"),
+                "observation_age_sec": payload.get("observation_age_sec", 0.0),
+                "prediction_lead_sec": payload.get("prediction_lead_sec", 0.0),
+                "issued_ros_sec": float(self.get_clock().now().nanoseconds) * 1.0e-9,
+            }, self._joint_specs)
+            errors.extend(horizon_errors)
+            if not horizon_errors:
+                action_horizon = normalized["action_horizon"]
+                horizon_fields = normalized
+        if not errors and self._actual:
+            errors.extend(
+                changed_command_limit_errors(
+                    self._effective_joint_specs(), self._actual, positions
+                )
+            )
+        if errors:
+            self._set_event("BLOCKED", "; ".join(errors))
+            return
+        self._visual_servo_last_sequence = sequence
+        self._task_state = "EXECUTING"
+        self._task_message = f"visual-servo update {sequence} forwarded"
+        self._publish_visual_servo_command(
+            op="UPDATE",
+            session_id=session_id,
+            sequence=sequence,
+            positions=positions,
+            action_horizon=action_horizon,
+            horizon_step_period_sec=horizon_fields.get("horizon_step_period_sec"),
+            horizon_plan_id=horizon_fields.get("horizon_plan_id"),
+            observation_age_sec=horizon_fields.get("observation_age_sec"),
+            prediction_lead_sec=horizon_fields.get("prediction_lead_sec"),
+            tracker_stamp=payload.get("tracker_stamp"),
+        )
+
+    def _visual_servo_stop(self, payload: dict) -> None:
+        session_id = str(payload.get("session_id", "")).strip()
+        if self._visual_servo_session_id is None or session_id != self._visual_servo_session_id:
+            self._set_event("BLOCKED", "visual-servo STOP session does not match active session")
+            return
+        try:
+            sequence = int(payload.get("sequence"))
+        except (TypeError, ValueError):
+            sequence = self._visual_servo_last_sequence + 1
+        sequence = max(sequence, self._visual_servo_last_sequence + 1)
+        self._visual_servo_last_sequence = sequence
+        self._task_state = "STOPPING"
+        self._task_message = "visual-servo STOP sent; server must acknowledge HOLDING"
+        self._publish_visual_servo_command(
+            op="STOP",
+            session_id=session_id,
+            sequence=sequence,
+            tracker_stamp=payload.get("tracker_stamp"),
+            reason=str(payload.get("reason", "normal stop")),
+        )
+        self._publish_state()
+
+    def _on_visual_servo_state(self, message: String) -> None:
+        try:
+            state = json.loads(message.data)
+        except (json.JSONDecodeError, TypeError):
+            return
+        if not isinstance(state, dict):
+            return
+        self._visual_servo_state = state
+        self._last_visual_servo_state_update = time.monotonic()
+        active_session = self._visual_servo_session_id
+        if active_session is None or str(state.get("session_id", "")) != active_session:
+            return
+        server_state = str(state.get("state", "UNKNOWN"))
+        if server_state == "ACTIVE":
+            if self._task_state != "EXECUTING":
+                self._task_event_ros_sec = float(self.get_clock().now().nanoseconds) * 1.0e-9
+            self._task_state = "EXECUTING"
+            self._task_message = (
+                "visual-servo active; "
+                f"applied sequence={state.get('sequence_applied')}, "
+                f"updates={state.get('update_count')}"
+            )
+        elif server_state == "HOLDING":
+            self._visual_servo_session_id = None
+            self._task_state = "SUCCEEDED"
+            self._task_event_ros_sec = float(self.get_clock().now().nanoseconds) * 1.0e-9
+            self._task_message = "visual-servo stopped; guarded endpoint HOLD is active"
+        elif server_state in {"WATCHDOG_HOLD", "FAULT", "REJECTED"}:
+            self._visual_servo_session_id = None
+            self._task_state = "FAILED"
+            self._task_event_ros_sec = float(self.get_clock().now().nanoseconds) * 1.0e-9
+            self._task_message = f"visual-servo {server_state}: {state.get('reason', '')}"
+
+    def _execute_candidate(self, candidate_id: str, requested_duration: object) -> None:
+        if self._active_goal is not None or self._visual_servo_session_id is not None:
             self._set_event("BLOCKED", f"another {self._mode} trajectory is active")
             return
         if not self._candidate_valid or not self._candidate_id:
@@ -488,6 +764,9 @@ class ArmGateway(Node):
         point.time_from_start.nanosec = int((duration - int(duration)) * 1_000_000_000)
         goal.trajectory.points = [point]
         self._task_state = "SENDING"
+        self._task_event_ros_sec = (
+            float(self.get_clock().now().nanoseconds) * 1.0e-9
+        )
         self._task_message = (
             f"submitting guarded {self._mode} goal for {self._candidate_changed_joints}; "
             f"duration={duration:.2f}s"
@@ -506,6 +785,9 @@ class ArmGateway(Node):
             return
         self._active_goal = goal_handle
         self._task_state = "EXECUTING"
+        self._task_event_ros_sec = (
+            float(self.get_clock().now().nanoseconds) * 1.0e-9
+        )
         self._task_message = f"{self._mode} trajectory executing"
         result_future = goal_handle.get_result_async()
         result_future.add_done_callback(self._on_goal_result)
@@ -542,10 +824,19 @@ class ArmGateway(Node):
             self._set_event("FAILED", f"trajectory failed: {result.error_code} {result.error_string}")
 
     def _cancel_active_goal(self) -> None:
+        if self._visual_servo_session_id is not None:
+            self._set_event(
+                "BLOCKED",
+                "visual-servo motion must be stopped with visual_servo_stop",
+            )
+            return
         if self._active_goal is None:
             self._set_event("IDLE", f"no active {self._mode} trajectory to cancel")
             return
         self._task_state = "CANCELLING"
+        self._task_event_ros_sec = (
+            float(self.get_clock().now().nanoseconds) * 1.0e-9
+        )
         self._task_message = "cancel requested"
         self._active_goal.cancel_goal_async()
 
@@ -553,8 +844,8 @@ class ArmGateway(Node):
         if not self._is_real:
             self._set_event("BLOCKED", "real hold is unavailable in MOCK mode")
             return
-        if self._active_goal is not None:
-            self._set_event("BLOCKED", "cancel the active trajectory before releasing hold")
+        if self._active_goal is not None or self._visual_servo_session_id is not None:
+            self._set_event("BLOCKED", "stop active motion before releasing hold")
             return
         self._hold_command_pub.publish(String(data="release"))
         self._set_event(
@@ -566,7 +857,7 @@ class ArmGateway(Node):
         if not self._is_real:
             self._set_event("BLOCKED", "real hold is unavailable in MOCK mode")
             return
-        if self._active_goal is not None:
+        if self._active_goal is not None or self._visual_servo_session_id is not None:
             self._set_event("BLOCKED", "cancel the active trajectory before resetting HOLD")
             return
         if self._hardware_status.get("hold", {}).get("state") != "FAULT":
@@ -583,8 +874,8 @@ class ArmGateway(Node):
         if not self._is_real:
             self._set_event("BLOCKED", "safe shutdown is available only for real hardware")
             return
-        if self._active_goal is not None:
-            self._set_event("BLOCKED", "cancel the active trajectory before safe shutdown")
+        if self._active_goal is not None or self._visual_servo_session_id is not None:
+            self._set_event("BLOCKED", "stop active motion before safe shutdown")
             return
         self._candidate_valid = False
         self._candidate_id = None
@@ -629,8 +920,8 @@ class ArmGateway(Node):
                     "BLOCKED", "select code2real&sim before entering Touch Anything"
                 )
                 return
-            if self._active_goal is not None:
-                self._set_event("BLOCKED", "cancel the active arm trajectory first")
+            if self._active_goal is not None or self._visual_servo_session_id is not None:
+                self._set_event("BLOCKED", "stop active arm motion first")
                 return
             if self._hardware_status.get("hold", {}).get("state") == "FAULT":
                 self._set_event("BLOCKED", "HOLD protection is faulted")
@@ -691,6 +982,9 @@ class ArmGateway(Node):
     def _set_event(self, state: str, message: str) -> None:
         self._task_state = state
         self._task_message = message
+        self._task_event_ros_sec = (
+            float(self.get_clock().now().nanoseconds) * 1.0e-9
+        )
         self.get_logger().info(f"{state}: {message}")
         self._publish_state()
 
@@ -738,6 +1032,7 @@ class ArmGateway(Node):
             and not any(torque_values)
             and not hold.get("holding")
             and self._active_goal is None
+            and self._visual_servo_session_id is None
         )
         touch_age = (
             None
@@ -745,6 +1040,12 @@ class ArmGateway(Node):
             else now - self._last_touch_state_update
         )
         touch_fresh = touch_age is not None and touch_age < 1.0
+        visual_servo_age = (
+            None
+            if self._last_visual_servo_state_update is None
+            else now - self._last_visual_servo_state_update
+        )
+        visual_servo_ready, visual_servo_ready_reason = self._visual_servo_ready()
         runtime_triggers = []
         for configured_trigger in self._config.get("triggers", []):
             trigger = dict(configured_trigger)
@@ -926,11 +1227,24 @@ class ArmGateway(Node):
                     and not hold_fault
                     and not code_torque_incomplete
                     and self._candidate_valid
+                    and self._visual_servo_session_id is None
                     and (not self._is_real or self._control_mode == "code2real&sim")
                 ),
                 "state": self._task_state,
                 "message": self._task_message,
                 "last_request_id": self._last_request_id,
+                "owner_request_id": self._visual_servo_owner_request_id,
+                "visual_servo_session_id": self._visual_servo_session_id,
+                "event_ros_sec": self._task_event_ros_sec,
+            },
+            "visual_servo": {
+                **self._visual_servo_state,
+                "ready": visual_servo_ready,
+                "ready_reason": visual_servo_ready_reason,
+                "state_age_sec": visual_servo_age,
+                "gateway_session_id": self._visual_servo_session_id,
+                "owner_request_id": self._visual_servo_owner_request_id,
+                "last_sequence_forwarded": self._visual_servo_last_sequence,
             },
             "shutdown": {
                 "safe_to_close": safe_to_close,

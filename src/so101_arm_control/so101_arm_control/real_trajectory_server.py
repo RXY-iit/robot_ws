@@ -36,6 +36,13 @@ from so101_arm_control.read_only_probe import (
     validate_port,
 )
 from so101_arm_control.real_read_only_joint_state_publisher import raw_positions_to_urdf
+from so101_arm_control.visual_servo import (
+    PROTOCOL as VISUAL_SERVO_PROTOCOL,
+    select_action_horizon_target,
+    validate_command as validate_visual_servo_command,
+    validate_sequence as validate_visual_servo_sequence,
+    watchdog_expired,
+)
 
 
 CONFIG_PATH = Path(
@@ -580,6 +587,22 @@ class RealTrajectoryServer(Node):
                 "follow_max_joint_velocity_rad_s"
             ].items()
         }
+        visual_servo = dict(config.get("visual_servo", {}))
+        if str(visual_servo.get("protocol")) != VISUAL_SERVO_PROTOCOL:
+            raise SafetyViolation("visual_servo protocol is missing or unsupported")
+        self._visual_servo_rate_hz = float(visual_servo["command_rate_hz"])
+        self._visual_servo_watchdog_sec = float(visual_servo["watchdog_sec"])
+        self._visual_servo_max_session_sec = float(visual_servo["max_session_sec"])
+        self._visual_servo_position_error_ticks = int(
+            visual_servo["position_error_ticks"]
+        )
+        self._visual_servo_position_error_samples = int(
+            visual_servo["position_error_samples"]
+        )
+        self._visual_servo_max_velocity = {
+            str(name): float(value)
+            for name, value in visual_servo["max_joint_velocity_rad_s"].items()
+        }
         if str(teleoperation.get("mapping")) != "absolute_align_then_follow":
             raise SafetyViolation("Only absolute_align_then_follow teleoperation is audited")
         if self._teleop_feedback_timeout_sec <= 0.0:
@@ -607,6 +630,10 @@ class RealTrajectoryServer(Node):
             raise SafetyViolation(
                 "teleoperation follow velocity limits must cover every configured motor"
             )
+        if set(self._visual_servo_max_velocity) != expected_motors:
+            raise SafetyViolation(
+                "visual-servo velocity limits must cover every configured motor"
+            )
         invalid_teleop_velocities = {
             f"{profile}.{name}": value
             for profile, limits in (
@@ -620,6 +647,29 @@ class RealTrajectoryServer(Node):
             raise SafetyViolation(
                 f"teleoperation velocity limits must be finite and positive: "
                 f"{invalid_teleop_velocities}"
+            )
+        invalid_visual_servo_velocities = {
+            name: value for name, value in self._visual_servo_max_velocity.items()
+            if value <= 0.0 or not math.isfinite(value)
+        }
+        if invalid_visual_servo_velocities:
+            raise SafetyViolation(
+                "visual-servo velocity limits must be finite and positive: "
+                f"{invalid_visual_servo_velocities}"
+            )
+        if not 10.0 <= self._visual_servo_rate_hz <= 50.0:
+            raise SafetyViolation("visual-servo command rate must be within [10, 50] Hz")
+        if not 0.15 <= self._visual_servo_watchdog_sec <= 0.75:
+            raise SafetyViolation("visual-servo watchdog must be within [0.15, 0.75] s")
+        if not 0.5 <= self._visual_servo_max_session_sec <= 60.0:
+            raise SafetyViolation("visual-servo session limit must be within [0.5, 10] s")
+        if self._visual_servo_position_error_ticks <= self._hold_position_error_ticks:
+            raise SafetyViolation(
+                "visual-servo position error must exceed rigid HOLD threshold"
+            )
+        if self._visual_servo_position_error_samples < self._hold_position_error_samples_required:
+            raise SafetyViolation(
+                "visual-servo position error samples must be at least HOLD samples"
             )
         if set(self._resistance_current) != expected_motors:
             raise SafetyViolation("resistance_current_raw must cover every configured motor")
@@ -672,6 +722,26 @@ class RealTrajectoryServer(Node):
         self._teleop_clamped: dict[str, dict[str, int]] = {}
         self._teleop_aligning = False
         self._teleop_initial_target_raw: dict[str, int] = {}
+        self._visual_servo_session_id: str | None = None
+        self._visual_servo_last_session_id: str | None = None
+        self._visual_servo_sequence = -1
+        self._visual_servo_requested_rad: dict[str, float] = {}
+        self._visual_servo_applied_raw: dict[str, int] = {}
+        self._visual_servo_last_update: float | None = None
+        self._visual_servo_last_apply: float | None = None
+        self._visual_servo_started: float | None = None
+        self._visual_servo_state = "INACTIVE"
+        self._visual_servo_reason = "no session"
+        self._visual_servo_update_count = 0
+        self._visual_servo_action_horizon: list[dict[str, float]] = []
+        self._visual_servo_horizon_step_period_sec = 0.0
+        self._visual_servo_horizon_started: float | None = None
+        self._visual_servo_horizon_plan_id = ""
+        self._visual_servo_horizon_index = -1
+        self._visual_servo_horizon_replan_count = 0
+        self._visual_servo_observation_age_sec = 0.0
+        self._visual_servo_prediction_lead_sec = 0.0
+        self._visual_servo_lock = threading.RLock()
         self._control_mode = str(config.get("default_control_mode", "real2sim"))
         if self._control_mode not in CONTROL_MODES:
             raise SafetyViolation(f"Invalid default control mode: {self._control_mode}")
@@ -721,8 +791,15 @@ class RealTrajectoryServer(Node):
             JointTrajectoryControllerState, "/arm_controller/controller_state", 20
         )
         self._health_pub = self.create_publisher(String, "/arm/hardware_status", 10)
+        self._visual_servo_state_pub = self.create_publisher(
+            String, "/arm/visual_servo_state", 20
+        )
         self.create_subscription(String, "/arm/control_mode", self._on_control_mode, 10)
         self.create_subscription(String, "/arm/hold_command", self._on_hold_command, 10)
+        self.create_subscription(
+            String, "/arm/visual_servo_command",
+            self._on_visual_servo_command, 50,
+        )
         self.create_subscription(
             String, "/arm/leader_status", self._on_leader_status, 20
         )
@@ -746,6 +823,11 @@ class RealTrajectoryServer(Node):
         self.create_timer(
             1.0 / self._teleop_command_rate_hz,
             self._teleop_tick,
+            callback_group=callbacks,
+        )
+        self.create_timer(
+            1.0 / self._visual_servo_rate_hz,
+            self._visual_servo_tick,
             callback_group=callbacks,
         )
         self.get_logger().warning(
@@ -1294,6 +1376,12 @@ class RealTrajectoryServer(Node):
             self._teleop_clamped = {}
             self._teleop_aligning = False
             self._teleop_initial_target_raw = {}
+            visual_session = getattr(self, "_visual_servo_session_id", None)
+            if visual_session is not None:
+                self._visual_servo_last_session_id = visual_session
+            self._visual_servo_session_id = None
+            self._visual_servo_state = "FAULT" if fault or errors else "INACTIVE"
+            self._visual_servo_reason = reason
         return errors
 
     def _on_hold_command(self, message: String) -> None:
@@ -1425,12 +1513,19 @@ class RealTrajectoryServer(Node):
                 return
             targets = dict(self._hold_targets_raw)
             control_mode = self._control_mode
+            visual_servo_active = self._visual_servo_session_id is not None
         position_error_ticks = (
+            self._visual_servo_position_error_ticks
+            if visual_servo_active
+            else
             self._teleop_position_error_ticks
             if control_mode == TELEOP_CONTROL_MODE
             else self._hold_position_error_ticks
         )
         position_error_samples = (
+            self._visual_servo_position_error_samples
+            if visual_servo_active
+            else
             self._teleop_position_error_samples
             if control_mode == TELEOP_CONTROL_MODE
             else self._hold_position_error_samples_required
@@ -1528,6 +1623,323 @@ class RealTrajectoryServer(Node):
         except Exception as exc:
             self.get_logger().error(f"Hold monitor failed; releasing torque: {exc}")
             self._release_hold(f"hold monitor exception: {exc}", fault=True)
+
+    def _visual_servo_target_raw(
+        self, requested: dict[str, float]
+    ) -> dict[str, int]:
+        targets: dict[str, int] = {}
+        for spec, motor_name in zip(self._joint_specs, self._motor_names):
+            learned_min, learned_max = self._learned_bounds(motor_name)
+            targets[motor_name] = urdf_radians_to_raw(
+                motor_name,
+                float(requested[str(spec["name"])]),
+                spec,
+                self._calibration,
+                self._target_margin,
+                learned_min,
+                learned_max,
+            )
+        return targets
+
+    def _on_visual_servo_command(self, message: String) -> None:
+        try:
+            payload = json.loads(message.data)
+        except json.JSONDecodeError as exc:
+            self.get_logger().error(f"Visual-servo command has invalid JSON: {exc}")
+            return
+        command, errors = validate_visual_servo_command(payload, self._joint_specs)
+        if errors:
+            self.get_logger().error(
+                "Visual-servo command rejected: " + "; ".join(errors)
+            )
+            return
+        with self._visual_servo_lock:
+            with self._state_lock:
+                active_session = self._visual_servo_session_id
+                last_sequence = self._visual_servo_sequence
+                trajectory_active = self._active
+                control_mode = self._control_mode
+                hold_ready = self._holding and self._hold_state == "HOLDING"
+                hold_targets = dict(self._hold_targets_raw)
+            sequence_error = validate_visual_servo_sequence(
+                op=command["op"],
+                session_id=command["session_id"],
+                sequence=command["sequence"],
+                active_session_id=active_session,
+                last_sequence=last_sequence,
+            )
+            if sequence_error is None and trajectory_active:
+                sequence_error = "FollowJointTrajectory is active"
+            if sequence_error is None and control_mode != COMMAND_CONTROL_MODE:
+                sequence_error = f"control mode is {control_mode}"
+            if sequence_error is None and not hold_ready:
+                sequence_error = "verified six-axis HOLD is not ready"
+            if sequence_error is not None:
+                if active_session is not None:
+                    self.get_logger().error(
+                        "Visual-servo active-session command rejected; entering HOLD: "
+                        + sequence_error
+                    )
+                    self._visual_servo_watchdog_hold(
+                        "active-session command rejected: " + sequence_error
+                    )
+                    return
+                with self._state_lock:
+                    self._visual_servo_state = "REJECTED"
+                    self._visual_servo_reason = sequence_error
+                self.get_logger().error(
+                    f"Visual-servo command rejected: {sequence_error}"
+                )
+                self._publish_visual_servo_state()
+                return
+            now = time.monotonic()
+            if command["op"] in {"START", "UPDATE"}:
+                try:
+                    self._visual_servo_target_raw(command["positions"])
+                except Exception as exc:
+                    if active_session is not None:
+                        self.get_logger().error(
+                            "Visual-servo target conversion failed during active "
+                            f"session; entering HOLD: {exc}"
+                        )
+                        self._visual_servo_watchdog_hold(
+                            f"active target rejected: {exc}"
+                        )
+                        return
+                    with self._state_lock:
+                        self._visual_servo_state = "REJECTED"
+                        self._visual_servo_reason = str(exc)
+                    self._publish_visual_servo_state()
+                    return
+            stop_hold_targets: dict[str, int] = {}
+            if command["op"] == "STOP":
+                try:
+                    # STOP is a safety boundary, not permission to finish the
+                    # last unconsumed action tail. Seed Goal_Position from the
+                    # measured pose before acknowledging HOLDING so motion
+                    # cannot continue toward a now-invalid visual target.
+                    stop_hold_targets = self._continue_hold_at_current_pose(
+                        "visual-servo STOP; current-pose HOLD"
+                    )
+                except Exception as exc:
+                    self.get_logger().error(
+                        "Visual-servo STOP could not establish current-pose "
+                        f"HOLD: {exc}"
+                    )
+                    self._visual_servo_watchdog_hold(
+                        f"STOP current-pose HOLD failed: {exc}"
+                    )
+                    return
+            with self._state_lock:
+                if command["op"] == "START":
+                    self._visual_servo_session_id = command["session_id"]
+                    self._visual_servo_last_session_id = command["session_id"]
+                    self._visual_servo_started = now
+                    self._visual_servo_last_apply = now
+                    self._visual_servo_applied_raw = dict(hold_targets)
+                    self._visual_servo_update_count = 0
+                    self._visual_servo_state = "ACTIVE"
+                    self._visual_servo_reason = "visual-servo session started"
+                    self._hold_reason = (
+                        "visual-servo active; guarded targets update inside monitored HOLD"
+                    )
+                elif command["op"] == "STOP":
+                    self._visual_servo_session_id = None
+                    self._visual_servo_state = "HOLDING"
+                    self._visual_servo_reason = command["reason"] or "normal stop"
+                    self._hold_reason = (
+                        "visual-servo stopped; current measured pose is held"
+                    )
+                    self._visual_servo_applied_raw = dict(stop_hold_targets)
+                if command["op"] in {"START", "UPDATE"}:
+                    self._visual_servo_requested_rad = dict(command["positions"])
+                    self._visual_servo_last_update = now
+                    self._visual_servo_update_count += 1
+                    self._visual_servo_action_horizon = [
+                        dict(point) for point in command["action_horizon"]
+                    ]
+                    self._visual_servo_horizon_step_period_sec = float(
+                        command["horizon_step_period_sec"]
+                    )
+                    self._visual_servo_horizon_plan_id = str(
+                        command["horizon_plan_id"]
+                    )
+                    self._visual_servo_observation_age_sec = float(
+                        command["observation_age_sec"]
+                    )
+                    self._visual_servo_prediction_lead_sec = float(
+                        command["prediction_lead_sec"]
+                    )
+                    if self._visual_servo_action_horizon:
+                        ros_now = (
+                            float(self.get_clock().now().nanoseconds) * 1.0e-9
+                        )
+                        duration = (
+                            len(self._visual_servo_action_horizon)
+                            * self._visual_servo_horizon_step_period_sec
+                        )
+                        transport_age = min(
+                            duration,
+                            max(0.0, ros_now - float(command["issued_ros_sec"])),
+                        )
+                        self._visual_servo_horizon_started = now - transport_age
+                        self._visual_servo_horizon_index = 0
+                        self._visual_servo_horizon_replan_count += 1
+                    else:
+                        self._visual_servo_horizon_started = None
+                        self._visual_servo_horizon_index = -1
+                self._visual_servo_sequence = int(command["sequence"])
+        self._publish_visual_servo_state()
+
+    def _visual_servo_watchdog_hold(self, reason: str) -> None:
+        try:
+            held = self._continue_hold_at_current_pose(
+                "visual-servo safety stop: " + reason
+            )
+            state = "WATCHDOG_HOLD"
+        except Exception as exc:
+            self.get_logger().error(
+                f"Visual-servo watchdog could not hold current pose: {exc}"
+            )
+            self._release_hold(
+                f"VISUAL_SERVO_WATCHDOG_FAULT: {reason}; {exc}", fault=True
+            )
+            held = {}
+            state = "FAULT"
+            reason = f"{reason}; current-pose HOLD failed: {exc}"
+        with self._state_lock:
+            self._visual_servo_session_id = None
+            self._visual_servo_state = state
+            self._visual_servo_reason = reason
+            if held:
+                self._visual_servo_applied_raw = dict(held)
+        self._publish_visual_servo_state()
+
+    def _visual_servo_tick(self) -> None:
+        with self._visual_servo_lock:
+            with self._state_lock:
+                session_id = self._visual_servo_session_id
+                requested = dict(self._visual_servo_requested_rad)
+                previous = dict(self._visual_servo_applied_raw)
+                last_update = self._visual_servo_last_update
+                last_apply = self._visual_servo_last_apply
+                started = self._visual_servo_started
+                sequence = self._visual_servo_sequence
+                action_horizon = [
+                    dict(point) for point in self._visual_servo_action_horizon
+                ]
+                horizon_step_period = self._visual_servo_horizon_step_period_sec
+                horizon_started = self._visual_servo_horizon_started
+                control_mode = self._control_mode
+                hold_ready = self._holding and self._hold_state == "HOLDING"
+            if session_id is None:
+                self._publish_visual_servo_state()
+                return
+            now = time.monotonic()
+            stop_reason = None
+            if control_mode != COMMAND_CONTROL_MODE:
+                stop_reason = f"control mode changed to {control_mode}"
+            elif not hold_ready:
+                stop_reason = "monitored HOLD became unavailable"
+            elif watchdog_expired(
+                last_update, self._visual_servo_watchdog_sec,
+                now_monotonic=now,
+            ):
+                stop_reason = "command watchdog expired"
+            elif started is None or now - started > self._visual_servo_max_session_sec:
+                stop_reason = "maximum session duration exceeded"
+            if stop_reason is not None:
+                self._visual_servo_watchdog_hold(stop_reason)
+                return
+            try:
+                horizon_index = -1
+                if action_horizon and horizon_started is not None:
+                    requested, horizon_index = select_action_horizon_target(
+                        action_horizon,
+                        elapsed_since_issue_sec=max(0.0, now - horizon_started),
+                        step_period_sec=horizon_step_period,
+                    )
+                requested_raw = self._visual_servo_target_raw(requested)
+                nominal_period = 1.0 / self._visual_servo_rate_hz
+                elapsed = nominal_period if last_apply is None else now - last_apply
+                elapsed = min(0.2, max(nominal_period * 0.5, elapsed))
+                targets: dict[str, int] = {}
+                for spec, motor_name in zip(self._joint_specs, self._motor_names):
+                    raw_span = (
+                        int(self._calibration[motor_name]["range_max"])
+                        - int(self._calibration[motor_name]["range_min"])
+                    )
+                    rad_span = float(spec["upper"]) - float(spec["lower"])
+                    max_step = max(1, int(math.ceil(
+                        self._visual_servo_max_velocity[motor_name]
+                        * elapsed * raw_span / rad_span
+                    )))
+                    old = int(previous[motor_name])
+                    targets[motor_name] = min(
+                        old + max_step,
+                        max(old - max_step, int(requested_raw[motor_name])),
+                    )
+                with self._bus_lock:
+                    self._bus.active_motors = set(MOTOR_NAMES)
+                    self._bus.sync_write(
+                        "Goal_Position", targets, normalize=False, num_retry=2
+                    )
+                _names, desired, _clipped = raw_positions_to_urdf(
+                    targets, self._calibration, 0
+                )
+                with self._state_lock:
+                    if (
+                        self._visual_servo_session_id != session_id
+                        or self._visual_servo_sequence != sequence
+                    ):
+                        return
+                    self._visual_servo_applied_raw = dict(targets)
+                    self._visual_servo_horizon_index = horizon_index
+                    self._visual_servo_last_apply = now
+                    self._hold_targets_raw = dict(targets)
+                    self._desired = desired
+                    self._visual_servo_state = "ACTIVE"
+                    self._visual_servo_reason = (
+                        "target applied under velocity and learned-limit guards"
+                    )
+            except Exception as exc:
+                self.get_logger().error(f"Visual-servo command failed: {exc}")
+                self._visual_servo_watchdog_hold(f"command failure: {exc}")
+                return
+        self._publish_visual_servo_state()
+
+    def _publish_visual_servo_state(self) -> None:
+        with self._state_lock:
+            payload = {
+                "schema_version": 1,
+                "protocol": VISUAL_SERVO_PROTOCOL,
+                "capable": True,
+                "mode": "REAL_DASHBOARD_TEST",
+                "state": self._visual_servo_state,
+                "reason": self._visual_servo_reason,
+                "session_id": (
+                    self._visual_servo_session_id
+                    or self._visual_servo_last_session_id
+                ),
+                "sequence_applied": self._visual_servo_sequence,
+                "update_count": self._visual_servo_update_count,
+                "requested_positions": dict(self._visual_servo_requested_rad),
+                "applied_target_raw": dict(self._visual_servo_applied_raw),
+                "watchdog_sec": self._visual_servo_watchdog_sec,
+                "command_rate_hz": self._visual_servo_rate_hz,
+                "max_session_sec": self._visual_servo_max_session_sec,
+                "active": self._visual_servo_session_id is not None,
+                "action_horizon_plan_id": self._visual_servo_horizon_plan_id,
+                "action_horizon_length": len(self._visual_servo_action_horizon),
+                "action_horizon_index": self._visual_servo_horizon_index,
+                "action_horizon_replan_count": self._visual_servo_horizon_replan_count,
+                "action_horizon_step_period_sec": self._visual_servo_horizon_step_period_sec,
+                "observation_age_sec": self._visual_servo_observation_age_sec,
+                "prediction_lead_sec": self._visual_servo_prediction_lead_sec,
+            }
+        self._visual_servo_state_pub.publish(
+            String(data=json.dumps(payload, sort_keys=True))
+        )
 
     def _on_leader_status(self, message: String) -> None:
         try:
@@ -1819,7 +2231,7 @@ class RealTrajectoryServer(Node):
     def _goal(self, request: FollowJointTrajectory.Goal) -> GoalResponse:
         errors = trajectory_errors(self._joint_specs, request.trajectory, self._max_duration)
         with self._state_lock:
-            busy = self._active
+            busy = self._active or self._visual_servo_session_id is not None
             control_mode = self._control_mode
             hold_fault = self._hold_state == "FAULT"
             hold_ready = self._holding or self._hold_state == "MANUAL_RELEASED"
@@ -2232,6 +2644,12 @@ class RealTrajectoryServer(Node):
                 self._hold_temperature_counts = {name: 0 for name in MOTOR_NAMES}
                 self._active_motors = set(MOTOR_NAMES)
             cleanup_required = False
+            # Publish the measured terminal JointState before completing the
+            # action. During execution the periodic publisher can be waiting
+            # behind the servo-bus lock; without this explicit sample, tf2 may
+            # still expose only the pre-motion arm/touch_tip pose when clients
+            # receive the action result.
+            self._publish_cached_state_best_effort("successful trajectory completion")
             goal_handle.succeed()
             with self._state_lock:
                 self._last_motion_report = {
@@ -2302,6 +2720,10 @@ class RealTrajectoryServer(Node):
                     "peak_current_raw": peak_currents,
                     "reason": str(exc),
                 }
+            # A retryable motion can also end while the periodic JointState
+            # timer is delayed. Make its measured HOLD pose visible before the
+            # action result so Cartesian recovery starts from reality.
+            self._publish_cached_state_best_effort("aborted trajectory completion")
             goal_handle.abort()
             result.error_code = result.PATH_TOLERANCE_VIOLATED
             result.error_string = str(exc)
@@ -2339,25 +2761,40 @@ class RealTrajectoryServer(Node):
         feedback.error.positions = [want - have for want, have in zip(desired, actual)]
         goal_handle.publish_feedback(feedback)
 
+    def _publish_cached_state(self) -> None:
+        """Publish the latest measured state without another servo-bus read."""
+        with self._state_lock:
+            positions = list(self._positions)
+            desired = list(self._desired)
+        stamp = self.get_clock().now().to_msg()
+        joint = JointState()
+        joint.header.stamp = stamp
+        joint.name = list(self._joint_names)
+        joint.position = positions
+        self._joint_pub.publish(joint)
+        controller = JointTrajectoryControllerState()
+        controller.header.stamp = stamp
+        controller.joint_names = list(self._joint_names)
+        controller.actual.positions = positions
+        controller.desired.positions = desired
+        controller.error.positions = [
+            want - have for want, have in zip(desired, positions)
+        ]
+        self._controller_pub.publish(controller)
+
+    def _publish_cached_state_best_effort(self, context: str) -> None:
+        """Expose terminal feedback without changing the action outcome."""
+        try:
+            self._publish_cached_state()
+        except Exception as exc:
+            self.get_logger().error(
+                f"Terminal feedback publish failed after {context}: {exc}"
+            )
+
     def _publish_state(self) -> None:
         try:
             self._refresh_positions()
-            with self._state_lock:
-                positions = list(self._positions)
-                desired = list(self._desired)
-            stamp = self.get_clock().now().to_msg()
-            joint = JointState()
-            joint.header.stamp = stamp
-            joint.name = list(self._joint_names)
-            joint.position = positions
-            self._joint_pub.publish(joint)
-            controller = JointTrajectoryControllerState()
-            controller.header.stamp = stamp
-            controller.joint_names = list(self._joint_names)
-            controller.actual.positions = positions
-            controller.desired.positions = desired
-            controller.error.positions = [want - have for want, have in zip(desired, positions)]
-            self._controller_pub.publish(controller)
+            self._publish_cached_state()
         except Exception as exc:
             self.get_logger().error(f"Real feedback publish failed: {exc}")
 
@@ -2388,6 +2825,21 @@ class RealTrajectoryServer(Node):
                 teleop_clamped = dict(self._teleop_clamped)
                 teleop_aligning = self._teleop_aligning
                 teleop_initial_target = dict(self._teleop_initial_target_raw)
+                visual_servo_health = {
+                    "protocol": VISUAL_SERVO_PROTOCOL,
+                    "capable": True,
+                    "state": self._visual_servo_state,
+                    "reason": self._visual_servo_reason,
+                    "active": self._visual_servo_session_id is not None,
+                    "session_id": (
+                        self._visual_servo_session_id
+                        or self._visual_servo_last_session_id
+                    ),
+                    "sequence_applied": self._visual_servo_sequence,
+                    "update_count": self._visual_servo_update_count,
+                    "watchdog_sec": self._visual_servo_watchdog_sec,
+                    "command_rate_hz": self._visual_servo_rate_hz,
+                }
             allowed_torque = active_motors if active or holding else set()
             unexpected = {
                 name: int(value)
@@ -2448,6 +2900,7 @@ class RealTrajectoryServer(Node):
                     ),
                     "goal_acceptance_tolerance_ticks": self._goal_tolerance_ticks,
                 },
+                "visual_servo": visual_servo_health,
                 "teleoperation": {
                     "ready": leader_ready,
                     "active": bool(

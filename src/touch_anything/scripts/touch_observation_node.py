@@ -17,17 +17,26 @@ from pathlib import Path
 import sys
 import threading
 import time
+import traceback
 from typing import Any
 import uuid
 
 import cv2
 from cv_bridge import CvBridge
-from geometry_msgs.msg import Point, PointStamped, PoseStamped, Twist
+from geometry_msgs.msg import Point, PointStamped, PoseStamped, TransformStamped, Twist
 import numpy as np
 import rclpy
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
+from rclpy.executors import MultiThreadedExecutor
 from rclpy.duration import Duration
 from rclpy.node import Node
-from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
+from rclpy.qos import (
+    DurabilityPolicy,
+    HistoryPolicy,
+    QoSProfile,
+    ReliabilityPolicy,
+    qos_profile_sensor_data,
+)
 from rclpy.time import Time
 from sensor_msgs.msg import CameraInfo, Image, JointState
 from std_msgs.msg import Bool, Float32, String
@@ -42,15 +51,29 @@ from touch_kinematics import (
     solve_near_tip_alignment,
     solve_near_forward_press,
     solve_pre_touch,
+    tip_transform,
 )
 from approach_geometry import (
     base_yz_pixel_alignment_delta,
+    compensated_cartesian_delta,
+    diagnostic_visualization_should_defer,
+    empirical_image_center_alignment_delta,
     monocular_lateral_target,
+    mild_single_motor_hold_entry_overrun,
     next_approach_waypoint,
     pixel_inside_mask,
+    phase_sam_minimum_score,
+    phase_tracking_area_ratio_bounds,
     project_camera_point,
+    receding_joint_action_horizon,
+    rolling_approach_phase,
+    rolling_forward_target_x,
+    rolling_tracker_freshness_gate,
+    rolling_z_motion_compensation,
+    should_retreat_for_too_close,
     validate_tracking_continuity,
 )
+from target_tracker import ContinuousTargetTracker, TrackerConfig
 
 
 # Keep third-party code and its small Python dependencies local to this
@@ -69,6 +92,98 @@ def stamp_seconds(message: Any) -> float:
     return float(stamp.sec) + float(stamp.nanosec) * 1.0e-9
 
 
+def post_motion_tf_rejection_reason(
+    transform_stamp_sec: float,
+    now_ros_sec: float,
+    minimum_completion_stamp: float | None,
+    maximum_age_sec: float,
+) -> str | None:
+    """Explain why a TF sample is not valid post-motion evidence."""
+    if transform_stamp_sec <= 0.0:
+        return "latest Arm TF has no dynamic timestamp"
+    if (
+        minimum_completion_stamp is not None
+        and transform_stamp_sec < minimum_completion_stamp
+    ):
+        return (
+            "latest Arm TF predates the completed motion: "
+            f"stamp={transform_stamp_sec:.6f}s, required>="
+            f"{minimum_completion_stamp:.6f}s"
+        )
+    age_sec = now_ros_sec - transform_stamp_sec
+    if age_sec > maximum_age_sec:
+        return (
+            f"latest Arm TF is still pre-motion/stale: age={age_sec:.3f}s "
+            f"(limit {maximum_age_sec:.3f}s)"
+        )
+    if age_sec < -0.5:
+        return (
+            f"latest Arm TF is {abs(age_sec):.3f}s in the future; "
+            "ROS clocks are not synchronized"
+        )
+    return None
+
+
+def motion_tracking_evidence(
+    successful_frame_stamps: list[float],
+    dispatch_stamp_sec: float,
+    completion_stamp_sec: float,
+    minimum_frames: int,
+    maximum_gap_sec: float,
+) -> dict[str, Any]:
+    """Prove that successful tracker updates covered one arm-motion window.
+
+    Merely seeing a healthy tracker before and after a trajectory is not
+    evidence that tracking ran *during* motion.  Retain the successful image
+    stamps and require both a minimum sample count and bounded gaps, including
+    the two motion-window boundaries.
+    """
+    start = float(dispatch_stamp_sec)
+    end = float(completion_stamp_sec)
+    required = max(1, int(minimum_frames))
+    gap_limit = float(maximum_gap_sec)
+    stamps = sorted({
+        float(stamp) for stamp in successful_frame_stamps
+        if math.isfinite(float(stamp)) and start < float(stamp) <= end
+    })
+    boundary_stamps = [start, *stamps, end]
+    gaps = [
+        boundary_stamps[index + 1] - boundary_stamps[index]
+        for index in range(len(boundary_stamps) - 1)
+    ]
+    maximum_observed_gap = max(gaps, default=math.inf)
+    valid_window = bool(
+        math.isfinite(start)
+        and math.isfinite(end)
+        and end > start
+        and math.isfinite(gap_limit)
+        and gap_limit > 0.0
+    )
+    continuous = bool(
+        valid_window
+        and len(stamps) >= required
+        and maximum_observed_gap <= gap_limit
+    )
+    return {
+        "continuous": continuous,
+        "dispatch_stamp_sec": start,
+        "completion_stamp_sec": end,
+        "motion_window_sec": end - start,
+        "successful_frame_count": len(stamps),
+        "minimum_required_frames": required,
+        "first_successful_frame_stamp_sec": stamps[0] if stamps else None,
+        "last_successful_frame_stamp_sec": stamps[-1] if stamps else None,
+        "maximum_gap_sec": maximum_observed_gap,
+        "maximum_allowed_gap_sec": gap_limit,
+        "reason": (
+            "successful tracker frames continuously covered the arm motion"
+            if continuous else
+            f"tracker coverage failed: frames={len(stamps)}/{required}, "
+            f"maximum gap={maximum_observed_gap:.3f}s/{gap_limit:.3f}s"
+        ),
+    }
+
+
 def jsonable(value: Any) -> Any:
     """Convert NumPy-derived evidence without silently allowing NaN."""
     if isinstance(value, np.ndarray):
@@ -80,6 +195,57 @@ def jsonable(value: Any) -> Any:
     if isinstance(value, (list, tuple)):
         return [jsonable(item) for item in value]
     return value
+
+
+def arm_frame_geometry_evidence(frame: dict[str, Any]) -> dict[str, Any]:
+    """Serialize Arm-camera geometry without requiring it on tracker frames.
+
+    KLT/ORB frames deliberately contain RGB and a stamp only. SAM semantic
+    recovery may save one of those frames before operator confirmation; the
+    absent CameraInfo/TF is evidence state, not target loss.
+    """
+    required = (
+        "camera_matrix",
+        "distortion_model",
+        "distortion",
+        "base_from_camera_translation",
+        "base_from_camera_rotation",
+    )
+    ready = bool(frame.get("geometry_ready")) and all(
+        key in frame for key in required
+    )
+    if not ready:
+        return {
+            "geometry_ready": False,
+            "camera_info": None,
+            "tf_base_link_from_arm_camera": None,
+        }
+    translation = np.asarray(
+        frame["base_from_camera_translation"], dtype=np.float64
+    )
+    return {
+        "geometry_ready": True,
+        "camera_info": {
+            "k": np.asarray(frame["camera_matrix"], dtype=np.float64)
+            .reshape(-1).tolist(),
+            "distortion_model": frame["distortion_model"],
+            "d": jsonable(frame["distortion"]),
+        },
+        "tf_base_link_from_arm_camera": {
+            "translation_m": translation.tolist(),
+            "rotation_matrix": np.asarray(
+                frame["base_from_camera_rotation"], dtype=np.float64
+            ).tolist(),
+            "distance_from_base_link_origin_m": float(np.linalg.norm(translation)),
+        },
+    }
+
+
+def approach_motion_request_in_flight(
+    preview_request_id: str | None, execute_request_id: str | None
+) -> bool:
+    """True while a visual step is owned by the Arm gateway."""
+    return preview_request_id is not None or execute_request_id is not None
 
 
 def depth_to_meters(depth: np.ndarray, encoding: str, scale: float) -> np.ndarray:
@@ -307,6 +473,7 @@ class TouchObservationNode(Node):
         )
         self.declare_parameter("camera_info_topic", "/camera/camera/color/camera_info")
         self.declare_parameter("arm_color_topic", "/arm_camera/color/image_raw")
+        self.declare_parameter("arm_camera_max_receive_age_sec", 1.0)
         self.declare_parameter("arm_camera_info_topic", "/arm_camera/color/camera_info")
         self.declare_parameter("target_frame", "base_link")
         self.declare_parameter("depth_scale_m_per_unit", 0.001)
@@ -335,7 +502,8 @@ class TouchObservationNode(Node):
         self.declare_parameter("approach_step_distance_m", 0.005)
         self.declare_parameter("approach_large_max_lateral_step_m", 0.060)
         self.declare_parameter("approach_aligned_press_step_distance_m", 0.025)
-        self.declare_parameter("approach_press_entry_tolerance_px", 20.0)
+        self.declare_parameter("approach_press_entry_tolerance_px", 35.0)
+        self.declare_parameter("approach_tip_align_elbow_mild_excess_ticks", 5)
         self.declare_parameter("approach_too_close_mask_fraction", 0.15)
         self.declare_parameter("approach_too_close_retreat_m", 0.005)
         self.declare_parameter("approach_near_advance_distance_m", 0.035)
@@ -343,30 +511,140 @@ class TouchObservationNode(Node):
         self.declare_parameter("approach_alignment_tolerance_m", 0.003)
         self.declare_parameter("approach_max_lateral_step_m", 0.005)
         self.declare_parameter("approach_max_ik_error_m", 0.003)
-        self.declare_parameter("touch_gripper_position_rad", 1.045)
+        # PRESS is explicitly authorized by the operator after inspecting the
+        # wrist-camera image.  It therefore uses a wider, stage-specific IK
+        # residual envelope than autonomous FAR/NEAR alignment.  Joint limits,
+        # finite solver output, +X direction and the total travel bound remain
+        # mandatory.
+        self.declare_parameter("approach_press_max_ik_error_m", 0.020)
+        self.declare_parameter("approach_press_recovery_step_m", 0.025)
+        self.declare_parameter("touch_gripper_position_rad", 1.549)
+        self.declare_parameter("approach_near_z_first_tolerance_px", 15.0)
+        self.declare_parameter("approach_near_max_rotation_error_deg", 5.0)
         self.declare_parameter("automatic_approach_after_confirmation", True)
         self.declare_parameter("automatic_approach_max_steps", 24)
         self.declare_parameter("automatic_approach_timeout_sec", 180.0)
         self.declare_parameter("automatic_approach_settle_sec", 0.75)
+        # The outer visual loop runs at 10 Hz.  Do not always idle for the old
+        # fixed settle delay: observe the real touch-tip TF and reacquire as
+        # soon as a short window is stable.  A bounded maximum wait prevents a
+        # permanently noisy TF source from hanging the Touch state machine.
+        self.declare_parameter("automatic_approach_min_settle_sec", 0.20)
+        self.declare_parameter("automatic_approach_stability_window_sec", 0.30)
+        self.declare_parameter("automatic_approach_stability_span_m", 0.0025)
+        self.declare_parameter("automatic_approach_stability_max_wait_sec", 1.20)
+        self.declare_parameter("automatic_approach_stability_hard_span_m", 0.008)
+        # During the supervised Touch demo, a finite but noisy TF span must not
+        # permanently stop the closed loop.  After the bounded wait, reacquire
+        # from the latest measured pose and keep trying until the operator
+        # stops the workflow.  A missing/non-finite TF remains a hard failure.
+        self.declare_parameter("automatic_approach_continue_when_unstable", True)
         self.declare_parameter("automatic_arm_target_max_shift_px", 90.0)
-        self.declare_parameter("automatic_arm_target_min_area_ratio", 0.35)
         self.declare_parameter("automatic_arm_target_max_area_ratio", 3.0)
+        self.declare_parameter("automatic_arm_target_near_max_area_ratio", 12.0)
+        self.declare_parameter("automatic_arm_target_far_min_area_ratio", 0.20)
+        self.declare_parameter("automatic_arm_target_near_min_area_ratio", 0.05)
         self.declare_parameter("approach_cartesian_coarse_max_error_m", 0.040)
         self.declare_parameter("approach_cartesian_press_max_error_m", 0.020)
+        self.declare_parameter("approach_cartesian_align_max_error_m", 0.008)
         self.declare_parameter("approach_cartesian_min_progress_ratio", 0.30)
         self.declare_parameter("approach_cartesian_correctable_max_error_m", 0.060)
         self.declare_parameter("approach_cartesian_max_correction_retries", 3)
+        # The guarded trajectory server owns the servo bus while executing, so
+        # its periodic /joint_states publication can be delayed until the
+        # action callback releases that bus.  Wait for a post-motion Arm TF
+        # sample before judging the Cartesian endpoint; an old, internally
+        # self-consistent TF is not evidence of the pose just reached.
+        self.declare_parameter("approach_cartesian_feedback_max_age_sec", 0.75)
+        self.declare_parameter("approach_cartesian_feedback_wait_sec", 3.0)
+        # A terminal gateway state and its JointState/TF may arrive in either
+        # order. Require a sample from the completion window, then wait for the
+        # next sample instead of accepting a fresh-looking pre-motion pose.
+        self.declare_parameter("approach_cartesian_completion_tf_slack_sec", 0.25)
+        self.declare_parameter("approach_cartesian_correction_step_max_m", 0.030)
+        self.declare_parameter("approach_cartesian_correction_min_improvement_m", 0.003)
+        self.declare_parameter("approach_cartesian_correction_min_improvement_ratio", 0.20)
+        self.declare_parameter("approach_near_lateral_step_max_m", 0.030)
+        self.declare_parameter("approach_near_feedforward_x_hold_m", 0.004)
+        self.declare_parameter("approach_near_feedforward_y_gain", 1.10)
+        self.declare_parameter("approach_near_feedforward_z_gain", 1.27)
+        self.declare_parameter("approach_near_feedforward_z_up_bias_m", 0.019)
+        self.declare_parameter("approach_near_feedforward_command_max_m", 0.050)
+        # Latest real Z alignment evidence gives approximately
+        # achieved_Z = 0.785 * commanded_Z - 14.5 mm.  Use its bounded inverse
+        # in both the initial visual step and same-waypoint correction.
+        self.declare_parameter("approach_near_z_first_feedforward_z_gain", 1.27)
+        self.declare_parameter("approach_near_z_first_feedforward_z_bias_m", 0.019)
+        self.declare_parameter("approach_near_z_first_command_max_m", 0.050)
         self.declare_parameter("arm_sam_minimum_mask_pixels", 40)
         self.declare_parameter("arm_sam_minimum_score", 0.40)
-        self.declare_parameter("arm_sam_large_mask_fraction", 0.25)
-        self.declare_parameter("arm_sam_large_mask_minimum_score", 0.15)
+        self.declare_parameter("arm_sam_far_tracking_minimum_score", 0.20)
+        self.declare_parameter("arm_sam_near_tracking_minimum_score", 0.10)
         self.declare_parameter("arm_sam_press_minimum_score", 0.05)
+        self.declare_parameter("approach_far_feedforward_z_up_bias_m", 0.022)
         self.declare_parameter("touch_success_lab_delta", 60.0)
         self.declare_parameter("touch_success_changed_fraction", 0.65)
         self.declare_parameter("touch_success_max_x_remaining_m", 0.010)
         self.declare_parameter("touch_success_max_center_error_px", 15.0)
         self.declare_parameter("touch_success_required_observations", 2)
         self.declare_parameter("touch_success_minimum_step", 1)
+        # SAM establishes semantic identity only at the wrist-camera handoff
+        # and after a genuine geometric tracker loss.  Between those events a
+        # lightweight KLT/RANSAC tracker runs independently from the 10 Hz
+        # motion state machine; ORB/RANSAC is its first recovery tier.
+        self.declare_parameter("continuous_tracker_enabled", True)
+        self.declare_parameter("continuous_tracker_period_sec", 0.04)
+        self.declare_parameter("approach_tracking_minimum_motion_frames", 3)
+        self.declare_parameter("approach_tracking_maximum_motion_gap_sec", 0.50)
+        # During each automatic approach segment the gateway accepts a bounded
+        # 10 Hz joint target stream.  The low-level server executes it at
+        # 20 Hz and enters HOLD if this producer misses its watchdog.
+        self.declare_parameter("rolling_visual_servo_enabled", True)
+        self.declare_parameter("rolling_visual_servo_duration_sec", 2.5)
+        self.declare_parameter("rolling_visual_servo_continuous_until_press", True)
+        self.declare_parameter("rolling_visual_servo_session_timeout_sec", 15.0)
+        self.declare_parameter("rolling_visual_servo_forward_horizon_m", 0.006)
+        self.declare_parameter("rolling_visual_servo_alignment_frames", 3)
+        self.declare_parameter("rolling_visual_servo_max_yz_step_m", 0.003)
+        self.declare_parameter("rolling_visual_servo_empirical_m_per_px", 0.00020)
+        self.declare_parameter("rolling_visual_servo_z_residual_gain", 0.80)
+        self.declare_parameter("rolling_visual_servo_far_z_per_x_gain", 0.88)
+        self.declare_parameter("rolling_visual_servo_z_compensation_max_m", 0.025)
+        self.declare_parameter("rolling_visual_servo_z_slowdown_start_m", 0.006)
+        self.declare_parameter("rolling_visual_servo_z_slowdown_full_m", 0.020)
+        self.declare_parameter("rolling_visual_servo_max_z_drop_m", 0.012)
+        self.declare_parameter("rolling_visual_servo_max_tracker_age_sec", 0.20)
+        self.declare_parameter(
+            "rolling_visual_servo_max_tracker_inflight_sec", 0.15
+        )
+        self.declare_parameter("rolling_visual_servo_min_updates", 3)
+        self.declare_parameter("rolling_visual_servo_horizon_steps", 10)
+        self.declare_parameter(
+            "rolling_visual_servo_horizon_step_period_sec", 0.05
+        )
+        self.declare_parameter(
+            "rolling_visual_servo_execution_lead_sec", 0.08
+        )
+        self.declare_parameter(
+            "rolling_visual_servo_max_prediction_lead_sec", 0.25
+        )
+        self.declare_parameter(
+            "rolling_visual_servo_max_prediction_velocity_rad_s", 1.0
+        )
+        self.declare_parameter("tracker_max_features", 160)
+        self.declare_parameter("tracker_minimum_tracks", 6)
+        self.declare_parameter("tracker_minimum_inlier_ratio", 0.50)
+        self.declare_parameter("tracker_minimum_coverage_ratio", 0.10)
+        self.declare_parameter("tracker_lk_fb_error_px", 1.5)
+        self.declare_parameter("tracker_orb_minimum_matches", 10)
+        self.declare_parameter("tracker_rolling_keyframe_interval_frames", 15)
+        self.declare_parameter("tracker_semantic_recovery_cooldown_sec", 1.0)
+        # Press evidence is computed inside the continuously tracked region
+        # relative to the first human-confirmed wrist-camera keyframe.
+        self.declare_parameter("tracker_touch_lab_delta", 45.0)
+        self.declare_parameter("tracker_touch_changed_fraction", 0.50)
+        self.declare_parameter("tracker_touch_histogram_distance", 0.35)
+        self.declare_parameter("tracker_touch_required_frames", 3)
         self.declare_parameter("arm_projection_image_margin_px", 8)
         # Use the retained D435 3-D target projection as the first wrist-camera
         # SAM prompt.  The operator still confirms the resulting mask and can
@@ -400,8 +678,16 @@ class TouchObservationNode(Node):
         self._color: deque[Image] = deque(maxlen=12)
         self._depth: deque[Image] = deque(maxlen=12)
         self._info: deque[CameraInfo] = deque(maxlen=12)
-        self._arm_color: deque[Image] = deque(maxlen=4)
-        self._arm_info: deque[CameraInfo] = deque(maxlen=4)
+        # Wrist tracking must always consume the newest camera sample.  Keeping
+        # a queue here allowed an overloaded single-threaded executor to work
+        # through old images after an Arm trajectory, eventually making the
+        # image timestamp older than the TF buffer.
+        self._arm_color: deque[Image] = deque(maxlen=1)
+        # CameraInfo is calibration metadata, not a dynamic observation.  Keep
+        # only the latest validated message and reuse it across RGB frames.
+        self._arm_info: deque[CameraInfo] = deque(maxlen=1)
+        self._arm_color_received: float | None = None
+        self._arm_info_received: float | None = None
         self._frozen: dict[str, Any] | None = None
         self._prompts: list[tuple[int, int]] = []
         self._labels: list[int] = []
@@ -421,19 +707,48 @@ class TouchObservationNode(Node):
         self._approach_plan: dict[str, Any] | None = None
         self._approach_preview_request_id: str | None = None
         self._approach_execute_request_id: str | None = None
+        self._rolling_servo_session_id: str | None = None
+        self._rolling_servo_sequence = 0
+        self._rolling_servo_deadline: float | None = None
+        self._rolling_servo_last_tracker_stamp: float | None = None
+        self._rolling_servo_updates_sent = 0
+        self._rolling_servo_horizon_plan_count = 0
+        self._rolling_servo_update_sent_this_tick = False
+        self._rolling_servo_stop_reason: str | None = None
+        self._rolling_servo_phase = "INACTIVE"
+        self._rolling_servo_horizon_plan_count = 0
+        self._rolling_servo_alignment_streak = 0
+        self._rolling_servo_start_tip_base_m: np.ndarray | None = None
+        self._rolling_servo_last_waypoint_base_m: np.ndarray | None = None
+        self._rolling_servo_tracker_gate: dict[str, Any] | None = None
+        self._pending_touch_success_evidence: dict[str, Any] | None = None
+        self._approach_feedback_wait_request_id: str | None = None
+        self._approach_feedback_wait_started: float | None = None
+        self._approach_completion_observed_ros_sec: float | None = None
+        self._approach_feedback_diagnostics: dict[str, Any] = {}
         self._automatic_approach = False
         self._automatic_approach_started: float | None = None
         self._automatic_approach_steps = 0
         self._automatic_reacquire_due: float | None = None
+        self._automatic_settle_started: float | None = None
+        self._automatic_settle_deadline: float | None = None
+        self._automatic_settle_samples: deque[tuple[float, np.ndarray]] = deque(
+            maxlen=30
+        )
         self._automatic_tracking_reference: dict[str, Any] | None = None
         self._automatic_reacquire_pending = False
         self._automatic_last_pixel_error: float | None = None
         self._automatic_nonconverging_steps = 0
         self._last_executed_x_remaining_m: float | None = None
         self._cartesian_correction_retries = 0
+        self._cartesian_correction_previous_error_m: float | None = None
         self._press_phase_active = False
+        self._press_authorized = False
+        self._press_motion_attempted = False
+        self._press_recovery_pending = False
         self._approach_far_tip_x_m: float | None = None
         self._near_phase_latched = False
+        self._near_tool_rotation_arm: np.ndarray | None = None
         self._far_arm_acquire_due: float | None = None
         self._motor_samples: deque[dict[str, Any]] = deque(maxlen=600)
         self._far_motor_baseline_started: float | None = None
@@ -447,6 +762,69 @@ class TouchObservationNode(Node):
         # first arm-camera region explicitly confirmed by the operator.
         self._arm_appearance_reference_id: str | None = None
         self._touch_success_change_streak = 0
+        self._target_tracker = ContinuousTargetTracker(TrackerConfig(
+            max_features=int(self.get_parameter("tracker_max_features").value),
+            lk_fb_error_px=float(self.get_parameter("tracker_lk_fb_error_px").value),
+            minimum_tracks=int(self.get_parameter("tracker_minimum_tracks").value),
+            minimum_inlier_ratio=float(self.get_parameter(
+                "tracker_minimum_inlier_ratio"
+            ).value),
+            minimum_coverage_ratio=float(self.get_parameter(
+                "tracker_minimum_coverage_ratio"
+            ).value),
+            orb_minimum_matches=int(self.get_parameter(
+                "tracker_orb_minimum_matches"
+            ).value),
+            rolling_keyframe_interval_frames=int(self.get_parameter(
+                "tracker_rolling_keyframe_interval_frames"
+            ).value),
+        ))
+        # Serialize tracker mutation independently from the node-state lock.
+        # OpenCV may release the GIL and a live frame can take longer under
+        # load; holding _lock here used to starve Arm state and command
+        # callbacks. The generation makes any in-flight result disposable
+        # after a reset/reinitialization.
+        self._tracker_operation_lock = threading.Lock()
+        self._tracker_generation = 0
+        self._tracker_last_stamp: float | None = None
+        self._tracker_last_result: dict[str, Any] | None = None
+        self._tracker_last_good_monotonic: float | None = None
+        self._tracker_last_good_input_age_sec = 0.0
+        self._tracker_inflight_started_monotonic: float | None = None
+        self._tracker_inflight_image_received_monotonic: float | None = None
+        self._tracker_inflight_stamp: float | None = None
+        self._tracker_inflight_generation: int | None = None
+        self._tracker_last_recovery_attempt: float | None = None
+        self._tracker_semantic_recovery = False
+        self._tracker_resume_after_confirmation = False
+        self._tracker_identity_reference: dict[str, Any] | None = None
+        self._tracker_appearance_streak = 0
+        self._tracker_overlay_last_published = 0.0
+        self._tracker_runtime_error_count = 0
+        self._tracker_last_runtime_error: str | None = None
+        self._tracker_discarded_generation_count = 0
+        self._tracker_good_frame_stamps: deque[float] = deque(maxlen=600)
+        # Overlay is diagnostic latest-value output. It must never backpressure
+        # tracking or safety/control callbacks when RViz or rosbag is slow.
+        self._overlay_dirty = True
+        self._overlay_refresh_requested_count = 0
+        self._overlay_coalesced_update_count = 0
+        self._overlay_published_count = 0
+        self._overlay_last_publish_duration_ms: float | None = None
+        self._overlay_last_error: str | None = None
+        self._overlay_deferred_for_motion_count = 0
+        self._target_visualization_published_count = 0
+        self._target_visualization_deferred_for_motion_count = 0
+        self._target_visualization_last_publish_duration_ms: float | None = None
+        # Per-tick debug telemetry is queued and published from its own
+        # callback group.  A slow rosbag/RViz subscriber must never block the
+        # tracker or 10 Hz control callback that the telemetry is measuring.
+        self._tracker_debug_queue: deque[str] = deque(maxlen=1200)
+        self._control_debug_queue: deque[str] = deque(maxlen=1200)
+        self._tracker_debug_dropped = 0
+        self._control_debug_dropped = 0
+        self._control_tick_sequence = 0
+        self._state_publish_deferred_count = 0
         self._home_preview_request_id: str | None = None
         self._home_execute_request_id: str | None = None
         self._active = False
@@ -464,6 +842,15 @@ class TouchObservationNode(Node):
         self._prepare_camera_goal: dict[str, Any] | None = None
         self._d435_reacquire_reference: dict[str, Any] | None = None
         self._arm_joints: dict[str, float] = {}
+        self._arm_joint_velocities: dict[str, float] = {}
+        # Coherent raw follower snapshot used for direct calibrated FK.  This
+        # is deliberately separate from /tf: a delayed robot_state_publisher
+        # must not make a freshly completed trajectory look unobservable.
+        self._arm_joint_snapshot: dict[str, float] = {}
+        self._arm_joint_snapshot_received: float | None = None
+        self._arm_joint_snapshot_stamp_sec: float | None = None
+        self._arm_mount_transform: TransformStamped | None = None
+        self._arm_mount_received: float | None = None
         self._lift_position_mm: float | None = None
         self._lift_state: dict[str, Any] = {}
         self._last_camera_motion: float | None = None
@@ -476,43 +863,136 @@ class TouchObservationNode(Node):
             int(self.get_parameter("sam_cpu_threads").value),
         )
 
+        # High-bandwidth camera callbacks must not share the state machine's
+        # default mutually-exclusive callback group.  With D435 RGB/depth,
+        # CameraInfo and the wrist camera all active, that group can remain
+        # continuously runnable and starve the 10 Hz approach timer after an
+        # Arm trajectory.  The sensor callbacks only replace bounded latest-
+        # message buffers under ``self._lock``, so they are safe in a
+        # reentrant group.  Keep the OpenCV tracker in its own serial group:
+        # it may run concurrently with sensor reception, but never with a
+        # second tracker invocation.
+        self._sensor_callback_group = ReentrantCallbackGroup()
+        self._tracker_callback_group = MutuallyExclusiveCallbackGroup()
+        self._arm_state_callback_group = MutuallyExclusiveCallbackGroup()
+        self._control_callback_group = MutuallyExclusiveCallbackGroup()
+        self._visualization_callback_group = MutuallyExclusiveCallbackGroup()
+        self._telemetry_callback_group = ReentrantCallbackGroup()
+
         self._tf_buffer = Buffer(cache_time=Duration(seconds=10.0))
-        self._tf_listener = TransformListener(self._tf_buffer, self)
+        # Dynamic TF is latest-state telemetry here, not a history stream.
+        # Keep only the newest sample so image traffic cannot leave seconds of
+        # old Arm transforms queued in this process. /tf_static remains
+        # reliable/transient-local so fixed geometry is never lost.
+        dynamic_tf_qos = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST,
+            depth=10,
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            durability=DurabilityPolicy.VOLATILE,
+        )
+        static_tf_qos = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST,
+            # Several robot_state_publisher instances contribute independent
+            # fixed trees.  Depth 1 can discard the bridge required to join
+            # the mobile base and Arm trees for a late-joining listener.
+            depth=100,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        self._tf_listener = TransformListener(
+            self._tf_buffer, self, qos=dynamic_tf_qos, static_qos=static_tf_qos
+        )
         self.create_subscription(
             Image, str(self.get_parameter("color_topic").value), self._on_color,
             qos_profile_sensor_data,
+            callback_group=self._sensor_callback_group,
         )
         self.create_subscription(
             Image, str(self.get_parameter("depth_topic").value), self._on_depth,
             qos_profile_sensor_data,
+            callback_group=self._sensor_callback_group,
         )
         self.create_subscription(
             CameraInfo, str(self.get_parameter("camera_info_topic").value), self._on_info,
             qos_profile_sensor_data,
+            callback_group=self._sensor_callback_group,
+        )
+        arm_sensor_qos = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            durability=DurabilityPolicy.VOLATILE,
         )
         self.create_subscription(
             Image, str(self.get_parameter("arm_color_topic").value), self._on_arm_color,
-            qos_profile_sensor_data,
+            arm_sensor_qos,
+            callback_group=self._sensor_callback_group,
         )
         self.create_subscription(
             CameraInfo, str(self.get_parameter("arm_camera_info_topic").value),
-            self._on_arm_info, qos_profile_sensor_data,
+            self._on_arm_info, arm_sensor_qos,
+            callback_group=self._sensor_callback_group,
         )
-        self.create_subscription(String, "/touch_anything/command", self._on_command, 20)
-        self.create_subscription(String, "/arm/dashboard_state", self._on_arm_state, 10)
-        self.create_subscription(String, "/robot_mode", self._on_robot_mode, 10)
-        self.create_subscription(Twist, "/cmd_vel", self._on_cmd_vel, 10)
+        latest_reliable_qos = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.VOLATILE,
+        )
+        self.create_subscription(
+            String, "/touch_anything/command", self._on_command, 20,
+            callback_group=self._control_callback_group,
+        )
+        self.create_subscription(
+            String, "/arm/dashboard_state", self._on_arm_state,
+            latest_reliable_qos, callback_group=self._arm_state_callback_group,
+        )
+        self.create_subscription(
+            String, "/robot_mode", self._on_robot_mode, latest_reliable_qos,
+            callback_group=self._telemetry_callback_group,
+        )
+        self.create_subscription(
+            Twist, "/cmd_vel", self._on_cmd_vel, latest_reliable_qos,
+            callback_group=self._telemetry_callback_group,
+        )
         self.create_subscription(
             Float32, "/chokudomotor/angle",
-            lambda msg: self._on_axis("pan", float(msg.data)), 10,
+            lambda msg: self._on_axis("pan", float(msg.data)), latest_reliable_qos,
+            callback_group=self._telemetry_callback_group,
         )
         self.create_subscription(
             Float32, "/cameraswingmotor/angle",
-            lambda msg: self._on_axis("tilt", float(msg.data)), 10,
+            lambda msg: self._on_axis("tilt", float(msg.data)), latest_reliable_qos,
+            callback_group=self._telemetry_callback_group,
         )
-        self.create_subscription(JointState, "/joint_states", self._on_joint_state, 20)
-        self.create_subscription(Float32, "/lift/position", self._on_lift_position, 10)
-        self.create_subscription(String, "/lift/state", self._on_lift_state, 10)
+        joint_qos = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            durability=DurabilityPolicy.VOLATILE,
+        )
+        self.create_subscription(
+            JointState, "/joint_states", self._on_joint_state, joint_qos,
+            callback_group=self._telemetry_callback_group,
+        )
+        mount_qos = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        self.create_subscription(
+            TransformStamped, "/arm/mount_transform", self._on_arm_mount_transform,
+            mount_qos, callback_group=self._telemetry_callback_group,
+        )
+        self.create_subscription(
+            Float32, "/lift/position", self._on_lift_position,
+            latest_reliable_qos, callback_group=self._telemetry_callback_group,
+        )
+        self.create_subscription(
+            String, "/lift/state", self._on_lift_state, latest_reliable_qos,
+            callback_group=self._telemetry_callback_group,
+        )
 
         state_qos = QoSProfile(depth=1)
         state_qos.reliability = ReliabilityPolicy.RELIABLE
@@ -530,24 +1010,78 @@ class TouchObservationNode(Node):
         self._overlay_pub = self.create_publisher(
             Image, "/touch_anything/overlay_image", qos_profile_sensor_data
         )
+        # Target markers are periodic, diagnostic latest-value data. Reliable
+        # transient-local publication blocked the Python executor for 4.5--6 s
+        # in the 2026-09-19 real bag while rosbag/RViz were attached, starving
+        # the independent tracker timer even though camera frames continued.
+        visualization_qos = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            durability=DurabilityPolicy.VOLATILE,
+        )
         self._point_pub = self.create_publisher(
-            PointStamped, "/touch_anything/target_point", state_qos
+            PointStamped, "/touch_anything/target_point", visualization_qos
         )
         self._pose_pub = self.create_publisher(
-            PoseStamped, "/touch_anything/target_pose", state_qos
+            PoseStamped, "/touch_anything/target_pose", visualization_qos
         )
         self._marker_pub = self.create_publisher(
-            MarkerArray, "/touch_anything/markers", state_qos
+            MarkerArray, "/touch_anything/markers", visualization_qos
         )
-        self.create_timer(0.5, self._publish_state)
+        debug_qos = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST,
+            depth=100,
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            durability=DurabilityPolicy.VOLATILE,
+        )
+        self._tracker_debug_pub = self.create_publisher(
+            String, "/touch_anything/tracker_debug", debug_qos
+        )
+        self._control_debug_pub = self.create_publisher(
+            String, "/touch_anything/control_debug", debug_qos
+        )
+        self.create_timer(
+            0.5, self._publish_state, callback_group=self._control_callback_group
+        )
         # Keep the arm-camera TF marker useful while the operator moves or
         # previews the arm.  This is visualization-only and publishes no
         # mechanism command.
-        self.create_timer(0.5, self._refresh_visualization)
-        self.create_timer(0.1, self._automatic_approach_tick)
-        self.create_timer(0.1, self._far_arm_handoff_tick)
-        self.create_timer(0.1, self._prepare_camera_tick)
-        self.create_timer(5.0, self._maintenance)
+        self.create_timer(
+            0.5, self._refresh_visualization,
+            callback_group=self._visualization_callback_group,
+        )
+        self.create_timer(
+            0.10, self._overlay_publish_tick,
+            callback_group=self._visualization_callback_group,
+        )
+        self.create_timer(
+            0.1, self._instrumented_automatic_approach_tick,
+            callback_group=self._control_callback_group,
+        )
+        self.create_timer(
+            0.1, self._far_arm_handoff_tick,
+            callback_group=self._control_callback_group,
+        )
+        self.create_timer(
+            0.1, self._prepare_camera_tick,
+            callback_group=self._control_callback_group,
+        )
+        self.create_timer(
+            max(0.02, float(self.get_parameter(
+                "continuous_tracker_period_sec"
+            ).value)),
+            self._continuous_tracker_tick,
+            callback_group=self._tracker_callback_group,
+        )
+        self.create_timer(
+            0.02, self._debug_publish_tick,
+            callback_group=self._telemetry_callback_group,
+        )
+        self.create_timer(
+            5.0, self._maintenance,
+            callback_group=self._control_callback_group,
+        )
         self.get_logger().info(
             "Touch Anything ready; pre-touch preview enabled, real execution locked by default"
         )
@@ -567,10 +1101,466 @@ class TouchObservationNode(Node):
     def _on_arm_color(self, message: Image) -> None:
         with self._lock:
             self._arm_color.append(message)
+            self._arm_color_received = time.monotonic()
 
     def _on_arm_info(self, message: CameraInfo) -> None:
         with self._lock:
             self._arm_info.append(message)
+            self._arm_info_received = time.monotonic()
+
+    def _on_arm_mount_transform(self, message: TransformStamped) -> None:
+        if (
+            message.header.frame_id != "base_link"
+            or message.child_frame_id != "arm/base_link"
+        ):
+            self.get_logger().warning(
+                "Ignoring unexpected /arm/mount_transform frames: "
+                f"{message.header.frame_id} -> {message.child_frame_id}"
+            )
+            return
+        self._arm_mount_transform = message
+        self._arm_mount_received = time.monotonic()
+
+    def _arm_image_snapshot(self, color: Image) -> dict[str, Any]:
+        """Copy one wrist RGB frame without consulting CameraInfo or TF.
+
+        KLT/ORB propagation is image-space only.  Keeping this path independent
+        from calibration and robot geometry prevents a transient TF gap from
+        starving visual identity tracking.
+        """
+        rgb = self._bridge.imgmsg_to_cv2(color, desired_encoding="rgb8").copy()
+        frame_id = str(color.header.frame_id)
+        if not frame_id:
+            raise ValueError("Arm-camera image frame_id is empty")
+        return {
+            "id": str(uuid.uuid4()),
+            "rgb": rgb,
+            "stamp": stamp_seconds(color),
+            "stamp_msg": color.header.stamp,
+            "frame_id": frame_id,
+            "d435_projected_uv": None,
+            "d435_projection_in_image": False,
+            "tracking_frame": True,
+            "geometry_ready": False,
+        }
+
+    def _arm_frame_with_geometry(self, frame: dict[str, Any]) -> dict[str, Any]:
+        """Attach cached intrinsics and the latest robot TF for motion planning."""
+        with self._lock:
+            info = self._arm_info[-1] if self._arm_info else None
+        if info is None:
+            raise ValueError("Arm-camera CameraInfo is unavailable")
+        camera_matrix = np.asarray(info.k, dtype=np.float64).reshape(3, 3)
+        if (
+            not np.all(np.isfinite(camera_matrix))
+            or float(camera_matrix[0, 0]) <= 0.0
+            or float(camera_matrix[1, 1]) <= 0.0
+        ):
+            raise ValueError("Arm-camera cached CameraInfo intrinsics are invalid")
+        color_stamp = float(frame["stamp"])
+        info_skew = abs(stamp_seconds(info) - color_stamp)
+        base_from_camera = self._latest_transform(
+            "base_link", str(frame["frame_id"])
+        )
+        rotation, translation = self._rotation_translation(base_from_camera)
+        return {
+            **frame,
+            "camera_matrix": camera_matrix,
+            "distortion_model": str(info.distortion_model),
+            "distortion": np.asarray(info.d, dtype=np.float64).tolist(),
+            # Retain the skew as diagnostic evidence. CameraInfo describes a
+            # fixed calibration and therefore is not rejected merely because
+            # its ROS stamp differs from a later image stamp.
+            "camera_info_skew_sec": info_skew,
+            "base_from_camera_rotation": rotation,
+            "base_from_camera_translation": translation,
+            "geometry_ready": True,
+        }
+
+    def _arm_frame_snapshot(self, color: Image) -> dict[str, Any]:
+        """Build a full wrist-camera frame for one-shot SAM/geometry work."""
+        return self._arm_frame_with_geometry(self._arm_image_snapshot(color))
+
+    def _refresh_arm_tracking_geometry(self) -> None:
+        """Refresh planning geometry without disturbing image-space tracking."""
+        with self._lock:
+            if self._arm_frozen is None or self._arm_target is None:
+                raise ValueError("Arm-camera tracking image/target is unavailable")
+            frame = dict(self._arm_frozen)
+            centroid = np.asarray(
+                self._arm_target.get("centroid_uv", []), dtype=np.float64
+            )
+        if centroid.shape != (2,) or not np.all(np.isfinite(centroid)):
+            raise ValueError("Arm-camera tracked centroid is invalid")
+        frame = self._arm_frame_with_geometry(frame)
+        with self._lock:
+            # The single-threaded executor normally makes this exact. Keep the
+            # identity check so a future executor change cannot attach geometry
+            # to a different RGB frame.
+            if (
+                self._arm_frozen is None
+                or float(self._arm_frozen["stamp"]) != float(frame["stamp"])
+            ):
+                raise ValueError("Arm-camera frame changed while geometry was sampled")
+            self._arm_frozen = frame
+            tracking_point = self._arm_camera_tracking_point(centroid)
+            self._arm_target["tracking_point_base_m"] = tracking_point.tolist()
+            self._arm_target["tracking_range_m"] = float(np.linalg.norm(
+                tracking_point - np.asarray(
+                    frame["base_from_camera_translation"], dtype=np.float64
+                )
+            ))
+
+    def _queue_debug_payload(self, kind: str, payload: dict[str, Any]) -> None:
+        """Queue small JSON telemetry without publishing in a critical callback."""
+        queue = (
+            self._tracker_debug_queue
+            if kind == "tracker" else self._control_debug_queue
+        )
+        if len(queue) == queue.maxlen:
+            if kind == "tracker":
+                self._tracker_debug_dropped += 1
+            else:
+                self._control_debug_dropped += 1
+        payload = {
+            "schema_version": 1,
+            "kind": kind.upper() + "_TICK",
+            "queued_ros_sec": float(self.get_clock().now().nanoseconds) * 1.0e-9,
+            "queue_dropped_total": (
+                self._tracker_debug_dropped
+                if kind == "tracker" else self._control_debug_dropped
+            ),
+            **payload,
+        }
+        queue.append(json.dumps(
+            jsonable(payload), ensure_ascii=False, allow_nan=False,
+            separators=(",", ":"),
+        ))
+
+    def _debug_publish_tick(self) -> None:
+        """Drain debug queues outside tracker/control callback groups."""
+        for queue, publisher in (
+            (self._tracker_debug_queue, self._tracker_debug_pub),
+            (self._control_debug_queue, self._control_debug_pub),
+        ):
+            for _ in range(min(8, len(queue))):
+                publisher.publish(String(data=queue.popleft()))
+
+    def _queue_tracker_tick(
+        self,
+        *,
+        image_stamp: float | None,
+        result: dict[str, Any],
+        started_monotonic: float,
+        image_received_monotonic: float | None,
+        frame_claimed_monotonic: float | None,
+        generation: int | None,
+        event: str = "RESULT",
+    ) -> None:
+        completed = time.monotonic()
+        with self._lock:
+            execution = self._arm_state.get("execution", {})
+            context = {
+                "touch_active": self._active,
+                "touch_state": self._state,
+                "automatic_approach": self._automatic_approach,
+                "approach_request_id": self._approach_execute_request_id,
+                "gateway_execution_state": execution.get("state"),
+                "gateway_request_id": execution.get("last_request_id"),
+            }
+        self._queue_debug_payload("tracker", {
+            "event": event,
+            "image_stamp": image_stamp,
+            "generation": generation,
+            "callback_started_monotonic_sec": started_monotonic,
+            "callback_completed_monotonic_sec": completed,
+            "callback_duration_ms": (completed - started_monotonic) * 1000.0,
+            "frame_claimed_monotonic_sec": frame_claimed_monotonic,
+            "initial_lock_wait_ms": (
+                None if frame_claimed_monotonic is None
+                else max(
+                    0.0, frame_claimed_monotonic - started_monotonic
+                ) * 1000.0
+            ),
+            "input_receive_age_ms_at_start": (
+                None if image_received_monotonic is None
+                else max(
+                    0.0,
+                    (frame_claimed_monotonic or started_monotonic)
+                    - image_received_monotonic,
+                ) * 1000.0
+            ),
+            "input_receive_age_ms_at_claim": (
+                None if image_received_monotonic is None
+                else max(
+                    0.0,
+                    (frame_claimed_monotonic or started_monotonic)
+                    - image_received_monotonic,
+                ) * 1000.0
+            ),
+            "result": result,
+            "context": context,
+        })
+
+    def _continuous_tracker_tick(self) -> None:
+        """Propagate the confirmed mask at camera rate, without running SAM."""
+        tick_started = time.monotonic()
+        claimed_stamp: float | None = None
+        image_received_monotonic: float | None = None
+        frame_claimed_monotonic: float | None = None
+        tracker_generation: int | None = None
+        if not bool(self.get_parameter("continuous_tracker_enabled").value):
+            return
+        with self._lock:
+            if (
+                not self._active
+                or not self._arm_handoff_complete
+                or not self._target_tracker.active
+                or self._tracker_semantic_recovery
+                or not self._arm_color
+            ):
+                return
+            color = self._arm_color[-1]
+            stamp = stamp_seconds(color)
+            if self._tracker_last_stamp is not None and stamp <= self._tracker_last_stamp:
+                return
+            # Claim the image before conversion so another timer cannot process
+            # the same frame while OpenCV releases the GIL.
+            self._tracker_last_stamp = stamp
+            claimed_stamp = stamp
+            image_received_monotonic = self._arm_color_received
+            tracker = self._target_tracker
+            tracker_generation = self._tracker_generation
+            frame_claimed_monotonic = time.monotonic()
+            self._tracker_inflight_started_monotonic = frame_claimed_monotonic
+            self._tracker_inflight_image_received_monotonic = (
+                image_received_monotonic
+            )
+            self._tracker_inflight_stamp = claimed_stamp
+            self._tracker_inflight_generation = tracker_generation
+        try:
+            # Tracking consumes RGB only. CameraInfo and TF are intentionally
+            # deferred until the motion state machine requests another plan.
+            frame = self._arm_image_snapshot(color)
+            height, width = frame["rgb"].shape[:2]
+            fixed_tip = self._fixed_arm_tip_pixel(width, height)
+            with self._tracker_operation_lock:
+                result = tracker.update(
+                    frame["rgb"], excluded_tip_uv=fixed_tip
+                )
+                mask = (
+                    None if tracker.current_mask is None
+                    else tracker.current_mask.copy()
+                )
+            with self._lock:
+                if (
+                    tracker_generation != self._tracker_generation
+                    or tracker is not self._target_tracker
+                    or not self._active
+                    or not self._arm_handoff_complete
+                ):
+                    # A cancel, reacquisition or new confirmation superseded
+                    # this frame while OpenCV was running.
+                    self._tracker_discarded_generation_count += 1
+                    self._queue_tracker_tick(
+                        image_stamp=claimed_stamp,
+                        result=result,
+                        started_monotonic=tick_started,
+                        image_received_monotonic=image_received_monotonic,
+                        frame_claimed_monotonic=frame_claimed_monotonic,
+                        generation=tracker_generation,
+                        event="DISCARDED_GENERATION",
+                    )
+                    return
+                self._tracker_last_result = dict(result)
+            self._queue_tracker_tick(
+                image_stamp=claimed_stamp,
+                result=result,
+                started_monotonic=tick_started,
+                image_received_monotonic=image_received_monotonic,
+                frame_claimed_monotonic=frame_claimed_monotonic,
+                generation=tracker_generation,
+            )
+            if result["status"] == "LOST":
+                self._request_semantic_tracker_recovery(result, frame)
+                return
+
+            if mask is None:
+                self._request_semantic_tracker_recovery(
+                    {**result, "reason": "tracker returned no propagated mask"}, frame
+                )
+                return
+            centroid = np.asarray(result["centroid_uv"], dtype=np.float64)
+            with self._lock:
+                previous = {} if self._arm_target is None else dict(self._arm_target)
+                previous.pop("tracking_point_base_m", None)
+                previous.pop("tracking_range_m", None)
+                self._arm_frozen = frame
+                self._arm_mask = mask.copy()
+                self._arm_target = {
+                    **previous,
+                    "centroid_uv": centroid.tolist(),
+                    "mask_pixels": int(result["mask_pixels"]),
+                    "mask_fraction": float(result["mask_fraction"]),
+                    "source": str(result["method"]),
+                    "tracker": jsonable(result),
+                    "operator_confirmed_same_object": True,
+                    "automatic_continuity_verified": True,
+                    "metric_depth_observed": False,
+                }
+                self._arm_target_confirmed = True
+                self._automatic_tracking_reference = dict(self._arm_target)
+                completed_now = time.monotonic()
+                self._tracker_last_good_monotonic = completed_now
+                self._tracker_last_good_input_age_sec = max(
+                    0.0, completed_now - image_received_monotonic
+                )
+                self._tracker_good_frame_stamps.append(float(frame["stamp"]))
+                should_check_touch = bool(
+                    self._press_phase_active
+                    and self._press_authorized
+                    and self._press_motion_attempted
+                )
+            now = time.monotonic()
+            if now - self._tracker_overlay_last_published >= 0.10:
+                self._tracker_overlay_last_published = now
+                self._request_overlay_refresh()
+            if should_check_touch:
+                evidence = self._tracked_region_appearance_change(frame["rgb"], mask)
+                gate = self._touch_success_gate(centroid, frame["rgb"].shape[:2])
+                # Once the operator explicitly authorized PRESS and a PRESS
+                # trajectory was attempted, repeated change in the tracked
+                # button region is primary evidence.  Metric/pixel geometry is
+                # retained for diagnosis but cannot veto that evidence.
+                gate["eligible"] = True
+                gate["policy"] = (
+                    "OPERATOR_AUTHORIZED_PRESS_PLUS_TRACKED_REGION_CHANGE;"
+                    "GEOMETRY_DIAGNOSTIC_ONLY"
+                )
+                evidence["success_gate"] = gate
+                if bool(evidence.get("changed")) and bool(gate.get("eligible")):
+                    self._tracker_appearance_streak += 1
+                else:
+                    self._tracker_appearance_streak = 0
+                required = int(self.get_parameter(
+                    "tracker_touch_required_frames"
+                ).value)
+                evidence["consecutive_change_frames"] = self._tracker_appearance_streak
+                evidence["required_change_frames"] = required
+                if self._tracker_appearance_streak >= required:
+                    self._complete_touch_and_return_home(evidence)
+        except Exception as exc:
+            # Never allow an individual cv_bridge/OpenCV/tracker frame to tear
+            # down the ROS process. A later newest-frame callback may recover;
+            # the motion state machine independently requires a fresh result.
+            details = f"{type(exc).__name__}: {exc}"
+            self._tracker_runtime_error_count += 1
+            self._tracker_last_runtime_error = details
+            self._queue_tracker_tick(
+                image_stamp=claimed_stamp,
+                result={
+                    "status": "RUNTIME_ERROR",
+                    "method": "NONE",
+                    "reason": details,
+                    "tracked_points": 0,
+                    "inlier_ratio": 0.0,
+                },
+                started_monotonic=tick_started,
+                image_received_monotonic=image_received_monotonic,
+                frame_claimed_monotonic=frame_claimed_monotonic,
+                generation=tracker_generation,
+                event="EXCEPTION",
+            )
+            self.get_logger().error(
+                "Continuous target tracker skipped frame without stopping the node: "
+                + details + "\n" + traceback.format_exc()
+            )
+        finally:
+            with self._lock:
+                if (
+                    self._tracker_inflight_stamp == claimed_stamp
+                    and self._tracker_inflight_generation == tracker_generation
+                ):
+                    self._tracker_inflight_started_monotonic = None
+                    self._tracker_inflight_image_received_monotonic = None
+                    self._tracker_inflight_stamp = None
+                    self._tracker_inflight_generation = None
+
+    def _request_semantic_tracker_recovery(
+        self, result: dict[str, Any], frame: dict[str, Any]
+    ) -> None:
+        """Run SAM recovery automatically, but never accept it automatically."""
+        now = time.monotonic()
+        with self._lock:
+            if self._rolling_servo_session_id is not None:
+                self._stop_rolling_visual_servo(
+                    "KLT/ORB target loss during active motion"
+                )
+                self._automatic_approach = False
+                self._automatic_reacquire_due = None
+                self._set_state(
+                    "AUTO_TARGET_LOST_HOLDING",
+                    "Target tracker was lost during rolling motion; STOP sent and "
+                    "the Arm server must acknowledge guarded HOLD before recovery",
+                )
+                return
+            # Semantic recovery sets _automatic_approach False. Never allow a
+            # transient tracker loss to do that while the gateway is validating
+            # or executing an already planned step, otherwise an accepted
+            # preview remains parked forever in PLANNED.
+            if approach_motion_request_in_flight(
+                self._approach_preview_request_id,
+                self._approach_execute_request_id,
+            ):
+                return
+            cooldown = float(self.get_parameter(
+                "tracker_semantic_recovery_cooldown_sec"
+            ).value)
+            if (
+                self._tracker_last_recovery_attempt is not None
+                and now - self._tracker_last_recovery_attempt < cooldown
+            ):
+                return
+            reference = self._automatic_tracking_reference or {}
+            centroid = np.asarray(reference.get("centroid_uv", []), dtype=np.float64)
+            if centroid.shape != (2,) or not np.all(np.isfinite(centroid)):
+                self._pause_automatic_approach(
+                    "AUTO_TARGET_LOST",
+                    "KLT and ORB lost the target and no valid recovery prompt remains",
+                )
+                return
+            height, width = frame["rgb"].shape[:2]
+            prompt = (
+                int(np.clip(round(float(centroid[0])), 0, width - 1)),
+                int(np.clip(round(float(centroid[1])), 0, height - 1)),
+            )
+            self._tracker_last_recovery_attempt = now
+            self._tracker_semantic_recovery = True
+            self._tracker_resume_after_confirmation = bool(self._automatic_approach)
+            self._automatic_approach = False
+            self._automatic_reacquire_due = None
+            self._arm_frozen = frame
+            self._arm_prompts = [prompt]
+            self._arm_labels = [1]
+            self._arm_mask = None
+            self._arm_target = None
+            self._arm_target_confirmed = False
+            self._approach_plan = None
+            self._automatic_reacquire_pending = False
+            self._job_id += 1
+            job_id = self._job_id
+        self._set_state(
+            "ARM_SEMANTIC_RECOVERY_RUNNING",
+            "KLT and ORB tracking failed; SAM semantic recovery is running. "
+            "The recovered region will require operator confirmation: "
+            + str(result.get("reason", "unknown tracker failure")),
+        )
+        threading.Thread(
+            target=self._segment_arm_worker,
+            args=(job_id, frame["rgb"].copy(), [prompt], [1]),
+            daemon=True,
+            name="sam21-arm-camera-semantic-recovery-worker",
+        ).start()
 
     def _on_arm_state(self, message: String) -> None:
         try:
@@ -723,12 +1713,146 @@ class TouchObservationNode(Node):
                     )
             if (
                 self._approach_execute_request_id is not None
-                and execution.get("last_request_id") == self._approach_execute_request_id
+                and (
+                    execution.get("last_request_id") == self._approach_execute_request_id
+                    or execution.get("owner_request_id")
+                    == self._approach_execute_request_id
+                    or (
+                        self._rolling_servo_session_id is not None
+                        and execution.get("visual_servo_session_id")
+                        == self._rolling_servo_session_id
+                    )
+                )
             ):
                 execution_state = str(execution.get("state", "UNKNOWN"))
+                if (
+                    execution_state == "EXECUTING"
+                    and self._approach_plan is not None
+                    and "motion_start_tip_base_m" not in self._approach_plan
+                ):
+                    try:
+                        motion_start_tf = self._latest_transform(
+                            "base_link", "arm/touch_tip"
+                        )
+                        _, motion_start_tip = self._rotation_translation(
+                            motion_start_tf
+                        )
+                        self._approach_plan[
+                            "motion_start_tip_base_m"
+                        ] = motion_start_tip.tolist()
+                        self._approach_plan["motion_start_tf_stamp_sec"] = (
+                            float(motion_start_tf.header.stamp.sec)
+                            + float(motion_start_tf.header.stamp.nanosec) * 1.0e-9
+                        )
+                        self._approach_plan[
+                            "motion_start_monotonic_sec"
+                        ] = now_monotonic
+                        pre_execute = np.asarray(
+                            self._approach_plan.get("pre_execute_tip_base_m", []),
+                            dtype=np.float64,
+                        )
+                        if pre_execute.shape == (3,):
+                            self._approach_plan[
+                                "startup_transient_delta_base_m"
+                            ] = (motion_start_tip - pre_execute).tolist()
+                    except (TransformException, ValueError):
+                        pass
+                completion_transform = None
+                completion_feedback_error = None
+                rolling_stop_reason = self._rolling_servo_stop_reason
+                continuous_terminal = bool(
+                    execution_state == "SUCCEEDED"
+                    and rolling_stop_reason is not None
+                    and rolling_stop_reason != "segment duration completed"
+                    and self.get_parameter(
+                        "rolling_visual_servo_continuous_until_press"
+                    ).value
+                )
+                if execution_state in {"SUCCEEDED", "FAILED", "CANCELLED", "BLOCKED"}:
+                    rolling_updates = self._rolling_servo_updates_sent
+                    self._rolling_servo_session_id = None
+                    self._rolling_servo_deadline = None
+                    self._capture_motion_tracking_evidence(execution)
+                    if not continuous_terminal:
+                        (
+                            completion_transform,
+                            completion_feedback_error,
+                            feedback_waiting,
+                        ) = self._completion_transform_after_motion(execution)
+                        if feedback_waiting:
+                            self._set_state(
+                                "APPROACH_CARTESIAN_FEEDBACK_WAITING",
+                                "Arm trajectory ended; waiting for a fresh post-motion "
+                                f"arm/touch_tip TF before endpoint validation: "
+                                f"{completion_feedback_error}",
+                            )
+                            return
                 if execution_state == "SUCCEEDED":
                     self._approach_execute_request_id = None
-                    cartesian_feedback = self._record_completed_motor_step(execution)
+                    minimum_updates = int(self.get_parameter(
+                        "rolling_visual_servo_min_updates"
+                    ).value)
+                    if (
+                        self._approach_plan is not None
+                        and self._approach_plan.get("control_policy")
+                        == "ROLLING_VISUAL_SERVO_10HZ_TRACKER_20HZ_ACTUATOR"
+                        and rolling_updates < minimum_updates
+                    ):
+                        self._pause_automatic_approach(
+                            "APPROACH_ROLLING_CONTROL_NOT_PROVEN",
+                            f"visual-servo stopped after only {rolling_updates} updates; "
+                            f"at least {minimum_updates} are required",
+                        )
+                        return
+                    if rolling_stop_reason == "PRESS_CONFIRMATION_READY":
+                        self._automatic_approach = False
+                        self._rolling_servo_phase = "WAITING_PRESS_CONFIRMATION"
+                        self._set_state(
+                            "PRESS_CONFIRMATION_REQUIRED",
+                            "Continuous FAR→NEAR tracking reached stable fixed-tip "
+                            "alignment; Arm is HOLDING. Inspect the live image and "
+                            "explicitly confirm PRESS",
+                        )
+                        return
+                    if rolling_stop_reason == "TOUCH_SUCCESS_CONFIRMED":
+                        evidence = self._pending_touch_success_evidence
+                        if evidence is None:
+                            self._pause_automatic_approach(
+                                "TOUCH_SUCCESS_EVIDENCE_MISSING",
+                                "STOP/HOLD succeeded but pending appearance evidence is missing",
+                            )
+                            return
+                        self._rolling_servo_phase = "TOUCH_COMPLETE"
+                        self._complete_touch_and_return_home(evidence)
+                        return
+                    if rolling_stop_reason == "MAX_PRESS_TRAVEL_REACHED":
+                        self._automatic_approach = False
+                        self._rolling_servo_phase = "MAX_PRESS_TRAVEL_REACHED"
+                        self._set_state(
+                            "APPROACH_MAX_TRAVEL_REACHED",
+                            "Continuous PRESS reached its configured maximum travel "
+                            "without appearance-change success; Arm is HOLDING",
+                        )
+                        return
+                    if rolling_stop_reason == "CONTINUOUS_APPROACH_TIMEOUT":
+                        self._pause_automatic_approach(
+                            "AUTO_APPROACH_TIMEOUT",
+                            "Continuous visual-servo session reached its safety timeout; "
+                            "Arm is HOLDING",
+                        )
+                        return
+                    if continuous_terminal:
+                        self._pause_automatic_approach(
+                            "APPROACH_VISUAL_SERVO_STOPPED",
+                            "Continuous visual-servo stopped safely and the Arm is "
+                            f"HOLDING: {rolling_stop_reason}",
+                        )
+                        return
+                    cartesian_feedback = self._record_completed_motor_step(
+                        execution,
+                        completion_transform=completion_transform,
+                        completion_feedback_error=completion_feedback_error,
+                    )
                     acceptance = (
                         {} if cartesian_feedback is None
                         else cartesian_feedback.get("acceptance", {})
@@ -740,6 +1864,11 @@ class TouchObservationNode(Node):
                                 "measured touch-tip endpoint is unavailable",
                             )
                         )
+                        if str((self._approach_plan or {}).get("step_kind", "")) == (
+                            "ALIGNED_PRESS_FORWARD_WITH_FIXED_TIP_YZ"
+                        ):
+                            self._schedule_press_recovery(reason)
+                            return
                         correctable = bool(acceptance.get("correctable", False))
                         maximum_retries = int(self.get_parameter(
                             "approach_cartesian_max_correction_retries"
@@ -753,9 +1882,73 @@ class TouchObservationNode(Node):
                                 f"{maximum_retries}",
                             )
                             return
+                        current_error = float(
+                            acceptance.get("waypoint_error_m", math.inf)
+                        )
+                        previous_error = self._cartesian_correction_previous_error_m
+                        if previous_error is not None:
+                            minimum_improvement = max(
+                                float(self.get_parameter(
+                                    "approach_cartesian_correction_min_improvement_m"
+                                ).value),
+                                previous_error * float(self.get_parameter(
+                                    "approach_cartesian_correction_min_improvement_ratio"
+                                ).value),
+                            )
+                            if previous_error - current_error < minimum_improvement:
+                                # Repeating the same joint-space correction is
+                                # counterproductive once its measured Cartesian
+                                # residual grows. Return to the outer visual
+                                # loop from the real endpoint instead of
+                                # freezing Touch at TIP ALIGN.
+                                if self._arm_target is not None:
+                                    self._automatic_tracking_reference = dict(
+                                        self._arm_target
+                                    )
+                                self._cartesian_correction_retries = 0
+                                self._cartesian_correction_previous_error_m = None
+                                self._automatic_approach_steps += 1
+                                self._clear_arm_observation(preserve_tracker=True)
+                                self._start_automatic_settle_observation()
+                                self._set_state(
+                                    "AUTO_APPROACH_SETTLING",
+                                    "Same-waypoint correction stopped converging "
+                                    f"({previous_error * 1000.0:.1f}→"
+                                    f"{current_error * 1000.0:.1f}mm); "
+                                    "re-observing from the measured endpoint",
+                                )
+                                return
+                        self._cartesian_correction_previous_error_m = current_error
                         self._cartesian_correction_retries += 1
+                        if self._automatic_approach:
+                            self._automatic_approach_steps += 1
+                        if self._request_cartesian_waypoint_correction(
+                            cartesian_feedback, reason
+                        ):
+                            return
+                        self._pause_automatic_approach(
+                            "APPROACH_CARTESIAN_NOT_REACHED",
+                            "Measured endpoint was correctable, but a bounded "
+                            "same-waypoint correction could not be generated",
+                        )
+                        return
                     else:
                         self._cartesian_correction_retries = 0
+                        self._cartesian_correction_previous_error_m = None
+                    tracking_evidence = (
+                        {} if self._approach_plan is None else
+                        self._approach_plan.get("motion_tracking_evidence", {})
+                    )
+                    if not bool(tracking_evidence.get("continuous", False)):
+                        self._pause_automatic_approach(
+                            "APPROACH_TRACKING_NOT_CONTINUOUS",
+                            "Arm endpoint was accepted, but tracker coverage during "
+                            "motion was not proven; no next trajectory will be sent: "
+                            + str(tracking_evidence.get(
+                                "reason", "missing motion tracking evidence"
+                            )),
+                        )
+                        return
                     # Never advance the visual/contact state from the commanded
                     # waypoint.  Use measured TF feedback so the next IK solve
                     # starts from the pose the physical arm actually reached.
@@ -779,13 +1972,9 @@ class TouchObservationNode(Node):
                         self._automatic_tracking_reference = dict(self._arm_target)
                     if self._automatic_approach:
                         self._automatic_approach_steps += 1
-                    self._clear_arm_observation()
+                    self._clear_arm_observation(preserve_tracker=True)
                     if self._automatic_approach:
-                        self._automatic_reacquire_due = (
-                            time.monotonic() + float(self.get_parameter(
-                                "automatic_approach_settle_sec"
-                            ).value)
-                        )
+                        self._start_automatic_settle_observation()
                         self._set_state(
                             (
                                 "AUTO_APPROACH_CARTESIAN_CORRECTING"
@@ -806,11 +1995,25 @@ class TouchObservationNode(Node):
                 elif execution_state in {"FAILED", "CANCELLED", "BLOCKED"}:
                     self._approach_execute_request_id = None
                     reason = str(execution.get("message", execution_state))
-                    cartesian_feedback = self._record_completed_motor_step(execution)
+                    cartesian_feedback = self._record_completed_motor_step(
+                        execution,
+                        completion_transform=completion_transform,
+                        completion_feedback_error=completion_feedback_error,
+                    )
                     acceptance = (
                         {} if cartesian_feedback is None
                         else cartesian_feedback.get("acceptance", {})
                     )
+                    step_kind = str((self._approach_plan or {}).get("step_kind", ""))
+                    if step_kind == "ALIGNED_PRESS_FORWARD_WITH_FIXED_TIP_YZ":
+                        self._schedule_press_recovery(reason)
+                        return
+                    if step_kind == "PRESS_RECOVERY_RETREAT_TO_NEAR":
+                        self._pause_automatic_approach(
+                            "PRESS_RECOVERY_FAILED",
+                            "PRESS recovery could not return to NEAR: " + reason,
+                        )
+                        return
                     # The gateway may report FAILED solely because one motor
                     # missed its HOLD-entry tick tolerance after motion ended.
                     # If measured touch-tip TF is nevertheless inside the
@@ -822,24 +2025,87 @@ class TouchObservationNode(Node):
                         acceptance.get("accepted", False)
                         or acceptance.get("correctable", False)
                     )
-                    if self._automatic_approach and hold_entry_only and measured_usable:
-                        if self._automatic_approach:
-                            self._automatic_approach_steps += 1
-                        if self._arm_target is not None:
-                            self._automatic_tracking_reference = dict(self._arm_target)
-                        self._clear_arm_observation()
-                        self._automatic_reacquire_due = (
-                            time.monotonic() + float(self.get_parameter(
-                                "automatic_approach_settle_sec"
-                            ).value)
+                    mild_elbow = mild_single_motor_hold_entry_overrun(
+                        reason,
+                        motor="elbow_flex",
+                        maximum_excess_ticks=int(self.get_parameter(
+                            "approach_tip_align_elbow_mild_excess_ticks"
+                        ).value),
+                    )
+                    if (
+                        self._automatic_approach
+                        and step_kind == "ALIGN_FIXED_TIP_YZ"
+                        and bool(mild_elbow.get("eligible"))
+                        and cartesian_feedback is not None
+                        and np.asarray(cartesian_feedback.get(
+                            "completed_tip_base_m", []
+                        )).shape == (3,)
+                    ):
+                        # The motion happened and only elbow_flex missed HOLD
+                        # by a few ticks.  Do not chase the old command or abort:
+                        # the next visual iteration must start from measured TF.
+                        completed_tip = np.asarray(
+                            cartesian_feedback["completed_tip_base_m"],
+                            dtype=np.float64,
                         )
+                        refined = np.asarray(
+                            (self._approach_plan or {}).get(
+                                "refined_point_base_m", []
+                            ), dtype=np.float64,
+                        )
+                        if refined.shape == (3,):
+                            self._last_executed_x_remaining_m = float(
+                                refined[0] - completed_tip[0]
+                            )
+                        if self._arm_target is not None:
+                            self._automatic_tracking_reference = dict(
+                                self._arm_target
+                            )
+                        self._cartesian_correction_retries = 0
+                        self._cartesian_correction_previous_error_m = None
+                        self._automatic_approach_steps += 1
+                        self._clear_arm_observation(preserve_tracker=True)
+                        self._start_automatic_settle_observation()
                         self._set_state(
-                            "AUTO_APPROACH_CARTESIAN_CORRECTING",
-                            "Gateway HOLD-entry tolerance was missed, but measured "
-                            "touch-tip TF remains inside the bounded Cartesian "
-                            "correction envelope; re-observing before the next step",
+                            "AUTO_APPROACH_SETTLING",
+                            "TIP ALIGN elbow_flex HOLD-entry miss was mild "
+                            f"({mild_elbow['excess_ticks']} ticks over); "
+                            "re-observing and continuing from actual touch-tip TF",
                         )
                         return
+                    if self._automatic_approach and hold_entry_only and measured_usable:
+                        current_error = float(
+                            acceptance.get("waypoint_error_m", math.inf)
+                        )
+                        previous_error = self._cartesian_correction_previous_error_m
+                        minimum_improvement = (
+                            0.0 if previous_error is None else max(
+                                float(self.get_parameter(
+                                    "approach_cartesian_correction_min_improvement_m"
+                                ).value),
+                                previous_error * float(self.get_parameter(
+                                    "approach_cartesian_correction_min_improvement_ratio"
+                                ).value),
+                            )
+                        )
+                        maximum_retries = int(self.get_parameter(
+                            "approach_cartesian_max_correction_retries"
+                        ).value)
+                        converging = bool(
+                            previous_error is None
+                            or previous_error - current_error >= minimum_improvement
+                        )
+                        if (
+                            converging
+                            and self._cartesian_correction_retries < maximum_retries
+                        ):
+                            self._cartesian_correction_previous_error_m = current_error
+                            self._cartesian_correction_retries += 1
+                            self._automatic_approach_steps += 1
+                            if self._request_cartesian_waypoint_correction(
+                                cartesian_feedback, reason
+                            ):
+                                return
                     if self._automatic_approach:
                         self._pause_automatic_approach(
                             "APPROACH_EXECUTION_FAILED",
@@ -882,13 +2148,33 @@ class TouchObservationNode(Node):
         }
         if not observed:
             return
+        observed_velocities = {
+            str(name): float(value)
+            for name, value in zip(message.name, message.velocity)
+            if (
+                str(name).startswith(
+                    ("shoulder_", "elbow_", "wrist_", "gripper_")
+                )
+                and math.isfinite(float(value))
+            )
+        }
         common = set(observed).intersection(self._arm_joints)
         if (
             common
             and max(abs(observed[name] - self._arm_joints[name]) for name in common) > 0.003
         ):
             self._last_mechanism_motion = time.monotonic()
-        self._arm_joints = observed
+        # Merge partial messages for UI/gating, but only timestamp a direct-FK
+        # snapshot when all five kinematic joints belong to this one message.
+        self._arm_joints.update(observed)
+        self._arm_joint_velocities.update(observed_velocities)
+        if all(name in observed for name in REACH_JOINT_NAMES):
+            self._arm_joint_snapshot = {
+                name: observed[name] for name in REACH_JOINT_NAMES
+            }
+            self._arm_joint_snapshot_received = time.monotonic()
+            stamp = stamp_seconds(message)
+            self._arm_joint_snapshot_stamp_sec = stamp if stamp > 0.0 else None
 
     def _on_lift_position(self, message: Float32) -> None:
         value = float(message.data)
@@ -953,6 +2239,14 @@ class TouchObservationNode(Node):
                 self._approach_plan = None
                 self._approach_preview_request_id = None
                 self._approach_execute_request_id = None
+                self._rolling_servo_session_id = None
+                self._rolling_servo_sequence = 0
+                self._rolling_servo_deadline = None
+                self._rolling_servo_updates_sent = 0
+                self._rolling_servo_stop_reason = None
+                self._rolling_servo_phase = "INACTIVE"
+                self._rolling_servo_alignment_streak = 0
+                self._pending_touch_success_evidence = None
                 self._reset_automatic_approach()
                 self._motor_samples.clear()
                 self._far_motor_baseline_started = None
@@ -982,7 +2276,7 @@ class TouchObservationNode(Node):
                 self._target = None
                 self._reach_plan = None
                 self._reach_preview_request_id = None
-            self._republish_overlay()
+            self._request_overlay_refresh()
             self._set_state("FRAME_FROZEN", "Prompts cleared; click the target object")
         elif name == "add_prompt":
             self._add_prompt(command)
@@ -1009,6 +2303,8 @@ class TouchObservationNode(Node):
             self._acquire_arm_target()
         elif name == "confirm_arm_target":
             self._confirm_arm_target()
+        elif name == "confirm_press":
+            self._confirm_press()
         elif name == "plan_approach_step":
             self._plan_approach_step()
         elif name == "execute_approach_step":
@@ -1107,7 +2403,7 @@ class TouchObservationNode(Node):
             self._reach_preview_request_id = None
             self._reach_execute_request_id = None
             self._save_artifact()
-        self._republish_overlay()
+        self._request_overlay_refresh()
         self._set_state("FRAME_FROZEN", "D435 evidence frozen; click the object in the RViz panel")
 
     def _add_prompt(self, command: dict[str, Any]) -> None:
@@ -1255,7 +2551,7 @@ class TouchObservationNode(Node):
                         "3-D preview only—no arm command was sent"
                     )
                 self._save_artifact()
-            self._republish_overlay()
+            self._request_overlay_refresh()
             self._publish_target()
             self._set_state(final_state, final_message)
             if final_state == "D435_TARGET_REACQUIRED":
@@ -1278,14 +2574,29 @@ class TouchObservationNode(Node):
                  "adjust/freeze and select the same object again") if reacquiring else str(exc),
             )
 
-    def _clear_arm_observation(self) -> None:
+    def _clear_arm_observation(self, preserve_tracker: bool = False) -> None:
         with self._lock:
-            self._arm_frozen = None
-            self._arm_prompts.clear()
-            self._arm_labels.clear()
-            self._arm_mask = None
-            self._arm_target = None
-            self._arm_target_confirmed = False
+            if not preserve_tracker:
+                self._arm_frozen = None
+                self._arm_prompts.clear()
+                self._arm_labels.clear()
+                self._arm_mask = None
+                self._arm_target = None
+                self._arm_target_confirmed = False
+                with self._tracker_operation_lock:
+                    self._target_tracker.reset()
+                self._tracker_generation += 1
+                self._tracker_last_stamp = None
+                self._tracker_last_result = None
+                self._tracker_last_good_monotonic = None
+                self._tracker_last_good_input_age_sec = 0.0
+                self._tracker_inflight_started_monotonic = None
+                self._tracker_inflight_image_received_monotonic = None
+                self._tracker_inflight_stamp = None
+                self._tracker_inflight_generation = None
+                self._tracker_good_frame_stamps.clear()
+                self._tracker_semantic_recovery = False
+                self._tracker_resume_after_confirmation = False
             self._approach_plan = None
             self._approach_preview_request_id = None
             self._overlay_stage = "ARM"
@@ -1295,19 +2606,54 @@ class TouchObservationNode(Node):
         self._automatic_approach_started = None
         self._automatic_approach_steps = 0
         self._automatic_reacquire_due = None
+        self._automatic_settle_started = None
+        self._automatic_settle_deadline = None
+        self._automatic_settle_samples.clear()
         self._automatic_tracking_reference = None
         self._automatic_reacquire_pending = False
         self._automatic_last_pixel_error = None
         self._automatic_nonconverging_steps = 0
         self._last_executed_x_remaining_m = None
         self._cartesian_correction_retries = 0
+        self._cartesian_correction_previous_error_m = None
+        self._approach_feedback_wait_request_id = None
+        self._approach_feedback_wait_started = None
+        self._approach_completion_observed_ros_sec = None
+        self._approach_feedback_diagnostics = {}
         self._press_phase_active = False
+        self._press_authorized = False
+        self._press_motion_attempted = False
+        self._press_recovery_pending = False
         self._approach_far_tip_x_m = None
         self._near_phase_latched = False
+        self._near_tool_rotation_arm = None
         self._far_arm_acquire_due = None
         self._arm_appearance_reference = None
         self._arm_appearance_reference_id = None
         self._touch_success_change_streak = 0
+        with self._tracker_operation_lock:
+            self._target_tracker.reset()
+        self._tracker_generation += 1
+        self._tracker_last_stamp = None
+        self._tracker_last_result = None
+        self._tracker_last_good_monotonic = None
+        self._tracker_last_good_input_age_sec = 0.0
+        self._tracker_inflight_started_monotonic = None
+        self._tracker_inflight_image_received_monotonic = None
+        self._tracker_inflight_stamp = None
+        self._tracker_inflight_generation = None
+        self._tracker_good_frame_stamps.clear()
+        self._tracker_last_recovery_attempt = None
+        self._tracker_semantic_recovery = False
+        self._tracker_resume_after_confirmation = False
+        self._tracker_identity_reference = None
+        self._tracker_appearance_streak = 0
+        self._rolling_servo_phase = "INACTIVE"
+        self._rolling_servo_alignment_streak = 0
+        self._rolling_servo_start_tip_base_m = None
+        self._rolling_servo_last_waypoint_base_m = None
+        self._rolling_servo_tracker_gate = None
+        self._pending_touch_success_evidence = None
         self._home_preview_request_id = None
         self._home_execute_request_id = None
 
@@ -1364,7 +2710,11 @@ class TouchObservationNode(Node):
         self._save_motor_evidence()
 
     def _record_completed_motor_step(
-        self, execution: dict[str, Any]
+        self,
+        execution: dict[str, Any],
+        *,
+        completion_transform: Any | None = None,
+        completion_feedback_error: str | None = None,
     ) -> dict[str, Any] | None:
         started = self._active_step_motor_started
         if started is None:
@@ -1390,11 +2740,23 @@ class TouchObservationNode(Node):
             )
         cartesian_feedback: dict[str, Any]
         try:
+            if completion_transform is None:
+                if completion_feedback_error:
+                    raise ValueError(completion_feedback_error)
+                completion_transform = self._latest_transform(
+                    "base_link", "arm/touch_tip"
+                )
             _, completed_tip = self._rotation_translation(
-                self._latest_transform("base_link", "arm/touch_tip")
+                completion_transform
+            )
+            commanded = np.asarray(
+                (self._approach_plan or {}).get("waypoint_base_m", []),
+                dtype=np.float64,
             )
             planned = np.asarray(
-                (self._approach_plan or {}).get("waypoint_base_m", []),
+                (self._approach_plan or {}).get(
+                    "cartesian_goal_waypoint_base_m", commanded
+                ),
                 dtype=np.float64,
             )
             start = np.asarray(
@@ -1403,8 +2765,22 @@ class TouchObservationNode(Node):
             )
             cartesian_feedback = {
                 "completed_tip_base_m": completed_tip.tolist(),
+                "pre_execute_tip_base_m": jsonable(
+                    (self._approach_plan or {}).get("pre_execute_tip_base_m")
+                ),
+                "motion_start_tip_base_m": jsonable(
+                    (self._approach_plan or {}).get("motion_start_tip_base_m")
+                ),
+                "startup_transient_delta_base_m": jsonable(
+                    (self._approach_plan or {}).get(
+                        "startup_transient_delta_base_m"
+                    )
+                ),
                 "planned_waypoint_base_m": (
                     planned.tolist() if planned.shape == (3,) else None
+                ),
+                "commanded_waypoint_base_m": (
+                    commanded.tolist() if commanded.shape == (3,) else None
                 ),
                 "planned_start_tip_base_m": (
                     start.tolist() if start.shape == (3,) else None
@@ -1421,11 +2797,13 @@ class TouchObservationNode(Node):
                     float(np.linalg.norm(completed_tip - planned))
                     if planned.shape == (3,) else None
                 ),
-                "source": "TF base_link <- arm/touch_tip after gateway completion",
+                "source": getattr(
+                    self, "_latest_tip_feedback_source", "DYNAMIC_TF_FALLBACK"
+                ),
             }
             requested_delta = (
-                planned - start
-                if planned.shape == (3,) and start.shape == (3,)
+                commanded - start
+                if commanded.shape == (3,) and start.shape == (3,)
                 else np.zeros(3, dtype=np.float64)
             )
             achieved_delta = (
@@ -1441,13 +2819,17 @@ class TouchObservationNode(Node):
             step_kind = str((self._approach_plan or {}).get("step_kind", ""))
             press_like = step_kind in {
                 "ALIGNED_PRESS_FORWARD_WITH_FIXED_TIP_YZ",
-                "ALIGN_FIXED_TIP_YZ",
                 "NEAR_ALIGN_IMAGE_CENTER_YZ",
             }
-            maximum_error = float(self.get_parameter(
-                "approach_cartesian_press_max_error_m"
-                if press_like else "approach_cartesian_coarse_max_error_m"
-            ).value)
+            if step_kind == "ALIGN_FIXED_TIP_YZ":
+                maximum_error_parameter = "approach_cartesian_align_max_error_m"
+            elif press_like:
+                maximum_error_parameter = "approach_cartesian_press_max_error_m"
+            else:
+                maximum_error_parameter = "approach_cartesian_coarse_max_error_m"
+            maximum_error = float(
+                self.get_parameter(maximum_error_parameter).value
+            )
             minimum_progress = float(self.get_parameter(
                 "approach_cartesian_min_progress_ratio"
             ).value)
@@ -1470,7 +2852,15 @@ class TouchObservationNode(Node):
             # reliable hard gate.  For larger requests, genuinely wrong-way
             # motion still blocks another automatic correction.
             short_request = requested_norm < 0.015
-            correction_direction_allowed = short_request or progress_ratio >= 0.0
+            # The first measured endpoint is allowed to enter the bounded
+            # correction loop even after wrong-way motion.  Whether another
+            # command is safe is decided from measured residual improvement;
+            # a second non-improving result is stopped before another retry.
+            correction_direction_allowed = bool(
+                step_kind == "ALIGN_FIXED_TIP_YZ"
+                or short_request
+                or progress_ratio >= 0.0
+            )
             correctable = bool(
                 not accepted
                 and waypoint_error is not None
@@ -1480,6 +2870,7 @@ class TouchObservationNode(Node):
             cartesian_feedback["acceptance"] = {
                 "accepted": accepted,
                 "correctable": correctable,
+                "waypoint_error_m": waypoint_error,
                 "step_kind": step_kind,
                 "maximum_waypoint_error_m": maximum_error,
                 "correctable_maximum_waypoint_error_m": correctable_maximum,
@@ -1518,12 +2909,195 @@ class TouchObservationNode(Node):
                 self._arm_state.get("motor_health", {})
             ),
             "cartesian_feedback_at_completion": cartesian_feedback,
+            "post_motion_tf_diagnostics": jsonable(
+                self._approach_feedback_diagnostics
+            ),
             "completed_at_wall_time_sec": time.time(),
         })
         self._motor_step_evidence.append(summary)
         self._active_step_motor_started = None
         self._save_motor_evidence()
         return cartesian_feedback
+
+    def _capture_motion_tracking_evidence(
+        self, execution: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Freeze tracker coverage for the just-completed arm trajectory."""
+        plan = self._approach_plan
+        if plan is None:
+            return {
+                "continuous": False,
+                "reason": "approach plan disappeared before tracker audit",
+            }
+        existing = plan.get("motion_tracking_evidence")
+        if isinstance(existing, dict):
+            return existing
+        try:
+            dispatch_stamp = float(plan.get("execute_dispatch_ros_sec"))
+        except (TypeError, ValueError):
+            dispatch_stamp = math.nan
+        try:
+            gateway_completion_stamp = float(execution.get("event_ros_sec"))
+        except (TypeError, ValueError):
+            gateway_completion_stamp = math.nan
+        gateway_stamp_valid = bool(
+            math.isfinite(gateway_completion_stamp)
+            and gateway_completion_stamp > 0.0
+        )
+        completion_stamp = gateway_completion_stamp
+        if not gateway_stamp_valid:
+            completion_stamp = float(self.get_clock().now().nanoseconds) * 1.0e-9
+        evidence = motion_tracking_evidence(
+            list(self._tracker_good_frame_stamps),
+            dispatch_stamp,
+            completion_stamp,
+            int(self.get_parameter(
+                "approach_tracking_minimum_motion_frames"
+            ).value),
+            float(self.get_parameter(
+                "approach_tracking_maximum_motion_gap_sec"
+            ).value),
+        )
+        evidence["completion_stamp_source"] = (
+            "GATEWAY_EVENT_ROS_TIME"
+            if gateway_stamp_valid
+            else "LOCAL_RECEIVE_ROS_TIME_FALLBACK"
+        )
+        plan["motion_tracking_evidence"] = evidence
+        return evidence
+
+    def _completion_transform_after_motion(
+        self, execution: dict[str, Any]
+    ) -> tuple[Any | None, str | None, bool]:
+        """Return only fresh post-motion TF, or defer endpoint validation.
+
+        During a real trajectory the servo-bus lock can temporarily delay the
+        JointState -> robot_state_publisher chain.  tf2 Time(0) may then either
+        return the pre-motion Arm pose or fail because the moving mount and Arm
+        subtrees no longer have an overlapping cache interval.  Neither case
+        is valid completion evidence.
+        """
+        request_id = str(execution.get("last_request_id", ""))
+        now_monotonic = time.monotonic()
+        try:
+            gateway_event_ros_sec = float(execution.get("event_ros_sec"))
+        except (TypeError, ValueError):
+            gateway_event_ros_sec = math.nan
+        if self._approach_feedback_wait_request_id != request_id:
+            self._approach_feedback_wait_request_id = request_id
+            self._approach_feedback_wait_started = now_monotonic
+            local_observed_ros_sec = (
+                float(self.get_clock().now().nanoseconds) * 1.0e-9
+            )
+            self._approach_completion_observed_ros_sec = (
+                gateway_event_ros_sec
+                if math.isfinite(gateway_event_ros_sec)
+                and gateway_event_ros_sec > 0.0
+                else local_observed_ros_sec
+            )
+            self._approach_feedback_diagnostics = {}
+
+        maximum_age = float(
+            self.get_parameter("approach_cartesian_feedback_max_age_sec").value
+        )
+        wait_limit = float(
+            self.get_parameter("approach_cartesian_feedback_wait_sec").value
+        )
+        completion_slack = float(self.get_parameter(
+            "approach_cartesian_completion_tf_slack_sec"
+        ).value)
+        reason: str | None = None
+        transform = None
+        try:
+            transform = self._latest_arm_tip_transform()
+            stamp = transform.header.stamp
+            transform_stamp_sec = (
+                float(stamp.sec) + float(stamp.nanosec) * 1.0e-9
+            )
+            now_ros_sec = float(self.get_clock().now().nanoseconds) * 1.0e-9
+            age_sec = now_ros_sec - transform_stamp_sec
+            completion_observed = self._approach_completion_observed_ros_sec
+            minimum_completion_stamp = (
+                None if completion_observed is None else
+                completion_observed - completion_slack
+            )
+            motion_start_stamp = float(
+                (self._approach_plan or {}).get("motion_start_tf_stamp_sec", 0.0)
+                or 0.0
+            )
+            if motion_start_stamp > 0.0:
+                minimum_completion_stamp = max(
+                    motion_start_stamp,
+                    minimum_completion_stamp or motion_start_stamp,
+                )
+            self._approach_feedback_diagnostics = {
+                "request_id": request_id,
+                "query_ros_sec": now_ros_sec,
+                "terminal_state_first_observed_ros_sec": completion_observed,
+                "terminal_stamp_source": (
+                    "GATEWAY_EVENT_ROS_TIME"
+                    if math.isfinite(gateway_event_ros_sec)
+                    and gateway_event_ros_sec > 0.0
+                    else "LOCAL_RECEIVE_ROS_TIME_FALLBACK"
+                ),
+                "terminal_state_local_receive_ros_sec": now_ros_sec,
+                "terminal_state_transport_delay_sec": (
+                    None if completion_observed is None else
+                    max(0.0, now_ros_sec - completion_observed)
+                ),
+                "motion_start_tf_stamp_sec": (
+                    motion_start_stamp if motion_start_stamp > 0.0 else None
+                ),
+                "minimum_accepted_tf_stamp_sec": minimum_completion_stamp,
+                "latest_tf_stamp_sec": transform_stamp_sec,
+                "latest_tf_age_sec": age_sec,
+                "maximum_tf_age_sec": maximum_age,
+                "completion_tf_slack_sec": completion_slack,
+                "feedback_source": getattr(
+                    self, "_latest_tip_feedback_source", "UNKNOWN"
+                ),
+            }
+            reason = post_motion_tf_rejection_reason(
+                transform_stamp_sec,
+                now_ros_sec,
+                minimum_completion_stamp,
+                maximum_age,
+            )
+            if reason is not None:
+                transform = None
+        except (TypeError, ValueError, TransformException) as exc:
+            reason = str(exc)
+            self._approach_feedback_diagnostics = {
+                "request_id": request_id,
+                "query_ros_sec": (
+                    float(self.get_clock().now().nanoseconds) * 1.0e-9
+                ),
+                "terminal_state_first_observed_ros_sec": (
+                    self._approach_completion_observed_ros_sec
+                ),
+                "lookup_error": reason,
+            }
+
+        if transform is not None:
+            self._approach_feedback_wait_request_id = None
+            self._approach_feedback_wait_started = None
+            self._approach_completion_observed_ros_sec = None
+            return transform, None, False
+
+        started = self._approach_feedback_wait_started
+        elapsed = 0.0 if started is None else now_monotonic - started
+        if elapsed < wait_limit:
+            return None, reason or "fresh Arm TF is not available yet", True
+
+        self._approach_feedback_wait_request_id = None
+        self._approach_feedback_wait_started = None
+        self._approach_completion_observed_ros_sec = None
+        return (
+            None,
+            f"fresh post-motion Cartesian feedback did not arrive within "
+            f"{wait_limit:.1f}s: {reason or 'unknown TF error'}",
+            False,
+        )
 
     def _save_motor_evidence(self) -> None:
         if self._frozen is None:
@@ -1551,8 +3125,42 @@ class TouchObservationNode(Node):
         with self._lock:
             self._automatic_approach = False
             self._automatic_reacquire_due = None
+            self._automatic_settle_started = None
+            self._automatic_settle_deadline = None
+            self._automatic_settle_samples.clear()
             self._automatic_reacquire_pending = False
         self._set_state(state, reason)
+
+    def _schedule_press_recovery(self, reason: str) -> None:
+        """Leave PRESS and return through the camera-preserving NEAR loop.
+
+        A failed operator-authorized PRESS must not reuse the generic
+        same-waypoint correction path: that path keeps chasing the failed
+        forward goal and can accumulate a different wrist-camera attitude.
+        Revoke the one-shot authorization, retain the NEAR latch, retreat in
+        bounded steps to the NEAR X plane, then reacquire and run the normal
+        fixed-tip Y/Z alignment again.
+        """
+        self._press_authorized = False
+        self._press_phase_active = False
+        self._press_recovery_pending = True
+        self._near_phase_latched = True
+        self._cartesian_correction_retries = 0
+        self._cartesian_correction_previous_error_m = None
+        self._approach_feedback_wait_request_id = None
+        self._approach_feedback_wait_started = None
+        if self._arm_target is not None:
+            self._automatic_tracking_reference = dict(self._arm_target)
+        self._automatic_approach = True
+        self._automatic_approach_started = time.monotonic()
+        self._clear_arm_observation(preserve_tracker=True)
+        self._start_automatic_settle_observation()
+        self._set_state(
+            "PRESS_RECOVERY_TO_NEAR",
+            "PRESS endpoint was not accepted; authorization revoked. "
+            "Returning to the retained NEAR plane before camera-preserving "
+            f"tip alignment: {reason}",
+        )
 
     def _clear_arm_prompts(self) -> None:
         with self._lock:
@@ -1566,7 +3174,7 @@ class TouchObservationNode(Node):
             self._arm_target_confirmed = False
             self._reset_automatic_approach()
             self._job_id += 1
-        self._republish_overlay()
+        self._request_overlay_refresh()
         self._set_state(
             "ARM_FRAME_READY",
             "Arm-camera prompts cleared; click the real target in the wrist image",
@@ -1579,6 +3187,117 @@ class TouchObservationNode(Node):
             )
         except TransformException as exc:
             raise ValueError(f"TF {destination} <- {source} unavailable: {exc}") from exc
+
+    def _arm_base_transform(self, destination: str, source: str):
+        """Return the latest physical Arm mount without requiring a full TF tree."""
+        direct = self._arm_mount_transform
+        received = self._arm_mount_received
+        if (
+            direct is None
+            or received is None
+            or time.monotonic() - received > 1.0
+        ):
+            return self._latest_transform(destination, source)
+        valid_pair = {destination, source} == {"base_link", "arm/base_link"}
+        if not valid_pair:
+            raise ValueError(
+                f"unsupported Arm mount transform {destination} <- {source}"
+            )
+        rotation, translation = self._rotation_translation(direct)
+        if destination == "arm/base_link":
+            rotation = rotation.T
+            translation = -(rotation @ translation)
+        quaternion = self._quaternion_xyzw_from_matrix(rotation)
+        result = TransformStamped()
+        result.header.stamp = direct.header.stamp
+        result.header.frame_id = destination
+        result.child_frame_id = source
+        result.transform.translation.x = float(translation[0])
+        result.transform.translation.y = float(translation[1])
+        result.transform.translation.z = float(translation[2])
+        result.transform.rotation.x = float(quaternion[0])
+        result.transform.rotation.y = float(quaternion[1])
+        result.transform.rotation.z = float(quaternion[2])
+        result.transform.rotation.w = float(quaternion[3])
+        return result
+
+    @staticmethod
+    def _quaternion_xyzw_from_matrix(rotation: np.ndarray) -> np.ndarray:
+        """Convert one proper 3x3 rotation to a normalized xyzw quaternion."""
+        matrix = np.asarray(rotation, dtype=np.float64)
+        trace = float(np.trace(matrix))
+        if trace > 0.0:
+            scale = math.sqrt(trace + 1.0) * 2.0
+            quaternion = np.array([
+                (matrix[2, 1] - matrix[1, 2]) / scale,
+                (matrix[0, 2] - matrix[2, 0]) / scale,
+                (matrix[1, 0] - matrix[0, 1]) / scale,
+                0.25 * scale,
+            ])
+        else:
+            index = int(np.argmax(np.diag(matrix)))
+            j, k = (index + 1) % 3, (index + 2) % 3
+            scale = math.sqrt(max(
+                1.0 + matrix[index, index] - matrix[j, j] - matrix[k, k],
+                1.0e-12,
+            )) * 2.0
+            quaternion = np.zeros(4, dtype=np.float64)
+            quaternion[index] = 0.25 * scale
+            quaternion[j] = (matrix[j, index] + matrix[index, j]) / scale
+            quaternion[k] = (matrix[k, index] + matrix[index, k]) / scale
+            quaternion[3] = (matrix[k, j] - matrix[j, k]) / scale
+        norm = float(np.linalg.norm(quaternion))
+        if norm <= 1.0e-12 or not np.all(np.isfinite(quaternion)):
+            raise ValueError("calibrated FK produced an invalid rotation")
+        return quaternion / norm
+
+    def _latest_arm_tip_transform(self):
+        """Prefer fresh raw joint feedback plus calibrated FK over dynamic TF."""
+        received = self._arm_joint_snapshot_received
+        maximum_age = float(
+            self.get_parameter("approach_cartesian_feedback_max_age_sec").value
+        )
+        if (
+            received is not None
+            and time.monotonic() - received <= maximum_age
+            and all(name in self._arm_joint_snapshot for name in REACH_JOINT_NAMES)
+        ):
+            arm_base = self._arm_base_transform("base_link", "arm/base_link")
+            base_rotation, base_translation = self._rotation_translation(arm_base)
+            raw_positions = [
+                self._arm_joint_snapshot[name] for name in REACH_JOINT_NAMES
+            ]
+            arm_tip = tip_transform(raw_positions)
+            tip_rotation = base_rotation @ arm_tip[:3, :3]
+            tip_translation = base_translation + base_rotation @ arm_tip[:3, 3]
+            quaternion = self._quaternion_xyzw_from_matrix(tip_rotation)
+            result = TransformStamped()
+            stamp_sec = self._arm_joint_snapshot_stamp_sec
+            if stamp_sec is None:
+                stamp_sec = float(self.get_clock().now().nanoseconds) * 1.0e-9
+            whole_seconds = math.floor(stamp_sec)
+            result.header.stamp.sec = int(whole_seconds)
+            result.header.stamp.nanosec = int(
+                round((stamp_sec - whole_seconds) * 1.0e9)
+            )
+            if result.header.stamp.nanosec >= 1_000_000_000:
+                result.header.stamp.sec += 1
+                result.header.stamp.nanosec -= 1_000_000_000
+            result.header.frame_id = "base_link"
+            result.child_frame_id = "arm/touch_tip"
+            result.transform.translation.x = float(tip_translation[0])
+            result.transform.translation.y = float(tip_translation[1])
+            result.transform.translation.z = float(tip_translation[2])
+            result.transform.rotation.x = float(quaternion[0])
+            result.transform.rotation.y = float(quaternion[1])
+            result.transform.rotation.z = float(quaternion[2])
+            result.transform.rotation.w = float(quaternion[3])
+            self._latest_tip_feedback_source = (
+                "DIRECT_JOINT_STATE_CALIBRATED_FK_PLUS_ARM_MOUNT_TF"
+            )
+            return result
+        self._latest_tip_feedback_source = "DYNAMIC_TF_FALLBACK"
+        return self._latest_transform("base_link", "arm/touch_tip")
 
     @staticmethod
     def _rotation_translation(transform) -> tuple[np.ndarray, np.ndarray]:
@@ -1659,31 +3378,68 @@ class TouchObservationNode(Node):
                 self._set_state("BLOCKED", "Arm is still settling; wait 0.5 s and retry")
             return
         with self._lock:
-            if not self._arm_color or not self._arm_info:
-                self._set_state("BLOCKED", "Arm-camera RGB or CameraInfo is missing")
+            now = time.monotonic()
+            maximum_age = float(self.get_parameter(
+                "arm_camera_max_receive_age_sec"
+            ).value)
+            color_age = (
+                math.inf if self._arm_color_received is None
+                else now - self._arm_color_received
+            )
+            if (
+                not self._arm_color
+                or not self._arm_info
+                or color_age > maximum_age
+            ):
+                info_age = (
+                    math.inf if self._arm_info_received is None
+                    else now - self._arm_info_received
+                )
+                reason = (
+                    "Arm-camera RGB is missing/stale or CameraInfo is unavailable: "
+                    f"RGB age={color_age:.2f}s, CameraInfo age={info_age:.2f}s, "
+                    f"limit={maximum_age:.2f}s"
+                )
+                if automatic_reacquire:
+                    self._automatic_reacquire_due = now + 0.5
+                    self._set_state(
+                        "AUTO_APPROACH_SETTLING",
+                        reason + "; waiting for a fresh frame without motion",
+                    )
+                else:
+                    self._set_state("BLOCKED", reason)
                 return
             color = self._arm_color[-1]
-            color_stamp = stamp_seconds(color)
-            info = min(self._arm_info, key=lambda item: abs(stamp_seconds(item) - color_stamp))
-            info_skew = abs(stamp_seconds(info) - color_stamp)
-            if info_skew > 0.25:
+        try:
+            # CameraInfo is static calibration metadata. Its message stamp is
+            # not required to match every RGB frame; only the RGB must be
+            # fresh. Geometry uses the newest common TF rather than an image
+            # stamp that may fall outside the TF buffer after motion.
+            arm_frame = self._arm_frame_snapshot(color)
+        except (ValueError, TransformException) as exc:
+            if automatic_reacquire:
+                with self._lock:
+                    self._automatic_reacquire_due = time.monotonic() + 0.10
                 self._set_state(
-                    "BLOCKED", f"Arm-camera CameraInfo skew {info_skew:.3f}s is too large"
+                    "AUTO_APPROACH_GEOMETRY_WAIT",
+                    f"Arm-camera geometry is temporarily unavailable: {exc}; "
+                    "waiting without motion",
                 )
-                return
-            rgb = self._bridge.imgmsg_to_cv2(color, desired_encoding="rgb8").copy()
-            frame_id = str(color.header.frame_id)
-            if not frame_id:
-                self._set_state("BLOCKED", "Arm-camera image frame_id is empty")
-                return
-            try:
-                base_from_camera = self._latest_transform("base_link", frame_id)
-                rotation, translation = self._rotation_translation(base_from_camera)
-                camera_matrix = np.asarray(info.k, dtype=np.float64).reshape(3, 3)
-                distortion = np.asarray(info.d, dtype=np.float64)
-            except ValueError as exc:
+            else:
                 self._set_state("BLOCKED", str(exc))
-                return
+            return
+        with self._lock:
+            rgb = arm_frame["rgb"]
+            color_stamp = float(arm_frame["stamp"])
+            frame_id = str(arm_frame["frame_id"])
+            camera_matrix = np.asarray(arm_frame["camera_matrix"], dtype=np.float64)
+            distortion = np.asarray(arm_frame["distortion"], dtype=np.float64)
+            rotation = np.asarray(
+                arm_frame["base_from_camera_rotation"], dtype=np.float64
+            )
+            translation = np.asarray(
+                arm_frame["base_from_camera_translation"], dtype=np.float64
+            )
             height, width = rgb.shape[:2]
             margin = int(self.get_parameter("arm_projection_image_margin_px").value)
             projected = None
@@ -1708,17 +3464,7 @@ class TouchObservationNode(Node):
                     self._set_state("BLOCKED", str(exc))
                     return
             self._arm_frozen = {
-                "id": str(uuid.uuid4()),
-                "rgb": rgb,
-                "stamp": color_stamp,
-                "stamp_msg": color.header.stamp,
-                "frame_id": frame_id,
-                "camera_matrix": camera_matrix,
-                "distortion_model": str(info.distortion_model),
-                "distortion": distortion.tolist(),
-                "camera_info_skew_sec": info_skew,
-                "base_from_camera_rotation": rotation,
-                "base_from_camera_translation": translation,
+                **arm_frame,
                 "d435_projected_uv": (
                     None if projected is None else list(projected)
                 ),
@@ -1800,7 +3546,7 @@ class TouchObservationNode(Node):
                     (int(round(projected[0])), int(round(projected[1])))
                 )
                 self._arm_labels.append(1)
-        self._republish_overlay()
+        self._request_overlay_refresh()
         if automatic_reacquire and tracking_prompt is None:
             self._pause_automatic_approach(
                 "AUTO_TARGET_LOST",
@@ -1905,20 +3651,26 @@ class TouchObservationNode(Node):
             minimum_pixels = int(
                 self.get_parameter("arm_sam_minimum_mask_pixels").value
             )
-            minimum_score = float(self.get_parameter("arm_sam_minimum_score").value)
             mask_fraction = float(len(pixels)) / float(mask.size)
-            large_mask_fraction = float(
-                self.get_parameter("arm_sam_large_mask_fraction").value
+            # The old score relaxation depended on a >=25% mask.  Current
+            # Touch views rarely reach that occupancy and a correct partially
+            # occluded target was consequently reported as lost.  Select the
+            # score gate from the retained approach phase instead.
+            minimum_score = phase_sam_minimum_score(
+                operator_handoff_complete=bool(self._arm_handoff_complete),
+                near_phase_latched=bool(self._near_phase_latched),
+                press_phase_active=bool(self._press_phase_active),
+                initial_score=float(self.get_parameter("arm_sam_minimum_score").value),
+                far_tracking_score=float(self.get_parameter(
+                    "arm_sam_far_tracking_minimum_score"
+                ).value),
+                near_tracking_score=float(self.get_parameter(
+                    "arm_sam_near_tracking_minimum_score"
+                ).value),
+                press_score=float(self.get_parameter(
+                    "arm_sam_press_minimum_score"
+                ).value),
             )
-            if mask_fraction >= large_mask_fraction:
-                minimum_score = float(self.get_parameter(
-                    "arm_sam_large_mask_minimum_score"
-                ).value)
-            if self._press_phase_active:
-                minimum_score = min(
-                    minimum_score,
-                    float(self.get_parameter("arm_sam_press_minimum_score").value),
-                )
             if len(pixels) < minimum_pixels:
                 disappearance = self._appearance_change_at_previous_target(rgb)
                 minimum_success_step = int(
@@ -1944,7 +3696,7 @@ class TouchObservationNode(Node):
                             "source": "ARM_CAMERA_RGB_TARGET_DISAPPEARANCE",
                             "touch_success_evidence": jsonable(disappearance),
                         }
-                    self._republish_overlay()
+                    self._request_overlay_refresh()
                     self._complete_touch_and_return_home(disappearance)
                     return
                 self._touch_success_change_streak = 0
@@ -1979,7 +3731,7 @@ class TouchObservationNode(Node):
                         "source": "ARM_CAMERA_RGB_LOCAL_APPEARANCE_CHANGE",
                         "touch_success_evidence": jsonable(appearance),
                     }
-                self._republish_overlay()
+                self._request_overlay_refresh()
                 self._complete_touch_and_return_home(appearance)
                 return
             self._touch_success_change_streak = 0
@@ -2023,7 +3775,7 @@ class TouchObservationNode(Node):
                     else float(self._arm_frozen.get("expected_mask_area_scale", 1.0))
                 )
                 self._automatic_reacquire_pending = False
-            self._republish_overlay()
+            self._request_overlay_refresh()
             if automatic_reacquire:
                 if tracking_reference is None:
                     self._pause_automatic_approach(
@@ -2036,11 +3788,20 @@ class TouchObservationNode(Node):
                 max_shift = float(
                     self.get_parameter("automatic_arm_target_max_shift_px").value
                 )
-                min_ratio = float(
-                    self.get_parameter("automatic_arm_target_min_area_ratio").value
-                )
-                max_ratio = float(
-                    self.get_parameter("automatic_arm_target_max_area_ratio").value
+                min_ratio, max_ratio = phase_tracking_area_ratio_bounds(
+                    near_phase_latched=bool(self._near_phase_latched),
+                    far_minimum_ratio=float(self.get_parameter(
+                        "automatic_arm_target_far_min_area_ratio"
+                    ).value),
+                    near_minimum_ratio=float(self.get_parameter(
+                        "automatic_arm_target_near_min_area_ratio"
+                    ).value),
+                    maximum_ratio=float(self.get_parameter(
+                        "automatic_arm_target_max_area_ratio"
+                    ).value),
+                    near_maximum_ratio=float(self.get_parameter(
+                        "automatic_arm_target_near_max_area_ratio"
+                    ).value),
                 )
                 continuity = validate_tracking_continuity(
                     (
@@ -2054,6 +3815,18 @@ class TouchObservationNode(Node):
                 )
                 shift = float(continuity["centroid_shift_px"])
                 area_ratio = float(continuity["mask_area_ratio"])
+                if self._near_phase_latched:
+                    # The fixed jaw increasingly occludes the object in NEAR.
+                    # Mask shrinkage is diagnostic, not loss evidence. Keep
+                    # centroid continuity and excessive growth as identity
+                    # checks; a large growth can indicate a target switch.
+                    continuity["valid"] = bool(
+                        math.isfinite(shift)
+                        and shift <= max_shift
+                        and math.isfinite(area_ratio)
+                        and area_ratio <= max_ratio
+                    )
+                    continuity["area_shrink_blocking"] = False
                 if not continuity["valid"]:
                     # A pushed object can disappear or leave only a small SAM
                     # fragment.  Before calling that TARGET_LOST, compare the
@@ -2137,10 +3910,15 @@ class TouchObservationNode(Node):
                 )
                 self._plan_approach_step()
                 return
+            recovery = bool(self._tracker_semantic_recovery)
             self._set_state(
                 "ARM_TARGET_READY",
-                f"Arm-camera SAM score={score:.3f}, mask={len(pixels)} px; "
-                "confirm it is the same object or click the correct object",
+                (
+                    "Automatic SAM semantic recovery produced a candidate: "
+                    if recovery else "Arm-camera SAM candidate: "
+                )
+                + f"score={score:.3f}, mask={len(pixels)} px; operator must "
+                "confirm the same elevator button or click to correct it",
             )
         except Exception as exc:
             self.get_logger().error(f"Arm-camera target segmentation rejected: {exc}")
@@ -2157,10 +3935,46 @@ class TouchObservationNode(Node):
         if self._state != "ARM_TARGET_READY" or self._arm_target is None:
             self._set_state("BLOCKED", "A valid arm-camera SAM target is required")
             return
+        try:
+            # SAM recovery and KLT propagation are deliberately image-only.
+            # Attach current intrinsics/TF once, immediately before metric
+            # planning is authorized.
+            self._refresh_arm_tracking_geometry()
+        except (ValueError, TransformException) as exc:
+            self._set_state(
+                "ARM_TARGET_READY",
+                f"Target identity is retained, but current Arm-camera geometry "
+                f"is unavailable: {exc}; confirm again after TF recovers",
+            )
+            return
         with self._lock:
             if self._arm_mask is None or self._arm_frozen is None:
                 self._set_state("BLOCKED", "Arm-camera mask/image is unavailable")
                 return
+            semantic_recovery = bool(self._tracker_semantic_recovery)
+            resume_after_confirmation = bool(
+                self._tracker_resume_after_confirmation
+            )
+            height, width = self._arm_frozen["rgb"].shape[:2]
+            try:
+                with self._tracker_operation_lock:
+                    tracker_result = self._target_tracker.initialize(
+                        self._arm_frozen["rgb"], self._arm_mask,
+                        excluded_tip_uv=self._fixed_arm_tip_pixel(width, height),
+                        preserve_identity_reference=semantic_recovery,
+                    )
+            except ValueError as exc:
+                self._set_state(
+                    "ARM_TARGET_REJECTED",
+                    "Confirmed SAM region cannot start geometric tracking: " + str(exc),
+                )
+                return
+            self._tracker_generation += 1
+            self._tracker_last_result = tracker_result
+            self._tracker_last_stamp = float(self._arm_frozen["stamp"])
+            self._tracker_last_good_monotonic = time.monotonic()
+            self._tracker_last_good_input_age_sec = 0.0
+            self._tracker_good_frame_stamps.clear()
             if self._arm_appearance_reference is None:
                 self._arm_appearance_reference = self._appearance_signature(
                     self._arm_frozen["rgb"], self._arm_mask
@@ -2177,23 +3991,19 @@ class TouchObservationNode(Node):
             self._arm_target["appearance_reference_reused"] = bool(
                 self._arm_appearance_reference_id != str(self._arm_frozen["id"])
             )
-            tracking_point = self._arm_camera_tracking_point(
-                np.asarray(self._arm_target["centroid_uv"], dtype=np.float64)
-            )
-            self._arm_target["tracking_point_base_m"] = tracking_point.tolist()
-            self._arm_target["tracking_range_m"] = float(np.linalg.norm(
-                tracking_point - np.asarray(
-                    self._arm_frozen["base_from_camera_translation"],
-                    dtype=np.float64,
-                )
-            ))
+            self._arm_target["tracker_initialization"] = jsonable(tracker_result)
+            # _refresh_arm_tracking_geometry() already recorded the metric ray
+            # point and range on this exact frozen frame.
             self._arm_target_confirmed = True
             self._arm_handoff_complete = True
             self._arm_target["operator_confirmed_same_object"] = True
             self._arm_target["automatic_continuity_verified"] = False
             self._automatic_tracking_reference = dict(self._arm_target)
+            self._tracker_semantic_recovery = False
+            self._tracker_resume_after_confirmation = False
             self._automatic_approach = bool(
-                self.get_parameter("automatic_approach_after_confirmation").value
+                resume_after_confirmation
+                or self.get_parameter("automatic_approach_after_confirmation").value
             )
             self._automatic_approach_started = time.monotonic()
             self._automatic_approach_steps = 0
@@ -2201,8 +4011,11 @@ class TouchObservationNode(Node):
             self._automatic_last_pixel_error = None
             self._automatic_nonconverging_steps = 0
             self._touch_success_change_streak = 0
-            self._approach_far_tip_x_m = None
-            self._near_phase_latched = False
+            # Do not redefine FAR after a manual re-confirmation.  FAR is a
+            # physical X reference captured once for this Touch session.  The
+            # previous reset made a NEAR pose become the new FAR pose, erased
+            # >=35 mm of measured progress, and falsely reported that a
+            # too-close target had no retreat room.
             self._save_arm_artifact()
         if not self._automatic_approach:
             self._set_state(
@@ -2212,7 +4025,34 @@ class TouchObservationNode(Node):
             return
         self._set_state(
             "ARM_TARGET_CONFIRMED",
-            "Arm-camera target confirmed; automatic guarded stop-observe approach authorized",
+            (
+                "Recovered elevator-button identity confirmed; continuous tracking "
+                "and the interrupted approach are resumed"
+                if semantic_recovery else
+                "Arm-camera target confirmed; KLT tracking is active and the "
+                "guarded approach is authorized"
+            ),
+        )
+        self._plan_approach_step()
+
+    def _confirm_press(self) -> None:
+        """Authorize deliberate +X PRESS after inspecting aligned NEAR view."""
+        if (
+            self._state != "PRESS_CONFIRMATION_REQUIRED"
+            or self._approach_plan is None
+            or not bool(self._approach_plan.get("press_alignment_ready"))
+        ):
+            self._set_state(
+                "BLOCKED",
+                "PRESS confirmation requires a current aligned NEAR observation",
+            )
+            return
+        self._press_authorized = True
+        self._automatic_approach = True
+        self._automatic_approach_started = time.monotonic()
+        self._set_state(
+            "PRESS_CONFIRMED",
+            "Operator confirmed PRESS; planning guarded +X motion",
         )
         self._plan_approach_step()
 
@@ -2225,9 +4065,73 @@ class TouchObservationNode(Node):
             raise ValueError("appearance mask has fewer than 20 pixels")
         lab = cv2.cvtColor(rgb, cv2.COLOR_RGB2LAB).astype(np.float32)
         pixels = lab[valid]
+        hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
+        histogram = cv2.calcHist(
+            [hsv], [0, 1], valid.astype(np.uint8), [16, 8], [0, 180, 0, 256]
+        )
+        cv2.normalize(histogram, histogram, alpha=1.0, norm_type=cv2.NORM_L1)
         return {
             "median_lab": np.median(pixels, axis=0).tolist(),
             "sample_count": int(len(pixels)),
+            "hsv_histogram_16x8": histogram.reshape(-1).tolist(),
+        }
+
+    def _tracked_region_appearance_change(
+        self, rgb: np.ndarray, mask: np.ndarray
+    ) -> dict[str, Any]:
+        """Compare the propagated target region to the immutable human keyframe."""
+        current = self._appearance_signature(rgb, mask)
+        reference = self._arm_appearance_reference
+        if reference is None:
+            return {"changed": False, "reason": "NO_HUMAN_CONFIRMED_REFERENCE"}
+        reference_lab = np.asarray(reference["median_lab"], dtype=np.float64)
+        current_lab = np.asarray(current["median_lab"], dtype=np.float64)
+        median_delta = float(np.linalg.norm(current_lab - reference_lab))
+        lab_threshold = float(self.get_parameter("tracker_touch_lab_delta").value)
+        lab = cv2.cvtColor(rgb, cv2.COLOR_RGB2LAB).astype(np.float32)
+        changed_fraction = float(np.mean(
+            np.linalg.norm(
+                lab[np.asarray(mask, dtype=bool)] - reference_lab, axis=1
+            ) >= lab_threshold
+        ))
+        fraction_threshold = float(self.get_parameter(
+            "tracker_touch_changed_fraction"
+        ).value)
+        reference_hist = np.asarray(
+            reference.get("hsv_histogram_16x8", []), dtype=np.float32
+        )
+        current_hist = np.asarray(
+            current.get("hsv_histogram_16x8", []), dtype=np.float32
+        )
+        histogram_distance = (
+            0.0
+            if reference_hist.shape != current_hist.shape or reference_hist.size == 0
+            else float(cv2.compareHist(
+                reference_hist.reshape(-1, 1), current_hist.reshape(-1, 1),
+                cv2.HISTCMP_BHATTACHARYYA,
+            ))
+        )
+        histogram_threshold = float(self.get_parameter(
+            "tracker_touch_histogram_distance"
+        ).value)
+        return {
+            "changed": bool(
+                changed_fraction >= fraction_threshold
+                and (
+                    median_delta >= lab_threshold
+                    or histogram_distance >= histogram_threshold
+                )
+            ),
+            "evidence_kind": "TRACKED_REGION_APPEARANCE_CHANGE",
+            "identity_source": "FIRST_HUMAN_CONFIRMED_ARM_CAMERA_REGION",
+            "median_delta_lab": median_delta,
+            "lab_delta_threshold": lab_threshold,
+            "changed_fraction": changed_fraction,
+            "changed_fraction_threshold": fraction_threshold,
+            "hsv_histogram_bhattacharyya": histogram_distance,
+            "histogram_distance_threshold": histogram_threshold,
+            "reference": reference,
+            "current": current,
         }
 
     def _appearance_change(self, rgb: np.ndarray, mask: np.ndarray) -> dict[str, Any]:
@@ -2315,10 +4219,7 @@ class TouchObservationNode(Node):
             return True
         with self._lock:
             self._automatic_reacquire_pending = False
-            self._automatic_reacquire_due = (
-                time.monotonic()
-                + float(self.get_parameter("automatic_approach_settle_sec").value)
-            )
+            self._start_automatic_settle_observation()
         self._set_state(
             "TOUCH_CHANGE_VERIFYING",
             f"Large local colour change observed near the target; confirming it on "
@@ -2353,9 +4254,23 @@ class TouchObservationNode(Node):
         return result
 
     def _complete_touch_and_return_home(self, evidence: dict[str, Any]) -> None:
+        if self._rolling_servo_session_id is not None:
+            if self._pending_touch_success_evidence is not None:
+                return
+            self._pending_touch_success_evidence = jsonable(evidence)
+            self._stop_rolling_visual_servo("TOUCH_SUCCESS_CONFIRMED")
+            self._set_state(
+                "TOUCH_SUCCESS_STOPPING",
+                "Tracked appearance change confirmed; waiting for visual-servo "
+                "STOP/HOLD acknowledgement before requesting HOME",
+            )
+            return
         self._automatic_approach = False
         self._automatic_reacquire_due = None
         self._automatic_reacquire_pending = False
+        self._press_phase_active = False
+        self._press_authorized = False
+        self._pending_touch_success_evidence = None
         if self._arm_target is not None:
             self._arm_target["touch_success_evidence"] = jsonable(evidence)
         self._save_arm_artifact()
@@ -2370,13 +4285,14 @@ class TouchObservationNode(Node):
         self._set_state(
             "TOUCH_SUCCESS_HOME_PREVIEW_REQUESTED",
             f"Touch success from arm-camera appearance change "
-            f"(Lab delta={float(evidence.get('delta_lab', 0.0)):.1f}); "
+            f"(Lab delta={float(evidence.get('median_delta_lab', evidence.get('delta_lab', 0.0))):.1f}); "
             "requesting guarded home preset",
         )
 
     def _save_arm_artifact(self) -> None:
         if self._frozen is None or self._arm_frozen is None:
             return
+        geometry = arm_frame_geometry_evidence(self._arm_frozen)
         root = Path(str(self.get_parameter("artifact_root").value)).expanduser()
         directory = root / f"observation_{self._frozen['id']}"
         directory.mkdir(parents=True, exist_ok=True)
@@ -2394,34 +4310,33 @@ class TouchObservationNode(Node):
             "arm_observation_id": self._arm_frozen["id"],
             "image_stamp": self._arm_frozen["stamp"],
             "frame_id": self._arm_frozen["frame_id"],
-            "camera_info": {
-                "k": self._arm_frozen["camera_matrix"].reshape(-1).tolist(),
-                "distortion_model": self._arm_frozen["distortion_model"],
-                "d": self._arm_frozen["distortion"],
-            },
-            "d435_projected_uv": self._arm_frozen["d435_projected_uv"],
-            "d435_projection_in_image": self._arm_frozen["d435_projection_in_image"],
+            "geometry_ready": geometry["geometry_ready"],
+            "camera_info": geometry["camera_info"],
+            "d435_projected_uv": self._arm_frozen.get("d435_projected_uv"),
+            "d435_projection_in_image": self._arm_frozen.get(
+                "d435_projection_in_image", False
+            ),
             "d435_projection_role": (
                 "AUTO_PROMPT" if bool(
                     self.get_parameter("arm_projection_auto_prompt").value
                 ) else "REFERENCE_ONLY_MANUAL_SELECTION_REQUIRED"
             ),
-            "tf_base_link_from_arm_camera": {
-                "translation_m": self._arm_frozen[
-                    "base_from_camera_translation"
-                ].tolist(),
-                "rotation_matrix": self._arm_frozen[
-                    "base_from_camera_rotation"
-                ].tolist(),
-                "distance_from_base_link_origin_m": float(np.linalg.norm(
-                    self._arm_frozen["base_from_camera_translation"]
-                )),
-            },
+            "tf_base_link_from_arm_camera": geometry[
+                "tf_base_link_from_arm_camera"
+            ],
             "prompts": [
                 {"u": u, "v": v, "label": label}
                 for (u, v), label in zip(self._arm_prompts, self._arm_labels)
             ],
             "target": jsonable(self._arm_target),
+            "continuous_tracker": {
+                "last_result": jsonable(self._tracker_last_result),
+                "semantic_recovery_active": self._tracker_semantic_recovery,
+                "identity_reference_observation_id": (
+                    self._arm_appearance_reference_id
+                ),
+                "appearance_change_streak": self._tracker_appearance_streak,
+            },
             "files": {
                 "rgb": image_name,
                 "mask": mask_name if self._arm_mask is not None else None,
@@ -2536,7 +4451,7 @@ class TouchObservationNode(Node):
             )
         return u_ratio * (width - 1), v_ratio * (height - 1)
 
-    def _republish_overlay(self) -> None:
+    def _republish_overlay(self) -> bool:
         with self._lock:
             if self._overlay_stage == "ARM" and self._arm_frozen is not None:
                 rgb = self._arm_frozen["rgb"].copy()
@@ -2560,6 +4475,46 @@ class TouchObservationNode(Node):
                     rgb[self._arm_mask] = (
                         0.55 * rgb[self._arm_mask] + 0.45 * tint[self._arm_mask]
                     ).astype(np.uint8)
+                tracker = self._tracker_last_result
+                if isinstance(tracker, dict):
+                    current_points = tracker.get("feature_points_uv", [])
+                    previous_points = tracker.get("previous_feature_points_uv", [])
+                    if (
+                        isinstance(current_points, list)
+                        and isinstance(previous_points, list)
+                    ):
+                        for previous, current in zip(
+                            previous_points[:80], current_points[:80]
+                        ):
+                            if len(previous) != 2 or len(current) != 2:
+                                continue
+                            p0 = tuple(int(round(value)) for value in previous)
+                            p1 = tuple(int(round(value)) for value in current)
+                            cv2.line(rgb, p0, p1, (40, 210, 255), 1, cv2.LINE_AA)
+                    if isinstance(current_points, list):
+                        for point in current_points[:80]:
+                            if not isinstance(point, list) or len(point) != 2:
+                                continue
+                            uv = tuple(int(round(value)) for value in point)
+                            cv2.circle(rgb, uv, 2, (40, 255, 80), -1, cv2.LINE_AA)
+                            cv2.circle(rgb, uv, 4, (10, 80, 10), 1, cv2.LINE_AA)
+                    tracker_text = (
+                        f"TRACKER {tracker.get('status', '--')} / "
+                        f"{tracker.get('method', '--')}  "
+                        f"valid={int(tracker.get('tracked_points', 0))}  "
+                        f"inlier={float(tracker.get('inlier_ratio', 0.0)):.2f}  "
+                        f"{float(tracker.get('processing_ms', 0.0)):.1f} ms"
+                    )
+                    cv2.rectangle(
+                        rgb, (5, 5),
+                        (min(image_width - 5, 625), 31),
+                        (15, 15, 15), thickness=-1,
+                    )
+                    cv2.putText(
+                        rgb, tracker_text, (12, 24),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.46, (80, 255, 120), 1,
+                        cv2.LINE_AA,
+                    )
                 projected = self._arm_frozen.get("d435_projected_uv")
                 if projected is not None:
                     projected_uv = (
@@ -2605,27 +4560,76 @@ class TouchObservationNode(Node):
                 message = self._bridge.cv2_to_imgmsg(rgb, encoding="rgb8")
                 message.header.stamp = self._arm_frozen["stamp_msg"]
                 message.header.frame_id = self._arm_frozen["frame_id"]
-                self._overlay_pub.publish(message)
-                return
-            if self._frozen is None:
-                return
-            rgb = self._frozen["rgb"].copy()
-            if self._mask is not None:
-                tint = np.zeros_like(rgb)
-                tint[..., 1] = 210
-                rgb[self._mask] = (
-                    0.55 * rgb[self._mask] + 0.45 * tint[self._mask]
-                ).astype(np.uint8)
-            for (u, v), label in zip(self._prompts, self._labels):
-                color = (40, 220, 40) if label == 1 else (240, 40, 40)
-                cv2.drawMarker(
-                    rgb, (u, v), color, markerType=cv2.MARKER_CROSS,
-                    markerSize=18, thickness=2,
-                )
-            message = self._bridge.cv2_to_imgmsg(rgb, encoding="rgb8")
-            message.header.stamp = self._frozen["stamp_msg"]
-            message.header.frame_id = self._frozen["frame_id"]
+            elif self._frozen is None:
+                return False
+            else:
+                rgb = self._frozen["rgb"].copy()
+                if self._mask is not None:
+                    tint = np.zeros_like(rgb)
+                    tint[..., 1] = 210
+                    rgb[self._mask] = (
+                        0.55 * rgb[self._mask] + 0.45 * tint[self._mask]
+                    ).astype(np.uint8)
+                for (u, v), label in zip(self._prompts, self._labels):
+                    color = (40, 220, 40) if label == 1 else (240, 40, 40)
+                    cv2.drawMarker(
+                        rgb, (u, v), color, markerType=cv2.MARKER_CROSS,
+                        markerSize=18, thickness=2,
+                    )
+                message = self._bridge.cv2_to_imgmsg(rgb, encoding="rgb8")
+                message.header.stamp = self._frozen["stamp_msg"]
+                message.header.frame_id = self._frozen["frame_id"]
+        # DDS publication of a 640x480 RGB image can block under rosbag/RViz
+        # backpressure. Never hold the shared state lock while publishing it.
         self._overlay_pub.publish(message)
+        return True
+
+    def _request_overlay_refresh(self) -> None:
+        with self._lock:
+            self._overlay_refresh_requested_count += 1
+            if self._overlay_dirty:
+                self._overlay_coalesced_update_count += 1
+            self._overlay_dirty = True
+
+    def _overlay_publish_tick(self) -> None:
+        with self._lock:
+            if not self._overlay_dirty:
+                return
+            if self._automatic_approach or any((
+                self._reach_execute_request_id is not None,
+                self._approach_execute_request_id is not None,
+                self._home_execute_request_id is not None,
+            )):
+                # A 640x480 raw-image DDS publish blocked the Python process
+                # for 4.071 s and 4.111 s in the 2026-09-18 regression bag.
+                # Keep only the newest dirty snapshot while any arm action is
+                # active or while the automatic stop-observe loop is chaining
+                # steps. Tracking, joint feedback and safety state must never
+                # wait behind diagnostic UI transport; the latest overlay is
+                # emitted once automatic motion pauses or completes.
+                self._overlay_deferred_for_motion_count += 1
+                return
+            # Claim the current snapshot. Updates arriving during a slow DDS
+            # publish set this flag again and are rendered on the next tick;
+            # old overlays never form an unbounded queue.
+            self._overlay_dirty = False
+        started = time.perf_counter()
+        published = False
+        error = None
+        try:
+            published = self._republish_overlay()
+        except Exception as exc:
+            # Visualization is diagnostic-only. Preserve the failure in state,
+            # but never route an RViz/DDS problem into the motion error path.
+            error = f"{type(exc).__name__}: {exc}"
+            self.get_logger().warning("Touch overlay publish failed: " + error)
+        finally:
+            duration_ms = (time.perf_counter() - started) * 1000.0
+            with self._lock:
+                self._overlay_last_publish_duration_ms = duration_ms
+                self._overlay_last_error = error
+                if published:
+                    self._overlay_published_count += 1
 
     def _publish_target(self) -> None:
         with self._lock:
@@ -2726,7 +4730,7 @@ class TouchObservationNode(Node):
             actual_label.color = actual_tip.color
             actual_label.text = "ACTUAL TOUCH TIP"
             markers.markers.append(actual_label)
-        except TransformException:
+        except (ValueError, TransformException):
             pass
         # Show the arm-camera optical centre and axes from the live TF.  The
         # camera is on the rigid gripper body, so arm/base_link distance changes
@@ -2794,7 +4798,7 @@ class TouchObservationNode(Node):
                 f"{np.linalg.norm(camera_position - arm_base_position) * 1000.0:.1f} mm"
             )
             markers.markers.append(camera_label)
-        except TransformException:
+        except (TransformException, ValueError):
             pass
         # The calibration dimension needed for prepare-pose recording is the
         # live D435 colour optical centre relative to the SO101 base, not the
@@ -2848,7 +4852,7 @@ class TouchObservationNode(Node):
             relation_label.color = relation.color
             relation_label.text = f"D435 COLOR OPTICAL <-> ARM BASE  {separation * 1000.0:.1f} mm"
             markers.markers.append(relation_label)
-        except TransformException:
+        except (TransformException, ValueError):
             pass
         if reach_plan is not None:
             path = Marker()
@@ -2929,8 +4933,30 @@ class TouchObservationNode(Node):
         self._marker_pub.publish(markers)
 
     def _refresh_visualization(self) -> None:
-        if self._target is not None:
-            self._publish_target()
+        with self._lock:
+            has_target = self._target is not None
+            motion_active = diagnostic_visualization_should_defer(
+                automatic_approach=bool(self._automatic_approach),
+                rolling_session_active=(
+                    self._rolling_servo_session_id is not None
+                ),
+                execute_request_active=any((
+                    self._reach_execute_request_id is not None,
+                    self._approach_execute_request_id is not None,
+                    self._home_execute_request_id is not None,
+                )),
+            )
+            if has_target and motion_active:
+                self._target_visualization_deferred_for_motion_count += 1
+                return
+        if not has_target:
+            return
+        started = time.perf_counter()
+        self._publish_target()
+        duration_ms = (time.perf_counter() - started) * 1000.0
+        with self._lock:
+            self._target_visualization_published_count += 1
+            self._target_visualization_last_publish_duration_ms = duration_ms
 
     def _save_artifact(self) -> None:
         """Persist direct sensor evidence and the latest derived result."""
@@ -3011,6 +5037,8 @@ class TouchObservationNode(Node):
         temporary.replace(directory / "observation.json")
 
     def _deactivate(self, message: str) -> None:
+        if self._rolling_servo_session_id is not None:
+            self._stop_rolling_visual_servo("Touch Mode exit requested")
         with self._lock:
             self._active = False
             self._frozen = None
@@ -3023,6 +5051,10 @@ class TouchObservationNode(Node):
             self._reach_execute_request_id = None
             self._clear_arm_observation()
             self._approach_execute_request_id = None
+            self._rolling_servo_session_id = None
+            self._rolling_servo_deadline = None
+            self._rolling_servo_phase = "INACTIVE"
+            self._pending_touch_success_evidence = None
             self._reset_automatic_approach()
             self._camera_adjustment_requested_at = None
             self._job_id += 1
@@ -3047,10 +5079,8 @@ class TouchObservationNode(Node):
             self._set_state("BLOCKED", "Complete fresh five-joint Arm feedback is required for IK")
             return
         try:
-            transform = self._tf_buffer.lookup_transform(
-                "arm/base_link", "base_link", Time(), timeout=Duration(seconds=0.25)
-            )
-        except TransformException as exc:
+            transform = self._arm_base_transform("arm/base_link", "base_link")
+        except (TransformException, ValueError) as exc:
             self._set_state("BLOCKED", f"TF arm/base_link <- base_link unavailable: {exc}")
             return
         rotation_message = transform.transform.rotation
@@ -3216,12 +5246,27 @@ class TouchObservationNode(Node):
                 "APPROACH_BLOCKED", "Confirm the target in a fresh arm-camera image first"
             )
             return
-        if self._state not in {"ARM_TARGET_CONFIRMED", "APPROACH_GATEWAY_REJECTED"}:
+        if self._state not in {
+            "ARM_TARGET_CONFIRMED",
+            "APPROACH_GATEWAY_REJECTED",
+            "PRESS_CONFIRMED",
+        }:
             self._set_state("BLOCKED", "Arm-camera target is not ready for approach planning")
             return
         allowed, reason = self._arm_gate()
         if not allowed:
-            self._pause_automatic_approach("APPROACH_BLOCKED", reason)
+            if (
+                self._automatic_approach
+                and reason == "Arm Dashboard state is missing or stale"
+            ):
+                with self._lock:
+                    self._automatic_reacquire_due = time.monotonic() + 0.10
+                self._set_state(
+                    "AUTO_APPROACH_ARM_STATE_WAIT",
+                    reason + "; waiting for a fresh latest-value update without motion",
+                )
+            else:
+                self._pause_automatic_approach("APPROACH_BLOCKED", reason)
             return
         if not all(name in self._arm_joints for name in REACH_JOINT_NAMES):
             self._pause_automatic_approach(
@@ -3229,7 +5274,7 @@ class TouchObservationNode(Node):
             )
             return
         try:
-            actual_tip_transform = self._latest_transform("base_link", "arm/touch_tip")
+            actual_tip_transform = self._latest_arm_tip_transform()
             _, actual_tip = self._rotation_translation(actual_tip_transform)
             height, width = self._arm_frozen["rgb"].shape[:2]
             fixed_tip_uv = np.asarray(
@@ -3239,7 +5284,18 @@ class TouchObservationNode(Node):
             camera_origin = np.asarray(
                 self._arm_frozen["base_from_camera_translation"], dtype=np.float64
             )
-            range_scale = float(np.linalg.norm(d435_anchor - camera_origin))
+            # Prefer the target range projected along the current arm-camera
+            # ray.  Euclidean distance to the uncorrected D435 anchor is an
+            # overestimate whenever its lateral TF error is non-zero and made
+            # the old NEAR correction overshoot.
+            tracking_range = self._arm_target.get("tracking_range_m")
+            range_scale = (
+                float(tracking_range)
+                if tracking_range is not None
+                and math.isfinite(float(tracking_range))
+                and float(tracking_range) > 0.02
+                else float(np.linalg.norm(d435_anchor - camera_origin))
+            )
             mask_centroid_uv = np.asarray(
                 self._arm_target["centroid_uv"], dtype=np.float64
             )
@@ -3256,8 +5312,19 @@ class TouchObservationNode(Node):
                 0.0, float(actual_tip[0]) - self._approach_far_tip_x_m
             )
             too_close = bool(mask_fraction >= too_close_mask_fraction)
-            if advanced_from_far_m >= near_advance_m - 1.0e-3:
+            entering_near = bool(
+                not self._near_phase_latched
+                and advanced_from_far_m >= near_advance_m - 1.0e-3
+            )
+            if entering_near:
                 self._near_phase_latched = True
+                # Latch the calibrated FAR/NEAR-entry attitude once.  Every
+                # subsequent image correction refers to this same attitude,
+                # rather than accepting cumulative camera swivel as the new
+                # reference after each stop-observe cycle.
+                self._near_tool_rotation_arm = tip_transform(
+                    [self._arm_joints[name] for name in REACH_JOINT_NAMES]
+                )[:3, :3].copy()
             # NEAR is a one-way phase transition for this Touch session.
             # Pure Y/Z IK can couple into measured X on the real mechanism;
             # that drift must not send the state machine back to FAR.
@@ -3267,7 +5334,9 @@ class TouchObservationNode(Node):
             )
             # FAR centres the complete object in the image.  Once measured +X
             # travel crosses the NEAR boundary, use one unambiguous alignment
-            # objective: put the fixed lower gripper tip inside the SAM mask.
+            # objective: bring the fixed lower gripper tip close to the SAM
+            # centroid. Mask containment is diagnostic only because jaw
+            # occlusion can fragment the near-field mask.
             alignment_pixel_uv = fixed_tip_uv if near_reached else image_centre_uv
             tip_alignment = base_yz_pixel_alignment_delta(
                 tuple(mask_centroid_uv), tuple(alignment_pixel_uv),
@@ -3282,6 +5351,37 @@ class TouchObservationNode(Node):
             lateral_correction = np.asarray(
                 tip_alignment["delta_base_yz_m"], dtype=np.float64
             )
+            alignment_subphase = "FAR_IMAGE_CENTER"
+            if near_reached:
+                pixel_error_uv = np.asarray(
+                    tip_alignment["pixel_error_uv"], dtype=np.float64
+                )
+                jacobian = np.asarray(
+                    tip_alignment["image_jacobian_px_per_m"], dtype=np.float64
+                )
+                z_first_tolerance = float(self.get_parameter(
+                    "approach_near_z_first_tolerance_px"
+                ).value)
+                if not math.isfinite(z_first_tolerance) or z_first_tolerance <= 0.0:
+                    raise ValueError("approach_near_z_first_tolerance_px must be positive")
+                if abs(float(pixel_error_uv[0])) > z_first_tolerance:
+                    # First remove horizontal image error while deliberately
+                    # leaving vertical error for the next stopped observation.
+                    # With this camera geometry that is predominantly base Z;
+                    # solving through the measured Jacobian retains coupling.
+                    desired_motion = np.array([-pixel_error_uv[0], 0.0])
+                    lateral_correction = np.linalg.lstsq(
+                        jacobian, desired_motion, rcond=None
+                    )[0]
+                    alignment_subphase = "Z_FIRST_TARGET_ABOVE_TIP"
+                else:
+                    # Once target and tip share an image column, correct only
+                    # the vertical image error (predominantly base Y).
+                    desired_motion = np.array([0.0, -pixel_error_uv[1]])
+                    lateral_correction = np.linalg.lstsq(
+                        jacobian, desired_motion, rcond=None
+                    )[0]
+                    alignment_subphase = "Y_SECOND_TARGET_TO_TIP"
             # D435 X is retained only as an independent maximum-travel reference.
             # Y/Z follow the real-robot fixed-tip wrist-image mapping.
             refined_point = d435_anchor.copy()
@@ -3343,7 +5443,6 @@ class TouchObservationNode(Node):
             )
             press_alignment_ready = bool(
                 near_reached
-                and fixed_tip_in_mask
                 and pixel_error_norm <= press_entry_tolerance
             )
             maximum_lateral_step = float(
@@ -3354,10 +5453,19 @@ class TouchObservationNode(Node):
             if pixel_aligned:
                 lateral_step = np.zeros(2, dtype=np.float64)
             elif near_reached:
-                # In NEAR, apply the complete camera-derived Y/Z correction.
-                # The independent maximum_arm_lateral_correction_m sanity gate
-                # above still rejects non-finite or implausibly large results.
-                lateral_step = lateral_error.copy()
+                # The pinhole Jacobian is still only a local approximation.
+                # Damping prevents one mismodelled frame from commanding the
+                # full correction, while repeated stop-observe cycles converge.
+                near_step_limit = float(self.get_parameter(
+                    "approach_near_lateral_step_max_m"
+                ).value)
+                if not math.isfinite(near_step_limit) or near_step_limit <= 0.0:
+                    raise ValueError("approach_near_lateral_step_max_m must be positive")
+                damped = lateral_error * 0.50
+                damped_norm = float(np.linalg.norm(damped))
+                lateral_step = damped * min(
+                    1.0, near_step_limit / max(damped_norm, 1.0e-9)
+                )
             elif lateral_norm > 1.0e-9:
                 lateral_step = lateral_error * min(
                     1.0, maximum_lateral_step / lateral_norm
@@ -3378,7 +5486,43 @@ class TouchObservationNode(Node):
             if not math.isfinite(max_press_past_target) or max_press_past_target <= 0.0:
                 raise ValueError("approach_max_press_past_target_m must be positive")
             remaining = float(refined_point[0] - actual_tip[0])
-            if remaining <= -max_press_past_target + 1.0e-3:
+            if self._press_recovery_pending:
+                near_x = self._approach_far_tip_x_m + near_advance_m
+                recovery_remaining = max(0.0, float(actual_tip[0]) - near_x)
+                if recovery_remaining <= 0.002:
+                    # The real tip is back at NEAR. Resume the ordinary visual
+                    # loop; the next branch will preserve camera attitude and
+                    # align fixed tip to the mask before asking for PRESS again.
+                    self._press_recovery_pending = False
+                    self._automatic_last_pixel_error = None
+                    self._automatic_nonconverging_steps = 0
+                else:
+                    recovery_step_limit = float(self.get_parameter(
+                        "approach_press_recovery_step_m"
+                    ).value)
+                    if not math.isfinite(recovery_step_limit) or recovery_step_limit <= 0.0:
+                        raise ValueError("approach_press_recovery_step_m must be positive")
+                    recovery_step = min(recovery_step_limit, recovery_remaining)
+                    waypoint_base = actual_tip.copy()
+                    waypoint_base[0] -= recovery_step
+                    approach = {
+                        "waypoint_base_m": waypoint_base,
+                        "remaining_before_m": remaining,
+                        "remaining_after_m": remaining + recovery_step,
+                        "complete": False,
+                        "motion_axis_base": [-float(recovery_step), 0.0, 0.0],
+                        "step_kind": "PRESS_RECOVERY_RETREAT_TO_NEAR",
+                        "press_phase_latched": False,
+                        "alignment_reference": "PRESERVE_CURRENT_CAMERA_ROTATION",
+                        "fixed_tip_in_mask": bool(fixed_tip_in_mask),
+                        "arm_mask_fraction": mask_fraction,
+                        "lateral_error_before_m": lateral_error.tolist(),
+                        "lateral_step_m": [0.0, 0.0],
+                    }
+            if self._press_recovery_pending:
+                # ``approach`` was constructed above for a bounded retreat.
+                pass
+            elif remaining <= -max_press_past_target + 1.0e-3:
                 approach = {
                     "waypoint_base_m": actual_tip.copy(),
                     "remaining_before_m": remaining,
@@ -3390,7 +5534,10 @@ class TouchObservationNode(Node):
                     "lateral_error_before_m": lateral_error.tolist(),
                     "lateral_step_m": [0.0, 0.0],
                 }
-            elif too_close:
+            elif should_retreat_for_too_close(
+                too_close=too_close,
+                press_alignment_ready=press_alignment_ready,
+            ):
                 self._press_phase_active = False
                 retreat_available = max(
                     0.0, float(actual_tip[0]) - self._approach_far_tip_x_m
@@ -3415,7 +5562,9 @@ class TouchObservationNode(Node):
                     "complete": False,
                     "motion_axis_base": [-float(retreat_step), 0.0, 0.0],
                     "step_kind": "MASK_TOO_CLOSE_RETREAT_SMALL",
-                    "alignment_reference": "ARM_CAMERA_IMAGE_CENTER",
+                    "alignment_reference": (
+                        "FIXED_LOWER_TIP" if near_reached else "ARM_CAMERA_IMAGE_CENTER"
+                    ),
                     "fixed_tip_in_mask": bool(fixed_tip_in_mask),
                     "lateral_error_before_m": lateral_error.tolist(),
                     "lateral_step_m": [0.0, 0.0],
@@ -3460,8 +5609,11 @@ class TouchObservationNode(Node):
                 }
             elif not press_alignment_ready:
                 # NEAR has a single closed-loop job. Keep X fixed and repeat
-                # Y/Z corrections until the fixed lower tip is aligned with and
-                # contained by the SAM target. Only then permit +X PRESS.
+                # Y/Z corrections until the fixed lower tip is sufficiently
+                # close to the SAM centroid.  Do not require the tip pixel to
+                # be inside the binary mask: near-field jaw occlusion can
+                # shrink or fragment that mask even when alignment is valid.
+                # Only then permit operator-confirmed +X PRESS.
                 self._press_phase_active = False
                 if float(np.linalg.norm(lateral_step)) <= 1.0e-9:
                     raise ValueError(
@@ -3481,14 +5633,44 @@ class TouchObservationNode(Node):
                     "step_kind": "ALIGN_FIXED_TIP_YZ",
                     "press_phase_latched": False,
                     "alignment_reference": "FIXED_LOWER_TIP",
+                    "alignment_subphase": alignment_subphase,
                     "fixed_tip_in_mask": bool(fixed_tip_in_mask),
                     "arm_mask_fraction": mask_fraction,
                     "lateral_error_before_m": lateral_error.tolist(),
                     "lateral_step_m": lateral_step.tolist(),
                 }
             else:
-                # Revalidate strict alignment and mask containment before every
-                # deliberate 25 mm +X press step; there is no unaligned fallback.
+                # Revalidate centroid alignment before every deliberate 25 mm
+                # +X press step; binary-mask containment is diagnostic only.
+                if not self._press_authorized:
+                    self._press_phase_active = False
+                    # Operator review time must not consume the automatic-loop
+                    # timeout, and no background tick may send a motion.
+                    self._automatic_approach = False
+                    self._automatic_reacquire_due = None
+                    self._approach_plan = {
+                        **tip_alignment,
+                        "step_kind": "PRESS_CONFIRMATION_REQUIRED",
+                        "press_alignment_ready": True,
+                        "fixed_tip_uv": fixed_tip_uv.tolist(),
+                        "fixed_tip_in_mask": bool(fixed_tip_in_mask),
+                        "arm_mask_fraction": mask_fraction,
+                        "too_close_mask_fraction_threshold": too_close_mask_fraction,
+                        "too_close": too_close,
+                        "advanced_from_far_m": advanced_from_far_m,
+                        "near_advance_distance_m": near_advance_m,
+                        "near_reached": True,
+                        "near_phase_latched": True,
+                        "alignment_error_px": pixel_error_norm,
+                        "execution_enabled": False,
+                    }
+                    self._publish_target()
+                    self._set_state(
+                        "PRESS_CONFIRMATION_REQUIRED",
+                        "NEAR alignment is ready; inspect the Arm Camera image "
+                        "and explicitly confirm before PRESS",
+                    )
+                    return
                 self._press_phase_active = True
                 forward_step = min(
                     aligned_press_step, remaining + max_press_past_target
@@ -3506,7 +5688,7 @@ class TouchObservationNode(Node):
                     "step_kind": "ALIGNED_PRESS_FORWARD_WITH_FIXED_TIP_YZ",
                     "press_phase_latched": True,
                     "alignment_reference": "FIXED_LOWER_TIP",
-                    "fixed_tip_in_mask": True,
+                    "fixed_tip_in_mask": bool(fixed_tip_in_mask),
                     "arm_mask_fraction": mask_fraction,
                     "lateral_error_before_m": lateral_error.tolist(),
                     "lateral_step_m": [0.0, 0.0],
@@ -3531,7 +5713,99 @@ class TouchObservationNode(Node):
                     "target plane); stopped for inspection and released SAM",
                 )
                 return
-            arm_from_base = self._latest_transform("arm/base_link", "base_link")
+            if approach["step_kind"] == "ALIGN_FIXED_TIP_YZ":
+                # Preserve the visual waypoint as the acceptance target while
+                # biasing the command against the repeatable local real-arm
+                # under-travel measured in Touch test evidence.  The outer
+                # vision loop must not advance until measured TF reaches the
+                # unmodified visual goal.
+                visual_waypoint = np.asarray(
+                    approach["waypoint_base_m"], dtype=np.float64
+                )
+                desired_delta = visual_waypoint - actual_tip
+                z_first = bool(
+                    approach.get("alignment_subphase")
+                    == "Z_FIRST_TARGET_ABOVE_TIP"
+                )
+                z_gain = float(self.get_parameter(
+                    "approach_near_z_first_feedforward_z_gain"
+                    if z_first else "approach_near_feedforward_z_gain"
+                ).value)
+                z_bias = float(self.get_parameter(
+                    "approach_near_z_first_feedforward_z_bias_m"
+                    if z_first else "approach_near_feedforward_z_up_bias_m"
+                ).value)
+                command_max = float(self.get_parameter(
+                    "approach_near_z_first_command_max_m"
+                    if z_first else "approach_near_feedforward_command_max_m"
+                ).value)
+                compensation = compensated_cartesian_delta(
+                    desired_delta,
+                    x_hold_bias_m=float(self.get_parameter(
+                        "approach_near_feedforward_x_hold_m"
+                    ).value),
+                    y_gain=float(self.get_parameter(
+                        "approach_near_feedforward_y_gain"
+                    ).value),
+                    z_gain=z_gain,
+                    z_up_bias_m=z_bias,
+                    maximum_norm_m=command_max,
+                )
+                commanded_delta = np.asarray(
+                    compensation["command_delta_base_m"], dtype=np.float64
+                )
+                approach["cartesian_goal_waypoint_base_m"] = visual_waypoint.tolist()
+                approach["waypoint_base_m"] = (
+                    actual_tip + commanded_delta
+                ).tolist()
+                approach["motion_axis_base"] = commanded_delta.tolist()
+                approach["cartesian_feedforward"] = {
+                    **compensation,
+                    "model": "LOCAL_TOUCH_NEAR_V1",
+                    "alignment_subphase": approach.get("alignment_subphase"),
+                    "evidence": (
+                        "2026-09-06 latest Z_FIRST inverse regression: "
+                        "achieved_Z ~= 0.372 * commanded_Z - 0.00924"
+                        if z_first else
+                        "Y_SECOND uses no fixed Z bias after image-column alignment"
+                    ),
+                }
+            elif approach["step_kind"] == "COARSE_CENTER_AND_FORWARD_TO_NEAR":
+                # The latest real evidence shows good X/Y tracking but a
+                # repeatable 21--25 mm downward Z endpoint error in all three
+                # FAR steps.  Keep the visual waypoint as the acceptance goal
+                # and bias only the commanded Z upward; the next stopped TF
+                # observation still decides whether the goal was reached.
+                visual_waypoint = np.asarray(
+                    approach["waypoint_base_m"], dtype=np.float64
+                )
+                z_bias = float(self.get_parameter(
+                    "approach_far_feedforward_z_up_bias_m"
+                ).value)
+                if not math.isfinite(z_bias) or z_bias < 0.0:
+                    raise ValueError(
+                        "approach_far_feedforward_z_up_bias_m must be finite and non-negative"
+                    )
+                commanded_waypoint = visual_waypoint.copy()
+                commanded_waypoint[2] += z_bias
+                approach["cartesian_goal_waypoint_base_m"] = visual_waypoint.tolist()
+                approach["waypoint_base_m"] = commanded_waypoint.tolist()
+                approach["motion_axis_base"] = (
+                    commanded_waypoint - actual_tip
+                ).tolist()
+                approach["cartesian_feedforward"] = {
+                    "model": "LOCAL_TOUCH_FAR_Z_V1",
+                    "desired_delta_base_m": (
+                        visual_waypoint - actual_tip
+                    ).tolist(),
+                    "command_delta_base_m": (
+                        commanded_waypoint - actual_tip
+                    ).tolist(),
+                    "z_up_bias_m": z_bias,
+                    "evidence": "2026-09-06 latest three FAR endpoints",
+                }
+
+            arm_from_base = self._arm_base_transform("arm/base_link", "base_link")
             arm_rotation, arm_translation = self._rotation_translation(arm_from_base)
             waypoint_base = np.asarray(approach["waypoint_base_m"], dtype=np.float64)
             waypoint_arm = arm_rotation @ waypoint_base + arm_translation
@@ -3560,8 +5834,12 @@ class TouchObservationNode(Node):
                 solution = solve_near_tip_alignment(
                     current, waypoint_arm,
                     lower_limits=lower, upper_limits=upper,
+                    target_rotation=self._near_tool_rotation_arm,
                 )
-            elif approach["step_kind"] == "ALIGNED_PRESS_FORWARD_WITH_FIXED_TIP_YZ":
+            elif approach["step_kind"] in {
+                "ALIGNED_PRESS_FORWARD_WITH_FIXED_TIP_YZ",
+                "PRESS_RECOVERY_RETREAT_TO_NEAR",
+            }:
                 solution = solve_near_forward_press(
                     current, waypoint_arm,
                     lower_limits=lower, upper_limits=upper,
@@ -3588,11 +5866,31 @@ class TouchObservationNode(Node):
         positions = {**solution["positions"], "gripper_joint": gripper}
         predicted_tip_arm = np.asarray(solution["tip_position"], dtype=np.float64)
         predicted_tip_base = arm_rotation.T @ (predicted_tip_arm - arm_translation)
-        approach_ik_limit = float(self.get_parameter("approach_max_ik_error_m").value)
+        operator_authorized_press = bool(
+            approach["step_kind"] == "ALIGNED_PRESS_FORWARD_WITH_FIXED_TIP_YZ"
+            and self._press_authorized
+        )
+        approach_ik_limit = float(self.get_parameter(
+            "approach_press_max_ik_error_m"
+            if operator_authorized_press else "approach_max_ik_error_m"
+        ).value)
         safe_approach_solution = bool(
-            solution["success"]
+            (
+                int(solution.get("solver_status", 0)) > 0
+                if operator_authorized_press else solution["success"]
+            )
             and float(solution["position_error_m"]) <= approach_ik_limit
         )
+        if approach["step_kind"] == "ALIGN_FIXED_TIP_YZ":
+            # A Y/Z visual correction is not allowed to succeed by swivelling
+            # the eye-in-hand camera onto the target/tip line of sight.
+            safe_approach_solution = bool(
+                safe_approach_solution
+                and float(solution.get("rotation_error_deg", math.inf))
+                <= float(self.get_parameter(
+                    "approach_near_max_rotation_error_deg"
+                ).value)
+            )
         if approach["step_kind"] in {
             "ALIGNED_PRESS_FORWARD_WITH_FIXED_TIP_YZ",
             "COARSE_CENTER_AND_FORWARD_TO_NEAR",
@@ -3606,15 +5904,30 @@ class TouchObservationNode(Node):
         elif approach["step_kind"] in {
             "ALIGN_FIXED_TIP_YZ", "NEAR_ALIGN_IMAGE_CENTER_YZ",
         }:
+            x_hold_allowance = (
+                abs(float(self.get_parameter(
+                    "approach_near_feedforward_x_hold_m"
+                ).value))
+                if approach["step_kind"] == "ALIGN_FIXED_TIP_YZ" else 0.0
+            )
             safe_approach_solution = bool(
                 safe_approach_solution
                 and abs(predicted_tip_base[0] - actual_tip[0])
-                <= approach_ik_limit
+                <= approach_ik_limit + x_hold_allowance
             )
         elif approach["step_kind"] == "MASK_TOO_CLOSE_RETREAT_SMALL":
             safe_approach_solution = bool(
                 safe_approach_solution
                 and predicted_tip_base[0] < actual_tip[0] - 0.0005
+            )
+        elif approach["step_kind"] == "PRESS_RECOVERY_RETREAT_TO_NEAR":
+            safe_approach_solution = bool(
+                safe_approach_solution
+                and predicted_tip_base[0] < actual_tip[0] - 0.0005
+                and predicted_tip_base[0]
+                >= self._approach_far_tip_x_m
+                + float(self.get_parameter("approach_near_advance_distance_m").value)
+                - approach_ik_limit
             )
         self._approach_plan = {
             **approach,
@@ -3626,6 +5939,9 @@ class TouchObservationNode(Node):
                 "FIXED_LOWER_TIP" if use_tip_alignment else "IMAGE_CENTER"
             ),
             "alignment_error_px": float(tip_alignment["pixel_error_norm"]),
+            "press_entry_tolerance_px": press_entry_tolerance,
+            "press_alignment_ready": press_alignment_ready,
+            "fixed_tip_in_mask": bool(fixed_tip_in_mask),
             "fixed_tip_error_px": (
                 float(tip_alignment["pixel_error_norm"])
                 if use_tip_alignment else None
@@ -3691,11 +6007,95 @@ class TouchObservationNode(Node):
             f"({lateral_correction[0] * 1000.0:.1f}, "
             f"{lateral_correction[1] * 1000.0:.1f})mm; "
             f"image error={pixel_error_norm:.1f}px; "
+            f"PRESS ready={press_alignment_ready} "
+            f"(centroid limit={press_entry_tolerance:.1f}px; "
+            f"tip-in-mask={fixed_tip_in_mask} diagnostic only); "
             f"arm mask={mask_fraction * 100.0:.1f}% / "
             f"too-close={too_close_mask_fraction * 100.0:.1f}%; "
             f"advanced from FAR={advanced_from_far_m * 1000.0:.1f}/"
             f"{near_advance_m * 1000.0:.1f}mm",
         )
+
+    def _build_rolling_action_horizon(
+        self,
+        target_positions: dict[str, float],
+        *,
+        tracker_completed_age_sec: float,
+    ) -> dict[str, Any]:
+        """Build a latency-compensated 10-step replaceable action tail."""
+        specs = {
+            str(item.get("name")): item
+            for item in self._arm_state.get("joints", [])
+            if isinstance(item, dict)
+        }
+        names = list(target_positions)
+        if not names or not all(name in specs for name in names):
+            raise ValueError("action-horizon joint limits are unavailable")
+        bounds = {
+            name: (float(specs[name]["lower"]), float(specs[name]["upper"]))
+            for name in names
+        }
+        current: dict[str, float] = {}
+        velocities: dict[str, float] = {}
+        feedback_clamped: dict[str, dict[str, float]] = {}
+        for name in names:
+            if name not in self._arm_joints:
+                raise ValueError(f"action-horizon feedback is missing for {name}")
+            lower, upper = bounds[name]
+            measured = float(self._arm_joints[name])
+            bounded = float(np.clip(measured, lower, upper))
+            current[name] = bounded
+            if bounded != measured:
+                feedback_clamped[name] = {
+                    "measured": measured,
+                    "bounded": bounded,
+                }
+            velocities[name] = float(self._arm_joint_velocities.get(name, 0.0))
+        completed_age = max(0.0, float(tracker_completed_age_sec))
+        observation_age = min(
+            2.0,
+            completed_age + max(0.0, self._tracker_last_good_input_age_sec),
+        )
+        maximum_lead = float(self.get_parameter(
+            "rolling_visual_servo_max_prediction_lead_sec"
+        ).value)
+        prediction_lead = min(
+            maximum_lead,
+            observation_age + float(self.get_parameter(
+                "rolling_visual_servo_execution_lead_sec"
+            ).value),
+        )
+        plan = receding_joint_action_horizon(
+            current_positions=current,
+            target_positions={
+                name: float(target_positions[name]) for name in names
+            },
+            current_velocities=velocities,
+            joint_bounds=bounds,
+            steps=int(self.get_parameter(
+                "rolling_visual_servo_horizon_steps"
+            ).value),
+            step_period_sec=float(self.get_parameter(
+                "rolling_visual_servo_horizon_step_period_sec"
+            ).value),
+            prediction_lead_sec=prediction_lead,
+            maximum_prediction_velocity_rad_s=float(self.get_parameter(
+                "rolling_visual_servo_max_prediction_velocity_rad_s"
+            ).value),
+        )
+        self._rolling_servo_horizon_plan_count += 1
+        return {
+            "action_horizon": plan["positions"],
+            "horizon_step_period_sec": plan["step_period_sec"],
+            "horizon_plan_id": f"touch-horizon-{uuid.uuid4()}",
+            "observation_age_sec": observation_age,
+            "prediction_lead_sec": prediction_lead,
+            "diagnostics": {
+                **plan,
+                "feedback_clamped": feedback_clamped,
+                "plan_count": self._rolling_servo_horizon_plan_count,
+            },
+        }
 
     def _execute_approach_step(self, automatic: bool = False) -> None:
         if not bool(self.get_parameter("allow_approach_execution").value):
@@ -3709,23 +6109,934 @@ class TouchObservationNode(Node):
             self._set_state("BLOCKED", "Plan and review a current approach step first")
             return
         request_id = f"touch-approach-execute-{uuid.uuid4()}"
-        self._arm_command_pub.publish(String(data=json.dumps({
-            "mode": str(self._arm_state.get("mode", "REAL_DASHBOARD_TEST")),
-            "request_id": request_id,
-            "command": "execute_candidate",
-            "candidate_id": self._approach_plan["candidate_id"],
-            "duration_sec": 1.5,
-        }, ensure_ascii=False, allow_nan=False)))
+        if self._approach_plan.get("step_kind") == (
+            "ALIGNED_PRESS_FORWARD_WITH_FIXED_TIP_YZ"
+        ):
+            self._press_motion_attempted = True
+        duration_sec = 2.5 if self._approach_plan.get("cartesian_correction") else 1.5
+        # Capture the real endpoint immediately before dispatch.  The first
+        # EXECUTING feedback below is captured separately, exposing sag or a
+        # kick that begins only when the next trajectory starts.
+        try:
+            _, pre_execute_tip = self._rotation_translation(
+                self._latest_arm_tip_transform()
+            )
+            self._approach_plan["pre_execute_tip_base_m"] = pre_execute_tip.tolist()
+            self._approach_plan["pre_execute_monotonic_sec"] = time.monotonic()
+        except (TransformException, ValueError):
+            self._approach_plan["pre_execute_tip_base_m"] = None
+        dispatch_ros_sec = float(self.get_clock().now().nanoseconds) * 1.0e-9
+        self._approach_plan["execute_dispatch_ros_sec"] = dispatch_ros_sec
+        self._approach_plan["tracker_stamp_at_dispatch_sec"] = (
+            None if self._tracker_last_stamp is None
+            else float(self._tracker_last_stamp)
+        )
+        # Set the in-flight identity before publishing.  A fast Dashboard
+        # response or the 10 Hz visualization timer must not observe a command
+        # whose ownership has not yet been recorded locally.
         self._approach_execute_request_id = request_id
+        rolling = bool(
+            automatic
+            and self.get_parameter("rolling_visual_servo_enabled").value
+        )
+        if rolling:
+            session_id = f"touch-visual-servo-{uuid.uuid4()}"
+            self._rolling_servo_session_id = session_id
+            self._rolling_servo_sequence = 0
+            self._rolling_servo_updates_sent = 0
+            self._rolling_servo_horizon_plan_count = 0
+            self._rolling_servo_last_tracker_stamp = self._tracker_last_stamp
+            self._rolling_servo_stop_reason = None
+            self._rolling_servo_tracker_gate = None
+            self._rolling_servo_alignment_streak = 0
+            self._rolling_servo_phase = "STARTING"
+            start_tip = np.asarray(
+                self._approach_plan.get("pre_execute_tip_base_m", []),
+                dtype=np.float64,
+            )
+            self._rolling_servo_start_tip_base_m = (
+                start_tip.copy() if start_tip.shape == (3,) else None
+            )
+            initial_waypoint = np.asarray(
+                self._approach_plan.get("waypoint_base_m", []), dtype=np.float64
+            )
+            self._rolling_servo_last_waypoint_base_m = (
+                initial_waypoint.copy()
+                if initial_waypoint.shape == (3,) else None
+            )
+            duration_sec = float(
+                self.get_parameter(
+                    "rolling_visual_servo_session_timeout_sec"
+                    if self.get_parameter(
+                        "rolling_visual_servo_continuous_until_press"
+                    ).value
+                    else "rolling_visual_servo_duration_sec"
+                ).value
+            )
+            self._rolling_servo_deadline = time.monotonic() + duration_sec
+            horizon_now = time.monotonic()
+            tracker_completed_age = (
+                0.0
+                if self._tracker_last_good_monotonic is None
+                else max(
+                    0.0, horizon_now - self._tracker_last_good_monotonic
+                )
+            )
+            try:
+                action_plan = self._build_rolling_action_horizon(
+                    self._approach_plan["positions"],
+                    tracker_completed_age_sec=tracker_completed_age,
+                )
+            except (KeyError, TypeError, ValueError) as exc:
+                self._rolling_servo_session_id = None
+                self._rolling_servo_deadline = None
+                self._approach_execute_request_id = None
+                self._set_state(
+                    "BLOCKED",
+                    f"Cannot build initial rolling action horizon: {exc}",
+                )
+                return
+            command = {
+                "mode": str(self._arm_state.get("mode", "REAL_DASHBOARD_TEST")),
+                "request_id": request_id,
+                "command": "visual_servo_start",
+                "candidate_id": self._approach_plan["candidate_id"],
+                "session_id": session_id,
+                "positions": self._approach_plan["positions"],
+                "tracker_stamp": self._tracker_last_stamp,
+                "action_horizon": action_plan["action_horizon"],
+                "horizon_step_period_sec": action_plan[
+                    "horizon_step_period_sec"
+                ],
+                "horizon_plan_id": action_plan["horizon_plan_id"],
+                "observation_age_sec": action_plan["observation_age_sec"],
+                "prediction_lead_sec": action_plan["prediction_lead_sec"],
+            }
+            self._approach_plan["control_policy"] = (
+                "DELAY_AWARE_RECEDING_10_STEP_ACTION_HORIZON"
+            )
+            self._approach_plan["visual_servo_session_id"] = session_id
+            self._approach_plan["initial_action_horizon"] = action_plan[
+                "diagnostics"
+            ]
+        else:
+            command = {
+                "mode": str(self._arm_state.get("mode", "REAL_DASHBOARD_TEST")),
+                "request_id": request_id,
+                "command": "execute_candidate",
+                "candidate_id": self._approach_plan["candidate_id"],
+                "duration_sec": duration_sec,
+            }
+        self._arm_command_pub.publish(String(data=json.dumps(
+            command, ensure_ascii=False, allow_nan=False
+        )))
+        self._approach_feedback_wait_request_id = None
+        self._approach_feedback_wait_started = None
         self._active_step_motor_started = time.monotonic()
         self._set_state(
             "APPROACH_EXECUTION_REQUESTED",
             ("Automatic" if automatic else "Operator-requested")
-            + " guarded approach step sent through the Arm gateway; "
-            "the target/contact step remains locked",
+            + (
+                " rolling visual-servo session sent through the Arm gateway; "
+                "fresh tracked keyframes will update the active target at 10 Hz"
+                if rolling else
+                " guarded approach step sent through the Arm gateway; "
+                "the target/contact step remains locked"
+            ),
         )
 
+    def _start_automatic_settle_observation(self) -> None:
+        """Start a 10 Hz measured-TF stability gate before camera reacquisition."""
+        now = time.monotonic()
+        minimum = max(
+            0.0,
+            float(self.get_parameter("automatic_approach_min_settle_sec").value),
+        )
+        maximum = max(
+            minimum,
+            float(self.get_parameter(
+                "automatic_approach_stability_max_wait_sec"
+            ).value),
+        )
+        self._automatic_settle_started = now
+        self._automatic_settle_deadline = now + maximum
+        self._automatic_settle_samples.clear()
+        self._automatic_reacquire_due = now + minimum
+
+    def _automatic_settle_status(self, now: float) -> dict[str, Any]:
+        """Sample the real tip and classify the recent translation stability."""
+        window = max(
+            0.1,
+            float(self.get_parameter(
+                "automatic_approach_stability_window_sec"
+            ).value),
+        )
+        try:
+            _, tip = self._rotation_translation(
+                self._latest_arm_tip_transform()
+            )
+            self._automatic_settle_samples.append((now, tip.copy()))
+        except (TransformException, ValueError):
+            pass
+        while (
+            self._automatic_settle_samples
+            and now - self._automatic_settle_samples[0][0] > window * 1.5
+        ):
+            self._automatic_settle_samples.popleft()
+        recent = [
+            (stamp, point)
+            for stamp, point in self._automatic_settle_samples
+            if now - stamp <= window
+        ]
+        if len(recent) < 3:
+            return {"stable": False, "span_m": math.inf, "samples": len(recent)}
+        coverage = recent[-1][0] - recent[0][0]
+        points = np.asarray([point for _, point in recent], dtype=np.float64)
+        axis_span = np.max(points, axis=0) - np.min(points, axis=0)
+        span = float(np.linalg.norm(axis_span))
+        limit = float(self.get_parameter(
+            "automatic_approach_stability_span_m"
+        ).value)
+        return {
+            "stable": bool(coverage >= window * 0.75 and span <= limit),
+            "span_m": span,
+            "axis_span_m": axis_span.tolist(),
+            "coverage_sec": coverage,
+            "samples": len(recent),
+        }
+
+    def _request_cartesian_waypoint_correction(
+        self, cartesian_feedback: dict[str, Any], failure_reason: str
+    ) -> bool:
+        """Preview a bounded correction to the *same* Cartesian waypoint.
+
+        No image is reacquired here.  A visual observation defines one absolute
+        waypoint; joint execution must first make the measured touch-tip TF
+        converge to that waypoint.  Only an accepted endpoint may advance the
+        outer visual loop.
+        """
+        if self._approach_plan is None:
+            return False
+        try:
+            completed = np.asarray(
+                cartesian_feedback.get("completed_tip_base_m", []), dtype=np.float64
+            )
+            goal = np.asarray(
+                self._approach_plan.get(
+                    "cartesian_goal_waypoint_base_m",
+                    self._approach_plan.get("waypoint_base_m", []),
+                ),
+                dtype=np.float64,
+            )
+            if completed.shape != (3,) or goal.shape != (3,):
+                return False
+            residual = goal - completed
+            residual_norm = float(np.linalg.norm(residual))
+            step_max = float(self.get_parameter(
+                "approach_cartesian_correction_step_max_m"
+            ).value)
+            if not math.isfinite(step_max) or step_max <= 0.0:
+                return False
+            correction = residual * min(1.0, step_max / max(residual_norm, 1.0e-9))
+            kind = str(self._approach_plan.get("step_kind", ""))
+            feedforward: dict[str, Any] | None = None
+            command_delta = correction
+            if kind == "ALIGN_FIXED_TIP_YZ":
+                z_first = bool(
+                    self._approach_plan.get("alignment_subphase")
+                    == "Z_FIRST_TARGET_ABOVE_TIP"
+                )
+                feedforward = compensated_cartesian_delta(
+                    correction,
+                    x_hold_bias_m=float(self.get_parameter(
+                        "approach_near_feedforward_x_hold_m"
+                    ).value),
+                    y_gain=float(self.get_parameter(
+                        "approach_near_feedforward_y_gain"
+                    ).value),
+                    z_gain=float(self.get_parameter(
+                        "approach_near_z_first_feedforward_z_gain"
+                        if z_first else "approach_near_feedforward_z_gain"
+                    ).value),
+                    z_up_bias_m=float(self.get_parameter(
+                        "approach_near_z_first_feedforward_z_bias_m"
+                        if z_first else "approach_near_feedforward_z_up_bias_m"
+                    ).value),
+                    maximum_norm_m=float(self.get_parameter(
+                        "approach_near_z_first_command_max_m"
+                        if z_first else "approach_near_feedforward_command_max_m"
+                    ).value),
+                )
+                command_delta = np.asarray(
+                    feedforward["command_delta_base_m"], dtype=np.float64
+                )
+            correction_waypoint = completed + command_delta
+
+            arm_from_base = self._arm_base_transform("arm/base_link", "base_link")
+            arm_rotation, arm_translation = self._rotation_translation(arm_from_base)
+            waypoint_arm = arm_rotation @ correction_waypoint + arm_translation
+            current = [self._arm_joints[name] for name in REACH_JOINT_NAMES]
+            specs = {
+                str(item.get("name")): item
+                for item in self._arm_state.get("joints", [])
+                if isinstance(item, dict)
+            }
+            if not all(name in specs for name in REACH_JOINT_NAMES):
+                return False
+            margin = float(self.get_parameter("ik_joint_limit_margin_rad").value)
+            lower = [float(specs[name]["lower"]) + margin for name in REACH_JOINT_NAMES]
+            upper = [float(specs[name]["upper"]) - margin for name in REACH_JOINT_NAMES]
+            if kind == "ALIGN_FIXED_TIP_YZ":
+                solution = solve_near_tip_alignment(
+                    current, waypoint_arm, lower, upper,
+                    target_rotation=self._near_tool_rotation_arm,
+                )
+            elif kind == "ALIGNED_PRESS_FORWARD_WITH_FIXED_TIP_YZ":
+                solution = solve_near_forward_press(current, waypoint_arm, lower, upper)
+            else:
+                axis_arm = arm_rotation @ np.array([1.0, 0.0, 0.0])
+                axis_arm /= max(float(np.linalg.norm(axis_arm)), 1.0e-12)
+                solution = solve_pre_touch(
+                    current, waypoint_arm, axis_arm, lower, upper,
+                    locked_reference_id=(
+                        str(self._reach_plan["prepare_reference_id"])
+                        if self._reach_plan is not None else None
+                    ),
+                )
+            ik_limit = float(self.get_parameter("approach_max_ik_error_m").value)
+            if not solution.get("success") or float(solution["position_error_m"]) > ik_limit:
+                return False
+            if (
+                kind == "ALIGN_FIXED_TIP_YZ"
+                and float(solution.get("rotation_error_deg", math.inf))
+                > float(self.get_parameter(
+                    "approach_near_max_rotation_error_deg"
+                ).value)
+            ):
+                return False
+            positions = {
+                **solution["positions"],
+                "gripper_joint": float(self.get_parameter(
+                    "touch_gripper_position_rad"
+                ).value),
+            }
+            previous_plan = dict(self._approach_plan)
+            self._approach_plan = {
+                **previous_plan,
+                "waypoint_base_m": correction_waypoint.tolist(),
+                "cartesian_goal_waypoint_base_m": goal.tolist(),
+                "actual_tip_base_m": completed.tolist(),
+                "waypoint_arm_base_m": waypoint_arm.tolist(),
+                "motion_axis_base": command_delta.tolist(),
+                "ik": solution,
+                "positions": positions,
+                "candidate_id": None,
+                "cartesian_correction": True,
+                "cartesian_correction_retry": self._cartesian_correction_retries,
+                "cartesian_residual_before_m": residual.tolist(),
+                "cartesian_residual_before_norm_m": residual_norm,
+                "cartesian_correction_step_m": correction.tolist(),
+                "cartesian_correction_command_m": command_delta.tolist(),
+                "cartesian_feedforward": (
+                    None if feedforward is None else {
+                        **feedforward,
+                        "model": "LOCAL_TOUCH_NEAR_V1",
+                        "evidence": "2026-09-06 motor_evidence regression",
+                    }
+                ),
+                "cartesian_original_failure": failure_reason,
+            }
+            request_id = f"touch-cartesian-correction-preview-{uuid.uuid4()}"
+            self._approach_preview_request_id = request_id
+            self._arm_command_pub.publish(String(data=json.dumps({
+                "mode": str(self._arm_state.get("mode", "REAL_DASHBOARD_TEST")),
+                "request_id": request_id,
+                "command": "preview",
+                "positions": positions,
+            }, ensure_ascii=False, allow_nan=False)))
+            self._set_state(
+                "APPROACH_PREVIEW_REQUESTED",
+                "Same-waypoint Cartesian correction preview requested: "
+                f"residual={residual_norm * 1000.0:.1f}mm, "
+                f"bounded residual={np.linalg.norm(correction) * 1000.0:.1f}mm, "
+                f"compensated command={np.linalg.norm(command_delta) * 1000.0:.1f}mm, "
+                f"retry={self._cartesian_correction_retries}; no new image used",
+            )
+            return True
+        except (KeyError, TypeError, ValueError, TransformException):
+            return False
+
+    def _stop_rolling_visual_servo(self, reason: str) -> None:
+        session_id = self._rolling_servo_session_id
+        if session_id is None:
+            return
+        if self._rolling_servo_deadline is None and self._rolling_servo_stop_reason:
+            return
+        self._rolling_servo_sequence += 1
+        self._rolling_servo_stop_reason = reason
+        self._arm_command_pub.publish(String(data=json.dumps({
+            "mode": str(self._arm_state.get("mode", "REAL_DASHBOARD_TEST")),
+            "request_id": f"touch-visual-servo-stop-{uuid.uuid4()}",
+            "command": "visual_servo_stop",
+            "session_id": session_id,
+            "sequence": self._rolling_servo_sequence,
+            "tracker_stamp": self._tracker_last_stamp,
+            "reason": reason,
+        }, ensure_ascii=False, allow_nan=False)))
+        # Keep the session identity until the gateway reports terminal HOLD.
+        # This prevents another approach command from racing the STOP/ACK.
+        self._rolling_servo_deadline = None
+
+    def _rolling_visual_servo_tick(self, now: float) -> bool:
+        """Update the executing waypoint from the newest tracked keyframe.
+
+        Returns true whenever a rolling session owns this control tick.  All
+        failure paths issue STOP; the low-level 350 ms watchdog is the second,
+        independent protection if this callback stops running altogether.
+        """
+        session_id = self._rolling_servo_session_id
+        if session_id is None:
+            return False
+        if self._rolling_servo_deadline is None:
+            return True
+        if now >= self._rolling_servo_deadline:
+            self._stop_rolling_visual_servo(
+                "CONTINUOUS_APPROACH_TIMEOUT"
+                if self.get_parameter(
+                    "rolling_visual_servo_continuous_until_press"
+                ).value
+                else "segment duration completed"
+            )
+            return True
+        tracker = self._tracker_last_result or {}
+        freshness_now = time.monotonic()
+        tracker_age = (
+            math.inf
+            if self._tracker_last_good_monotonic is None
+            else max(0.0, freshness_now - self._tracker_last_good_monotonic)
+        )
+        maximum_age = float(
+            self.get_parameter("rolling_visual_servo_max_tracker_age_sec").value
+        )
+        with self._lock:
+            inflight_started = self._tracker_inflight_started_monotonic
+            inflight_received = self._tracker_inflight_image_received_monotonic
+            inflight_stamp = self._tracker_inflight_stamp
+        inflight_processing_age = (
+            None if inflight_started is None
+            else max(0.0, freshness_now - inflight_started)
+        )
+        inflight_input_age = (
+            None if inflight_received is None
+            else max(0.0, freshness_now - inflight_received)
+        )
+        tracker_gate = rolling_tracker_freshness_gate(
+            status=str(tracker.get("status", "UNKNOWN")),
+            completed_age_sec=tracker_age,
+            maximum_completed_age_sec=maximum_age,
+            inflight_processing_age_sec=inflight_processing_age,
+            inflight_input_age_sec=inflight_input_age,
+            maximum_inflight_processing_sec=float(self.get_parameter(
+                "rolling_visual_servo_max_tracker_inflight_sec"
+            ).value),
+        )
+        tracker_gate["inflight_image_stamp"] = inflight_stamp
+        self._rolling_servo_tracker_gate = tracker_gate
+        if tracker_gate["decision"] == "WAIT_INFLIGHT":
+            # Do not refresh the actuator watchdog with a target derived from
+            # the stale completed frame.  The in-flight callback gets one
+            # bounded grace interval; its completion resumes updates, while a
+            # processing stall still reaches STOP and the independent 350 ms
+            # low-level watchdog remains the final HOLD protection.
+            return True
+        if tracker_gate["decision"] == "STOP":
+            self._stop_rolling_visual_servo(
+                f"tracking unavailable during motion: status={tracker.get('status')}, "
+                f"completed_age={tracker_age:.3f}s, "
+                f"inflight_age={inflight_processing_age}, "
+                f"inflight_input_age={inflight_input_age}"
+            )
+            return True
+        try:
+            if self._approach_plan is None or self._arm_frozen is None or self._arm_target is None:
+                raise ValueError("rolling approach geometry is unavailable")
+            self._refresh_arm_tracking_geometry()
+            _, actual_tip = self._rotation_translation(
+                self._latest_arm_tip_transform()
+            )
+            if self._rolling_servo_start_tip_base_m is None:
+                self._rolling_servo_start_tip_base_m = actual_tip.copy()
+            height, width = self._arm_frozen["rgb"].shape[:2]
+            step_kind = str(self._approach_plan.get("step_kind", ""))
+            solver_kind = step_kind
+            continuous = bool(self.get_parameter(
+                "rolling_visual_servo_continuous_until_press"
+            ).value)
+            if self._approach_far_tip_x_m is None:
+                self._approach_far_tip_x_m = float(actual_tip[0])
+            near_distance = float(
+                self.get_parameter("approach_near_advance_distance_m").value
+            )
+            advanced_from_far = max(
+                0.0, float(actual_tip[0]) - float(self._approach_far_tip_x_m)
+            )
+            if continuous:
+                phase = rolling_approach_phase(
+                    advanced_from_far_m=advanced_from_far,
+                    near_distance_m=near_distance,
+                    press_authorized=bool(self._press_authorized),
+                )
+            else:
+                phase = step_kind
+            if phase == "PRESS":
+                solver_kind = "ALIGNED_PRESS_FORWARD_WITH_FIXED_TIP_YZ"
+                self._press_phase_active = True
+                self._press_motion_attempted = True
+            elif phase == "NEAR_ALIGN":
+                solver_kind = "ALIGN_FIXED_TIP_YZ"
+                self._near_phase_latched = True
+                if self._near_tool_rotation_arm is None:
+                    self._near_tool_rotation_arm = tip_transform(
+                        [self._arm_joints[name] for name in REACH_JOINT_NAMES]
+                    )[:3, :3].copy()
+            self._rolling_servo_phase = phase
+            z_drop_from_start = float(
+                self._rolling_servo_start_tip_base_m[2] - actual_tip[2]
+            )
+            maximum_z_drop = float(self.get_parameter(
+                "rolling_visual_servo_max_z_drop_m"
+            ).value)
+            if z_drop_from_start > maximum_z_drop:
+                self._stop_rolling_visual_servo(
+                    "CARTESIAN_Z_DROP_LIMIT: "
+                    f"phase={phase} drop={z_drop_from_start:.4f}m "
+                    f"limit={maximum_z_drop:.4f}m"
+                )
+                return True
+            alignment_uv = (
+                np.asarray(self._fixed_arm_tip_pixel(width, height), dtype=np.float64)
+                if (
+                    phase in {"NEAR_ALIGN", "PRESS"}
+                    or (
+                        not continuous
+                        and step_kind != "COARSE_CENTER_AND_FORWARD_TO_NEAR"
+                    )
+                )
+                else np.asarray([(width - 1.0) * 0.5, (height - 1.0) * 0.5])
+            )
+            centroid = np.asarray(
+                self._arm_target.get("centroid_uv", []), dtype=np.float64
+            )
+            tracking_range = float(self._arm_target.get("tracking_range_m", math.nan))
+            if centroid.shape != (2,) or not np.all(np.isfinite(centroid)):
+                raise ValueError("tracked centroid is invalid")
+            if continuous:
+                # The 2026-09-18 real bag disproved the rendered-TF Jacobian
+                # sign for this eye-in-hand pose: while the target moved
+                # 125 px to image-right, the Jacobian requested lower base Z
+                # and helped drive the real tip 44.8 mm downward.  Use the
+                # previously measured real-robot pixel signs for active
+                # motion.  Retain the model result only as a diagnostic so a
+                # future camera calibration can be compared without silently
+                # controlling the arm.
+                alignment = empirical_image_center_alignment_delta(
+                    tuple(centroid), tuple(alignment_uv),
+                    float(self.get_parameter(
+                        "rolling_visual_servo_empirical_m_per_px"
+                    ).value),
+                )
+                alignment["mapping"] = "REAL_ROBOT_EMPIRICAL_YZ_V1"
+                try:
+                    if not math.isfinite(tracking_range) or tracking_range <= 0.02:
+                        raise ValueError("tracked range is invalid")
+                    jacobian_alignment = base_yz_pixel_alignment_delta(
+                        tuple(centroid), tuple(alignment_uv),
+                        np.asarray(
+                            self._arm_frozen["camera_matrix"], dtype=np.float64
+                        ),
+                        np.asarray(
+                            self._arm_frozen["distortion"], dtype=np.float64
+                        ),
+                        np.asarray(
+                            self._arm_frozen["base_from_camera_rotation"],
+                            dtype=np.float64,
+                        ),
+                        tracking_range,
+                    )
+                    alignment.update({
+                        "jacobian_diagnostic_delta_base_yz_m": np.asarray(
+                            jacobian_alignment["delta_base_yz_m"],
+                            dtype=np.float64,
+                        ).tolist(),
+                        "jacobian_diagnostic_singular_values": np.asarray(
+                            jacobian_alignment["jacobian_singular_values"],
+                            dtype=np.float64,
+                        ).tolist(),
+                    })
+                except (KeyError, TypeError, ValueError) as exc:
+                    # This is intentionally diagnostic-only.  A stale range or
+                    # singular rendered-TF Jacobian must not stop the measured
+                    # real-robot mapping that owns the active control output.
+                    alignment["jacobian_diagnostic_error"] = str(exc)
+            else:
+                if not math.isfinite(tracking_range) or tracking_range <= 0.02:
+                    raise ValueError("tracked range is invalid")
+                alignment = base_yz_pixel_alignment_delta(
+                    tuple(centroid), tuple(alignment_uv),
+                    np.asarray(
+                        self._arm_frozen["camera_matrix"], dtype=np.float64
+                    ),
+                    np.asarray(
+                        self._arm_frozen["distortion"], dtype=np.float64
+                    ),
+                    np.asarray(
+                        self._arm_frozen["base_from_camera_rotation"],
+                        dtype=np.float64,
+                    ),
+                    tracking_range,
+                )
+            mask_fraction = float(self._arm_target.get("mask_fraction", 0.0))
+            too_close_limit = float(self.get_parameter(
+                "approach_too_close_mask_fraction"
+            ).value)
+            if (
+                phase == "FAR_TRACK_AND_ADVANCE"
+                and mask_fraction >= too_close_limit
+            ):
+                self._stop_rolling_visual_servo(
+                    "MASK_TOO_CLOSE_DURING_CONTINUOUS_FAR"
+                )
+                return True
+            delta_yz = np.asarray(alignment["delta_base_yz_m"], dtype=np.float64)
+            maximum_step = float(
+                self.get_parameter("rolling_visual_servo_max_yz_step_m").value
+            )
+            delta_norm = float(np.linalg.norm(delta_yz))
+            delta_yz *= min(1.0, maximum_step / max(delta_norm, 1.0e-9))
+            waypoint_base = np.asarray(
+                self._approach_plan["waypoint_base_m"], dtype=np.float64
+            ).copy()
+            previous_waypoint = (
+                None
+                if self._rolling_servo_last_waypoint_base_m is None
+                else self._rolling_servo_last_waypoint_base_m.copy()
+            )
+            previous_target_error = (
+                np.zeros(3, dtype=np.float64)
+                if previous_waypoint is None
+                else previous_waypoint - actual_tip
+            )
+            z_tracking_error = float(previous_target_error[2])
+            z_compensation: dict[str, Any] | None = None
+            if continuous:
+                horizon = float(self.get_parameter(
+                    "rolling_visual_servo_forward_horizon_m"
+                ).value)
+                if not math.isfinite(horizon) or horizon <= 0.0:
+                    raise ValueError("rolling forward horizon must be positive")
+                z_compensation = rolling_z_motion_compensation(
+                    visual_delta_z_m=float(delta_yz[1]),
+                    previous_target_error_z_m=z_tracking_error,
+                    nominal_x_horizon_m=horizon,
+                    phase=phase,
+                    residual_gain=float(self.get_parameter(
+                        "rolling_visual_servo_z_residual_gain"
+                    ).value),
+                    far_z_per_x_gain=float(self.get_parameter(
+                        "rolling_visual_servo_far_z_per_x_gain"
+                    ).value),
+                    maximum_compensation_m=float(self.get_parameter(
+                        "rolling_visual_servo_z_compensation_max_m"
+                    ).value),
+                    slowdown_start_error_m=float(self.get_parameter(
+                        "rolling_visual_servo_z_slowdown_start_m"
+                    ).value),
+                    slowdown_full_error_m=float(self.get_parameter(
+                        "rolling_visual_servo_z_slowdown_full_m"
+                    ).value),
+                )
+                effective_horizon = float(
+                    z_compensation["scaled_x_horizon_m"]
+                )
+                if phase == "FAR_TRACK_AND_ADVANCE":
+                    waypoint_base[0], _ = rolling_forward_target_x(
+                        phase=phase,
+                        actual_x_m=float(actual_tip[0]),
+                        far_x_m=float(self._approach_far_tip_x_m),
+                        near_distance_m=near_distance,
+                        horizon_m=effective_horizon,
+                    )
+                    self._rolling_servo_alignment_streak = 0
+                elif phase == "NEAR_ALIGN":
+                    waypoint_base[0] = float(actual_tip[0])
+                    tolerance = float(self.get_parameter(
+                        "approach_press_entry_tolerance_px"
+                    ).value)
+                    aligned = float(alignment["pixel_error_norm"]) <= tolerance
+                    self._rolling_servo_alignment_streak = (
+                        self._rolling_servo_alignment_streak + 1 if aligned else 0
+                    )
+                    required = int(self.get_parameter(
+                        "rolling_visual_servo_alignment_frames"
+                    ).value)
+                    if self._rolling_servo_alignment_streak >= required:
+                        self._approach_plan.update({
+                            **alignment,
+                            "step_kind": "PRESS_CONFIRMATION_REQUIRED",
+                            "press_alignment_ready": True,
+                            "execution_enabled": False,
+                            "advanced_from_far_m": advanced_from_far,
+                        })
+                        self._stop_rolling_visual_servo(
+                            "PRESS_CONFIRMATION_READY"
+                        )
+                        return True
+                elif phase == "PRESS":
+                    refined = np.asarray(
+                        self._approach_plan.get("refined_point_base_m", []),
+                        dtype=np.float64,
+                    )
+                    if refined.shape != (3,):
+                        raise ValueError("PRESS target plane is unavailable")
+                    waypoint_base[0], press_complete = rolling_forward_target_x(
+                        phase=phase,
+                        actual_x_m=float(actual_tip[0]),
+                        far_x_m=float(self._approach_far_tip_x_m),
+                        near_distance_m=near_distance,
+                        horizon_m=effective_horizon,
+                        target_plane_x_m=float(refined[0]),
+                        maximum_press_past_target_m=float(self.get_parameter(
+                            "approach_max_press_past_target_m"
+                        ).value),
+                    )
+                    if press_complete:
+                        self._stop_rolling_visual_servo(
+                            "MAX_PRESS_TRAVEL_REACHED"
+                        )
+                        return True
+            # Y/Z are always closed around the newest measured tip, so the
+            # correction is bounded per tick and never accumulated blindly.
+            waypoint_base[1] = actual_tip[1] + delta_yz[0]
+            waypoint_base[2] = actual_tip[2] + (
+                float(z_compensation["command_delta_z_m"])
+                if z_compensation is not None else float(delta_yz[1])
+            )
+            arm_from_base = self._arm_base_transform("arm/base_link", "base_link")
+            arm_rotation, arm_translation = self._rotation_translation(arm_from_base)
+            waypoint_arm = arm_rotation @ waypoint_base + arm_translation
+            current = [self._arm_joints[name] for name in REACH_JOINT_NAMES]
+            specs = {
+                str(item.get("name")): item
+                for item in self._arm_state.get("joints", [])
+                if isinstance(item, dict)
+            }
+            if not all(name in specs for name in REACH_JOINT_NAMES):
+                raise ValueError("effective joint limits are unavailable")
+            margin = float(self.get_parameter("ik_joint_limit_margin_rad").value)
+            lower = [float(specs[name]["lower"]) + margin for name in REACH_JOINT_NAMES]
+            upper = [float(specs[name]["upper"]) - margin for name in REACH_JOINT_NAMES]
+            if solver_kind == "ALIGN_FIXED_TIP_YZ":
+                solution = solve_near_tip_alignment(
+                    current, waypoint_arm, lower, upper,
+                    target_rotation=self._near_tool_rotation_arm,
+                )
+            elif solver_kind in {
+                "ALIGNED_PRESS_FORWARD_WITH_FIXED_TIP_YZ",
+                "PRESS_RECOVERY_RETREAT_TO_NEAR",
+            }:
+                solution = solve_near_forward_press(current, waypoint_arm, lower, upper)
+            else:
+                axis_arm = arm_rotation @ np.array([1.0, 0.0, 0.0])
+                axis_arm /= max(float(np.linalg.norm(axis_arm)), 1.0e-12)
+                solution = solve_pre_touch(
+                    current, waypoint_arm, axis_arm, lower, upper,
+                    locked_reference_id=(
+                        str(self._reach_plan["prepare_reference_id"])
+                        if self._reach_plan is not None else None
+                    ),
+                )
+            error_limit = float(self.get_parameter("approach_max_ik_error_m").value)
+            if not bool(solution.get("success")) or float(
+                solution.get("position_error_m", math.inf)
+            ) > error_limit:
+                raise ValueError(
+                    f"rolling IK rejected: error={solution.get('position_error_m')}"
+                )
+            positions = {
+                **solution["positions"],
+                "gripper_joint": float(
+                    self.get_parameter("touch_gripper_position_rad").value
+                ),
+            }
+            action_plan = self._build_rolling_action_horizon(
+                positions,
+                tracker_completed_age_sec=tracker_age,
+            )
+            self._rolling_servo_sequence += 1
+            self._arm_command_pub.publish(String(data=json.dumps({
+                "mode": str(self._arm_state.get("mode", "REAL_DASHBOARD_TEST")),
+                "request_id": f"touch-visual-servo-update-{uuid.uuid4()}",
+                "command": "visual_servo_update",
+                "session_id": session_id,
+                "sequence": self._rolling_servo_sequence,
+                "positions": positions,
+                "tracker_stamp": self._tracker_last_stamp,
+                "action_horizon": action_plan["action_horizon"],
+                "horizon_step_period_sec": action_plan[
+                    "horizon_step_period_sec"
+                ],
+                "horizon_plan_id": action_plan["horizon_plan_id"],
+                "observation_age_sec": action_plan["observation_age_sec"],
+                "prediction_lead_sec": action_plan["prediction_lead_sec"],
+            }, ensure_ascii=False, allow_nan=False)))
+            self._rolling_servo_last_waypoint_base_m = waypoint_base.copy()
+            self._rolling_servo_updates_sent += 1
+            self._rolling_servo_update_sent_this_tick = True
+            if self._approach_plan is not None:
+                self._approach_plan["rolling_visual_servo"] = {
+                    "session_id": session_id,
+                    "phase": phase,
+                    "sequence": self._rolling_servo_sequence,
+                    "updates_sent": self._rolling_servo_updates_sent,
+                    "tracker_stamp": self._tracker_last_stamp,
+                    "tracker_age_sec": tracker_age,
+                    "new_tracker_frame": (
+                        self._tracker_last_stamp != self._rolling_servo_last_tracker_stamp
+                    ),
+                    "centroid_uv": centroid.tolist(),
+                    "pixel_error_uv": alignment["pixel_error_uv"],
+                    "alignment_mapping": alignment.get(
+                        "mapping", "DYNAMIC_TF_IMAGE_JACOBIAN"
+                    ),
+                    "unbounded_delta_base_yz_m": np.asarray(
+                        alignment["delta_base_yz_m"], dtype=np.float64
+                    ).tolist(),
+                    "bounded_delta_base_yz_m": delta_yz.tolist(),
+                    "jacobian_diagnostic_delta_base_yz_m": alignment.get(
+                        "jacobian_diagnostic_delta_base_yz_m"
+                    ),
+                    "jacobian_diagnostic_error": alignment.get(
+                        "jacobian_diagnostic_error"
+                    ),
+                    "actual_tip_base_m": actual_tip.tolist(),
+                    "previous_waypoint_base_m": (
+                        None if previous_waypoint is None
+                        else previous_waypoint.tolist()
+                    ),
+                    "previous_target_error_base_m": previous_target_error.tolist(),
+                    "z_tracking_error_m": z_tracking_error,
+                    "z_drop_from_session_start_m": z_drop_from_start,
+                    "z_compensation": z_compensation,
+                    "advanced_from_far_m": advanced_from_far,
+                    "waypoint_base_m": waypoint_base.tolist(),
+                    "new_target_error_base_m": (
+                        waypoint_base - actual_tip
+                    ).tolist(),
+                    "positions": positions,
+                    "action_horizon": action_plan["diagnostics"],
+                }
+            self._rolling_servo_last_tracker_stamp = self._tracker_last_stamp
+        except (KeyError, TypeError, ValueError, TransformException) as exc:
+            self._stop_rolling_visual_servo(f"rolling correction failed: {exc}")
+        return True
+
+    def _instrumented_automatic_approach_tick(self) -> None:
+        """Measure every active 10 Hz control tick without changing its decisions."""
+        started = time.monotonic()
+        self._rolling_servo_update_sent_this_tick = False
+        with self._lock:
+            initial_lock_acquired = time.monotonic()
+            active_before = self._active
+            automatic_before = self._automatic_approach
+            state_before = self._state
+            request_before = self._approach_execute_request_id
+        error = None
+        try:
+            self._automatic_approach_tick()
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"
+            raise
+        finally:
+            completed = time.monotonic()
+            with self._lock:
+                active_after = self._active
+                automatic_after = self._automatic_approach
+                state_after = self._state
+                request_after = self._approach_execute_request_id
+                tracker_result = (
+                    None if self._tracker_last_result is None
+                    else dict(self._tracker_last_result)
+                )
+                tracker_stamp = self._tracker_last_stamp
+                tracker_age_ms = (
+                    None if self._tracker_last_good_monotonic is None
+                    else max(
+                        0.0, completed - self._tracker_last_good_monotonic
+                    ) * 1000.0
+                )
+                execution = dict(self._arm_state.get("execution", {}))
+                rolling_control = (
+                    None
+                    if self._approach_plan is None
+                    else self._approach_plan.get("rolling_visual_servo")
+                )
+                rolling_tracker_gate = (
+                    None if self._rolling_servo_tracker_gate is None
+                    else dict(self._rolling_servo_tracker_gate)
+                )
+                self._control_tick_sequence += 1
+                sequence = self._control_tick_sequence
+            # Outside Touch mode this timer is intentionally silent.  During
+            # Touch it records even idle/wait cycles so a missing tick is
+            # distinguishable from a deliberate no-command decision.
+            if active_before or active_after:
+                self._queue_debug_payload("control", {
+                    "sequence": sequence,
+                    "callback_started_monotonic_sec": started,
+                    "callback_completed_monotonic_sec": completed,
+                    "callback_duration_ms": (completed - started) * 1000.0,
+                    "initial_lock_wait_ms": (
+                        initial_lock_acquired - started
+                    ) * 1000.0,
+                    "touch_state_before": state_before,
+                    "touch_state_after": state_after,
+                    "automatic_approach_before": automatic_before,
+                    "automatic_approach_after": automatic_after,
+                    "approach_request_id_before": request_before,
+                    "approach_request_id_after": request_after,
+                    "guarded_step_dispatched": bool(
+                        request_after is not None and request_after != request_before
+                    ),
+                    "tracker_input_stamp": tracker_stamp,
+                    "tracker_age_ms": tracker_age_ms,
+                    "tracker_result": tracker_result,
+                    "gateway_execution": execution,
+                    "exception": error,
+                    "rolling_target_control_implemented": bool(
+                        self.get_parameter("rolling_visual_servo_enabled").value
+                    ),
+                    "active_goal_target_updated_this_tick": (
+                        self._rolling_servo_update_sent_this_tick
+                    ),
+                    "rolling_visual_servo_session_id": self._rolling_servo_session_id,
+                    "rolling_visual_servo_phase": self._rolling_servo_phase,
+                    "rolling_visual_servo_sequence": self._rolling_servo_sequence,
+                    "rolling_visual_servo_updates_sent": self._rolling_servo_updates_sent,
+                    "rolling_action_horizon_plan_count": (
+                        self._rolling_servo_horizon_plan_count
+                    ),
+                    "rolling_visual_servo_stop_reason": self._rolling_servo_stop_reason,
+                    "rolling_tracker_gate": rolling_tracker_gate,
+                    "rolling_control": rolling_control,
+                    "control_policy": (
+                        "DELAY_AWARE_RECEDING_10_STEP_ACTION_HORIZON"
+                        if self.get_parameter("rolling_visual_servo_enabled").value
+                        else "STOP_OBSERVE_REPLAN_GUARDED_STEPS"
+                    ),
+                })
+
     def _automatic_approach_tick(self) -> None:
+        now = time.monotonic()
         with self._lock:
             if not self._automatic_approach:
                 return
@@ -3733,13 +7044,15 @@ class TouchObservationNode(Node):
             steps = self._automatic_approach_steps
             due = self._automatic_reacquire_due
             state = self._state
+        if self._rolling_visual_servo_tick(now):
+            return
         maximum_steps = int(
             self.get_parameter("automatic_approach_max_steps").value
         )
         timeout_sec = float(
             self.get_parameter("automatic_approach_timeout_sec").value
         )
-        if started is None or time.monotonic() - started > timeout_sec:
+        if started is None or now - started > timeout_sec:
             self._pause_automatic_approach(
                 "AUTO_APPROACH_TIMEOUT",
                 f"Automatic approach exceeded {timeout_sec:.1f}s; no further motion sent",
@@ -3757,14 +7070,139 @@ class TouchObservationNode(Node):
                 "AUTO_APPROACH_SETTLING",
                 "AUTO_APPROACH_CARTESIAN_CORRECTING",
                 "TOUCH_CHANGE_VERIFYING",
+                "AUTO_APPROACH_GEOMETRY_WAIT",
+                "AUTO_APPROACH_ARM_STATE_WAIT",
             }
             and due is not None
-            and time.monotonic() >= due
+            and now >= due
         ):
             with self._lock:
+                settle_started = self._automatic_settle_started
+                settle_deadline = self._automatic_settle_deadline
+                stability = (
+                    None
+                    if settle_started is None
+                    else self._automatic_settle_status(now)
+                )
+                if stability is not None and not bool(stability["stable"]):
+                    if settle_deadline is None or now < settle_deadline:
+                        self._automatic_reacquire_due = now + 0.10
+                        return
+                    span = float(stability["span_m"])
+                    hard_span = float(self.get_parameter(
+                        "automatic_approach_stability_hard_span_m"
+                    ).value)
+                    continue_when_unstable = bool(self.get_parameter(
+                        "automatic_approach_continue_when_unstable"
+                    ).value)
+                    if not math.isfinite(span) and continue_when_unstable:
+                        # No trustworthy measured pose exists yet. Keep the
+                        # same automatic step alive and sample again; never
+                        # invent a pose or send blind motion, and never turn a
+                        # transient TF gap into ARM_NOT_STABLE.
+                        self._automatic_reacquire_due = now + 0.10
+                        return
+                    if not math.isfinite(span):
+                        self._automatic_reacquire_due = None
+                        self._automatic_settle_started = None
+                        self._automatic_settle_deadline = None
+                        self._automatic_settle_samples.clear()
+                        failure = (
+                            "Touch-tip stability cannot be measured because "
+                            "no finite TF span is available"
+                        )
+                    elif span > hard_span and not continue_when_unstable:
+                        self._automatic_reacquire_due = None
+                        self._automatic_settle_started = None
+                        self._automatic_settle_deadline = None
+                        self._automatic_settle_samples.clear()
+                        failure = (
+                            "Touch-tip did not become stable before visual "
+                            f"reacquisition: span={span * 1000.0:.1f}mm, "
+                            f"hard limit={hard_span * 1000.0:.1f}mm; "
+                            "no further motion sent"
+                        )
+                    else:
+                        if span > hard_span:
+                            self.get_logger().warning(
+                                "Touch-tip remains unstable after the bounded "
+                                f"wait: span={span * 1000.0:.1f}mm exceeds "
+                                f"{hard_span * 1000.0:.1f}mm; supervised "
+                                "try-anyway mode is active, so reacquiring from "
+                                "the latest measured pose"
+                            )
+                        else:
+                            # Bounded residual motion is preferable to another
+                            # unconditional long idle.  The next plan still
+                            # starts from freshly measured TF.
+                            self.get_logger().warning(
+                                "Touch-tip settle reached maximum wait with "
+                                f"{span * 1000.0:.1f}mm span; reacquiring from reality"
+                            )
+                        failure = None
+                else:
+                    failure = None
                 # Claim this due event before starting asynchronous SAM work.
                 self._automatic_reacquire_due = None
-            self._acquire_arm_target(automatic_reacquire=True)
+                self._automatic_settle_started = None
+                self._automatic_settle_deadline = None
+                self._automatic_settle_samples.clear()
+            if failure is not None:
+                self._pause_automatic_approach("ARM_NOT_STABLE", failure)
+                return
+            with self._lock:
+                tracker_result = (
+                    None if self._tracker_last_result is None
+                    else dict(self._tracker_last_result)
+                )
+                tracker_age = (
+                    math.inf if self._tracker_last_good_monotonic is None
+                    else now - self._tracker_last_good_monotonic
+                )
+                recovery_active = self._tracker_semantic_recovery
+                tracker_ready = bool(
+                    tracker_result is not None
+                    and tracker_result.get("status") in {
+                        "INITIALIZED", "TRACKING", "RECOVERED"
+                    }
+                    and tracker_age <= float(self.get_parameter(
+                        "arm_camera_max_receive_age_sec"
+                    ).value)
+                    and self._arm_target is not None
+                    and self._arm_mask is not None
+                    and self._arm_frozen is not None
+                )
+                if not tracker_ready:
+                    if not recovery_active:
+                        # The camera-rate tracker owns reacquisition.  Wait for
+                        # its next KLT/ORB frame (or its automatic SAM recovery)
+                        # instead of launching SAM after every motor waypoint.
+                        self._automatic_reacquire_due = now + 0.10
+                    return
+                self._arm_target_confirmed = True
+                self._automatic_tracking_reference = dict(self._arm_target)
+            try:
+                # Camera-rate KLT/ORB is intentionally image-only. Sample the
+                # newest common TF only at this planning boundary. A transient
+                # TF gap delays the same step and emits no motion command.
+                self._refresh_arm_tracking_geometry()
+            except (ValueError, TransformException) as exc:
+                with self._lock:
+                    self._automatic_reacquire_due = now + 0.10
+                self._set_state(
+                    "AUTO_APPROACH_GEOMETRY_WAIT",
+                    f"Continuous image tracking is healthy; waiting for current "
+                    f"Arm-camera TF before planning: {exc}",
+                )
+                return
+            with self._lock:
+                self._automatic_tracking_reference = dict(self._arm_target)
+            self._set_state(
+                "ARM_TARGET_CONFIRMED",
+                f"Continuous {tracker_result['method']} observation is fresh "
+                f"({tracker_age * 1000.0:.0f}ms); planning from measured tip TF",
+            )
+            self._plan_approach_step()
 
     def _far_arm_handoff_tick(self) -> None:
         """Automatically freeze and segment the first wrist-camera frame after FAR."""
@@ -3934,12 +7372,27 @@ class TouchObservationNode(Node):
             self._state = state
             self._message = message
         self.get_logger().info(f"{state}: {message}")
+        # Several gateway state-machine branches call _set_state() while their
+        # outer _on_arm_state() RLock is still held.  Publishing the large,
+        # reliable/transient state message from there can retain the shared
+        # lock under DDS/rosbag backpressure and starve both tracker and
+        # control callbacks for seconds.  Defer those publications to the
+        # existing 2 Hz state timer; calls made without an outer lock still
+        # publish immediately.
+        lock_is_owned = getattr(self._lock, "_is_owned", lambda: False)
+        if bool(lock_is_owned()):
+            self._state_publish_deferred_count += 1
+            return
         self._publish_state()
 
     def _publish_state(self) -> None:
         with self._lock:
             available, sam_reason = self._sam.availability()
             arm_allowed, arm_reason = self._arm_gate()
+            arm_state_age_sec = (
+                None if self._arm_state_received is None
+                else max(0.0, time.monotonic() - self._arm_state_received)
+            )
             frozen = self._frozen
             target = self._target
             payload = {
@@ -3948,8 +7401,32 @@ class TouchObservationNode(Node):
                 "state": self._state,
                 "message": self._message,
                 "base_lock": self._active,
-                "motion_execution": "GUARDED_FAR_AND_AUTO_STOP_OBSERVE_APPROACH_ONLY",
-                "arm_gate": {"allowed": arm_allowed, "reason": arm_reason},
+                "motion_execution": (
+                    "ROLLING_VISUAL_SERVO;TRACKER_10HZ_TARGET_UPDATES;"
+                    "ACTUATOR_20HZ_VELOCITY_LIMITED;WATCHDOG_HOLD_350MS"
+                ),
+                "rolling_visual_servo": {
+                    "implemented": True,
+                    "enabled": bool(self.get_parameter(
+                        "rolling_visual_servo_enabled"
+                    ).value),
+                    "session_id": self._rolling_servo_session_id,
+                    "phase": self._rolling_servo_phase,
+                    "sequence": self._rolling_servo_sequence,
+                    "updates_sent": self._rolling_servo_updates_sent,
+                    "stop_reason": self._rolling_servo_stop_reason,
+                    "update_rate_hz": 10.0,
+                    "continuous_until_press": bool(self.get_parameter(
+                        "rolling_visual_servo_continuous_until_press"
+                    ).value),
+                    "tracker_gate": jsonable(self._rolling_servo_tracker_gate),
+                    "gateway": self._arm_state.get("visual_servo", {}),
+                },
+                "arm_gate": {
+                    "allowed": arm_allowed,
+                    "reason": arm_reason,
+                    "state_receive_age_sec": arm_state_age_sec,
+                },
                 "robot_mode": self._robot_mode,
                 "camera_pose": {
                     "requested_pan_deg": float(
@@ -4013,6 +7490,89 @@ class TouchObservationNode(Node):
                     "operator_confirmed_same_object": self._arm_target_confirmed,
                     "distance_policy": "NO_MONOCULAR_METRIC_DEPTH",
                 },
+                "target_tracker": {
+                    "enabled": bool(self.get_parameter(
+                        "continuous_tracker_enabled"
+                    ).value),
+                    "active": self._target_tracker.active,
+                    "semantic_recovery_active": self._tracker_semantic_recovery,
+                    "recovery_requires_human_confirmation": True,
+                    "last_result": jsonable(self._tracker_last_result),
+                    "runtime_error_count": self._tracker_runtime_error_count,
+                    "last_runtime_error": self._tracker_last_runtime_error,
+                    "generation": self._tracker_generation,
+                    "last_input_stamp": self._tracker_last_stamp,
+                    "discarded_generation_count": (
+                        self._tracker_discarded_generation_count
+                    ),
+                    "geometry_ready": bool(
+                        self._arm_frozen is not None
+                        and self._arm_frozen.get("geometry_ready", False)
+                    ),
+                    "input_policy": (
+                        "LATEST_RGB_DEPTH_1_FOR_KLT_ORB;CACHED_CAMERA_INFO_AND_"
+                        "LATEST_COMMON_TF_ONLY_AT_PLANNING_BOUNDARY"
+                    ),
+                    "last_good_age_sec": (
+                        None if self._tracker_last_good_monotonic is None
+                        else max(
+                            0.0,
+                            time.monotonic() - self._tracker_last_good_monotonic,
+                        )
+                    ),
+                    "identity_reference": (
+                        "FIRST_HUMAN_CONFIRMED_ARM_CAMERA_KEYFRAME"
+                        if self._arm_appearance_reference_id is not None else None
+                    ),
+                    "flow": (
+                        "SAM_HUMAN_INIT -> PYRAMID_KLT_RANSAC -> "
+                        "ORB_RANSAC_RECOVERY -> SAM_RECOVERY_HUMAN_CONFIRM"
+                    ),
+                },
+                "visualization": {
+                    "policy": (
+                        "LATEST_VALUE_COALESCED_DIAGNOSTIC_ONLY;DEFERRED_DURING_"
+                        "AUTOMATIC_OR_ACTIVE_ARM_MOTION"
+                    ),
+                    "overlay_dirty": self._overlay_dirty,
+                    "refresh_requested_count": (
+                        self._overlay_refresh_requested_count
+                    ),
+                    "coalesced_update_count": self._overlay_coalesced_update_count,
+                    "published_count": self._overlay_published_count,
+                    "last_publish_duration_ms": (
+                        self._overlay_last_publish_duration_ms
+                    ),
+                    "last_error": self._overlay_last_error,
+                    "deferred_for_motion_count": (
+                        self._overlay_deferred_for_motion_count
+                    ),
+                    "target_marker_qos": "BEST_EFFORT_VOLATILE_DEPTH_1",
+                    "target_marker_published_count": (
+                        self._target_visualization_published_count
+                    ),
+                    "target_marker_deferred_for_motion_count": (
+                        self._target_visualization_deferred_for_motion_count
+                    ),
+                    "target_marker_last_publish_duration_ms": (
+                        self._target_visualization_last_publish_duration_ms
+                    ),
+                },
+                "debug_telemetry": {
+                    "tracker_topic": "/touch_anything/tracker_debug",
+                    "control_topic": "/touch_anything/control_debug",
+                    "publish_policy": (
+                        "QUEUED_IN_CRITICAL_CALLBACK;BEST_EFFORT_DRAINED_IN_"
+                        "INDEPENDENT_TELEMETRY_CALLBACK_GROUP"
+                    ),
+                    "tracker_queue_depth": len(self._tracker_debug_queue),
+                    "control_queue_depth": len(self._control_debug_queue),
+                    "tracker_dropped_total": self._tracker_debug_dropped,
+                    "control_dropped_total": self._control_debug_dropped,
+                    "state_publish_deferred_count": (
+                        self._state_publish_deferred_count
+                    ),
+                },
                 "approach_plan": jsonable(self._approach_plan),
                 "automatic_approach": {
                     "enabled": self._automatic_approach,
@@ -4030,7 +7590,10 @@ class TouchObservationNode(Node):
                         "approach_near_advance_distance_m"
                     ).value),
                     "reacquire_due": self._automatic_reacquire_due,
-                    "policy": "ONE_HUMAN_CONFIRMATION_THEN_BOUNDED_STOP_OBSERVE_LOOP",
+                    "policy": (
+                        "ONE_HUMAN_CONFIRMATION_THEN_TRACK_DURING_EACH_GUARDED_"
+                        "TRAJECTORY;STOP_OBSERVE_REPLAN_BETWEEN_STEPS"
+                    ),
                 },
                 "contact_evidence": {
                     "state": "RECORDED_NOT_YET_CLASSIFIED",
@@ -4041,7 +7604,16 @@ class TouchObservationNode(Node):
                         "approach_steps": jsonable(self._motor_step_evidence),
                         "classification": "NO_VALIDATED_CONTACT_THRESHOLD",
                     },
-                    "visual_change": None,
+                    "visual_change": {
+                        "policy": (
+                            "REPEATED_CHANGE_INSIDE_CONTINUOUSLY_TRACKED_REGION_"
+                            "VERSUS_FIRST_HUMAN_CONFIRMED_KEYFRAME"
+                        ),
+                        "consecutive_frames": self._tracker_appearance_streak,
+                        "required_frames": int(self.get_parameter(
+                            "tracker_touch_required_frames"
+                        ).value),
+                    },
                 },
                 "required_before_real_touch": [
                     "calibrated arm/touch_tip transform",
@@ -4063,19 +7635,64 @@ class TouchObservationNode(Node):
         if unloaded:
             self.get_logger().info(f"Unloaded idle SAM 2.1 model after {idle:.0f}s")
             self._publish_state()
-        if self._target is not None:
-            self._publish_target()
+        self._refresh_visualization()
 
 
 def main(args=None) -> None:
     rclpy.init(args=args)
     node = TouchObservationNode()
+    # Six independently schedulable lanes are required here: serialized Touch
+    # state/control, latency-critical Arm state, latest-frame sensor/telemetry
+    # ingestion, serial OpenCV tracking, best-effort visualization, and TF
+    # callbacks. Shared Touch state remains protected by the node lock and
+    # motion planning stays in the serialized control callback group.
+    executor = MultiThreadedExecutor(num_threads=6)
+    executor.add_node(node)
     try:
-        rclpy.spin(node)
+        # rclpy.spin() propagates exceptions from any timer/subscription and
+        # used to terminate the complete Touch node. Keep diagnostics/UI alive,
+        # stop automatic motion, and continue servicing later callbacks.
+        while rclpy.ok():
+            try:
+                executor.spin_once()
+            except Exception as exc:
+                details = f"{type(exc).__name__}: {exc}"
+                with node._lock:
+                    node._automatic_approach = False
+                    node._automatic_reacquire_due = None
+                    node._state = "TOUCH_RUNTIME_ERROR"
+                    node._message = (
+                        "Unexpected callback error; automatic motion stopped, "
+                        "Touch node remains alive: " + details
+                    )
+                node.get_logger().error(
+                    "Unexpected Touch callback error; keeping node alive and "
+                    "stopping automatic motion: " + details + "\n"
+                    + traceback.format_exc()
+                )
+                try:
+                    node._publish_state()
+                except Exception as publish_exc:
+                    node.get_logger().error(
+                        "Failed to publish runtime-error state: "
+                        f"{type(publish_exc).__name__}: {publish_exc}"
+                    )
     except KeyboardInterrupt:
         pass
     finally:
-        node._lock_pub.publish(Bool(data=False))
+        # SIGINT/SIGTERM may already have invalidated the rclpy context before
+        # this cleanup block runs.  Releasing the advisory base lock is best
+        # effort during shutdown; never turn a normal exit into a traceback.
+        if rclpy.ok():
+            try:
+                node._lock_pub.publish(Bool(data=False))
+            except Exception as exc:
+                node.get_logger().warning(
+                    "Could not publish Touch base-lock release during shutdown: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+        executor.remove_node(node)
+        executor.shutdown(timeout_sec=2.0)
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
