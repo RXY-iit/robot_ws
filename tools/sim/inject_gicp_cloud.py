@@ -15,6 +15,7 @@ import numpy as np
 
 # Exploratory calibration profiles, not validated severity labels.
 PROFILES = {
+    "shelf_drift_noisy": dict(noise=1., bias=0., yaw=0., sector=0., dropout=0., map_bias_y=1.5),
     "shelf_drift": dict(noise=.05, bias=0., yaw=0., sector=0., dropout=0., map_bias_y=1.5),
     "mild": dict(noise=.3, bias=0., yaw=0., sector=0., dropout=0.),
     "bias": dict(noise=.1, bias=1.5, yaw=20., sector=0., dropout=0.),

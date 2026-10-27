@@ -44,7 +44,8 @@ class NavigationAgent:
                 plan.append(SkillCall("goto_pose", payload={
                     "pose": {**pose, "frame_id": "map"}, "timeout_sec": 360.0,
                     "dynamic_timeout": False, "apply_navigation_annotations": False,
-                    "recovery_policy": {"allow_alternate_goal": False, "allow_relaxed_tolerance": False},
+                    "recovery_policy": {"allow_alternate_goal": False, "allow_relaxed_tolerance": False,
+                                        "allow_direct_preparation": False},
                 }, timeout_sec=360.0,
                     reason=f"Waypoint list {intent.target}: {index + 1}/{len(route['poses'])} ({route['waypoints'][index].get('id', index)})",
                     catalog={"waypoint_route": {"id": route.get("route_id", intent.target),

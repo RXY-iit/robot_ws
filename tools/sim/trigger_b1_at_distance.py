@@ -4,7 +4,7 @@ import argparse,json,math,os,time
 from pathlib import Path
 
 def main():
-    p=argparse.ArgumentParser(description=__doc__);p.add_argument('--distance',type=float,default=1.0);p.add_argument('--profile',choices=['mild','bias','occlusion','severe','shelf_drift'],required=True);p.add_argument('--output',required=True);p.add_argument('--timeout',type=float,default=240);p.add_argument('--near-map-xy',type=float,nargs=2,metavar=('X','Y'));p.add_argument('--radius',type=float,default=.6);a=p.parse_args()
+    p=argparse.ArgumentParser(description=__doc__);p.add_argument('--distance',type=float,default=1.0);p.add_argument('--profile',choices=['mild','bias','occlusion','severe','shelf_drift','shelf_drift_noisy'],required=True);p.add_argument('--output',required=True);p.add_argument('--timeout',type=float,default=240);p.add_argument('--near-map-xy',type=float,nargs=2,metavar=('X','Y'));p.add_argument('--radius',type=float,default=.6);a=p.parse_args()
     if not math.isfinite(a.distance) or a.distance<=0 or not math.isfinite(a.timeout) or a.timeout<=0:p.error('Positive finite distance and timeout required')
     if os.environ.get('ROS_DOMAIN_ID')!='20' or os.environ.get('RMW_IMPLEMENTATION')!='rmw_fastrtps_cpp':p.error('Sim Domain 20 / rmw_fastrtps_cpp required')
     if a.near_map_xy and (not all(math.isfinite(v) for v in a.near_map_xy) or not math.isfinite(a.radius) or a.radius<=0):p.error('Finite trigger position and positive radius required')

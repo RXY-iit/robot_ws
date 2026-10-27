@@ -31,6 +31,7 @@ def test_shared_route_expands_to_exact_goals_with_recovery_visible_steps():
     assert [s.catalog["waypoint_route"]["index"] for s in goals] == list(range(7))
     assert all(s.catalog["waypoint_route"]["sha256"] == route["sha256"] for s in goals)
     assert all(s.payload["apply_navigation_annotations"] is False for s in goals)
+    assert all(s.payload["recovery_policy"]["allow_direct_preparation"] is False for s in goals)
     assert all(not any(s.payload["recovery_policy"].values()) for s in goals)
     assert [s.name for s in refinement.plan[:4]] == ["await_robot_stationary", "set_camera_pose", "await_robot_auto_mode", "check_localization_health"]
 
@@ -66,7 +67,7 @@ def test_move_as_waypoint_skill_keeps_goto_contract_and_fixed_goal_policy():
     name, args = resolve_alias(load_extensions(), "move_as_waypoint", {"pose": {"x": 1, "y": 2, "yaw": 0}})
     assert name == "goto_pose"
     assert args["apply_navigation_annotations"] is False
-    assert args["recovery_policy"] == {"allow_alternate_goal": False, "allow_relaxed_tolerance": False}
+    assert args["recovery_policy"] == {"allow_alternate_goal": False, "allow_relaxed_tolerance": False, "allow_direct_preparation": False}
 
 
 def test_navigation_exception_cancels_goal_and_does_not_dispatch_later_waypoints():

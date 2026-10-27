@@ -4,7 +4,7 @@ aliases:
     target: goto_pose
     defaults:
       apply_navigation_annotations: false
-      recovery_policy: {allow_alternate_goal: false, allow_relaxed_tolerance: false}
+      recovery_policy: {allow_alternate_goal: false, allow_relaxed_tolerance: false, allow_direct_preparation: false}
   navigate_to_pose: {target: goto_pose}
   move_base_relative: {target: move_relative}
   rotate_base_relative: {target: rotate_relative}

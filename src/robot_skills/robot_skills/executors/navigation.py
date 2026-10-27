@@ -735,7 +735,8 @@ class NavigationSkills:
                 active_kind="final_goal",
             )
 
-        if start_pose is not None:
+        # Shared waypoint baselines dispatch the same Nav2 goals without extra direct motion.
+        if start_pose is not None and recovery_policy.get("allow_direct_preparation", True):
             pre_align_heading_delta = self._target_heading_delta(start_pose, pose)
             local_clearance = self._local_clearance_snapshot()
             if (

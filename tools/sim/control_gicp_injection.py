@@ -9,7 +9,7 @@ import time
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('command',choices=['status','start','stop'])
-    p.add_argument('--profile',choices=['legacy','mild','bias','occlusion','severe','shelf_drift'],default='legacy')
+    p.add_argument('--profile',choices=['legacy','mild','bias','occlusion','severe','shelf_drift','shelf_drift_noisy'],default='legacy')
     p.add_argument('--require-healthy-motion',action='store_true',help='Only start with recent OK localization, AUTO and moving wheel odometry')
     a=p.parse_args()
     if os.environ.get('ROS_DOMAIN_ID')!='20' or os.environ.get('RMW_IMPLEMENTATION')!='rmw_fastrtps_cpp':
