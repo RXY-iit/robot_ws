@@ -1,0 +1,9 @@
+schema_version: 1
+route_id: b1_probe
+map_id: sim_factory_mid360_like_gpu_trueimu_011
+frame_id: map
+waypoints:
+- id: shelf_01_front
+  x: -23.2
+  y: 6.0
+  yaw: 1.5707963268

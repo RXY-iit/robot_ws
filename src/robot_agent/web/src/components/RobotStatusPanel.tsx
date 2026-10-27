@@ -10,6 +10,8 @@ interface Props {
 }
 
 function valueClass(value: string): string {
+  if (value.startsWith("STALE") || value.startsWith("BLOCKED")) return "value bad";
+  if (value.startsWith("UNKNOWN")) return "value warn";
   if (value === "AUTO" || value === "OK") return "value ok";
   if (value === "ESTOP") return "value bad";
   return "value";

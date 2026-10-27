@@ -1,3 +1,34 @@
+# Robot skill registry: execution whitelist for SkillClient.
+#
+# This file intentionally stays small and operational. It answers:
+#   "May this robot skill be executed in dry_run/sim/real, and with what default timeout?"
+#
+# For parser/JEV/planning semantics, use skill_catalog.v2.yaml. That catalog
+# contains natural-language aliases, args schemas, preconditions, effects,
+# failure semantics, and JEV visibility.
+#
+# To add or extend a robot skill:
+#   1. Implement the executor method in robot_skills/robot_skills/executors/.
+#   2. Dispatch it from src/robot_agent/robot_agent/skill_client.py.
+#   3. Add a registry item here using this template:
+#        - name: new_skill_name
+#          group: base_motion | view_camera | perception_detection | arm | ...
+#          version: 0.1.0
+#          description: One-line operational description.
+#          safety_level: read_only | safety_gate | perception | navigation | motion | recovery
+#          allowed_modes: [dry_run, sim, real]
+#          timeout_sec: 10
+#          requires_human_confirm: false
+#          sim_supported: true
+#          real_supported: true
+#   4. Add the full semantic contract to skill_catalog.v2.yaml.
+#   5. Add or update tests for SkillCatalog validation and any agent plan that
+#      can emit the skill.
+#
+# Recovery skills should be explicit robot skills too. For example, future
+# recovery extensions may add reset_camera_stream, recover_local_planner,
+# restart_arm_gateway, or verify_ros_graph. Keep them in this registry only
+# when they are safe, bounded, and dispatched through SkillClient.
 skills:
   - name: get_robot_status
     group: health_safety
@@ -175,26 +206,59 @@ skills:
     timeout_sec: 5
     requires_human_confirm: false
     sim_supported: true
-    real_supported: false
+    real_supported: true
 
   - name: set_camera_pose
     group: view_camera
     version: 0.1.0
     description: Command camera pan/tilt within bounded limits and wait briefly for feedback when available.
     safety_level: manipulation_lite
-    allowed_modes: [dry_run, sim]
+    allowed_modes: [dry_run, sim, real]
     timeout_sec: 2
     requires_human_confirm: false
     sim_supported: true
-    real_supported: false
+    real_supported: true
 
   - name: move_lift_bounded
     group: manipulation_lite
     version: 0.1.0
     description: Move lift by a bounded requested distance, converted to a timed UP/DOWN command plus timer-based STOP.
     safety_level: manipulation_lite
-    allowed_modes: [dry_run, sim]
+    allowed_modes: [dry_run, sim, real]
     timeout_sec: 6
     requires_human_confirm: false
+    sim_supported: true
+    real_supported: true
+
+  - name: set_pose
+    group: arm
+    version: 0.1.0
+    description: Play a predefined named arm pose or rough gesture sequence through the guarded arm dashboard gateway.
+    safety_level: motion
+    allowed_modes: [dry_run, sim, real]
+    timeout_sec: 15
+    requires_human_confirm: false
+    sim_supported: true
+    real_supported: true
+
+  - name: touch
+    group: arm
+    version: 0.1.0
+    description: Touch or press a visible detected target through Touch Anything.
+    safety_level: motion
+    allowed_modes: [dry_run, sim, real]
+    timeout_sec: 45
+    requires_human_confirm: true
+    sim_supported: true
+    real_supported: true
+
+  - name: grasp
+    group: arm
+    version: 0.1.0
+    description: Grasp and optionally place a visible target through a configured VLA policy endpoint.
+    safety_level: motion
+    allowed_modes: [dry_run, sim]
+    timeout_sec: 60
+    requires_human_confirm: true
     sim_supported: true
     real_supported: false

@@ -1,4 +1,5 @@
 import { useSpeechRecognition } from "../lib/useSpeechRecognition";
+import { MissionCancelButton } from "./MissionCancelButton";
 
 interface QuickCommand {
   label: string;
@@ -12,15 +13,16 @@ interface Props {
   onCancel: () => void;
   onQuickCommand: (command: string) => void;
   quickCommands: QuickCommand[];
+  testCommands: QuickCommand[];
 }
 
 const SPEECH_LANGS: [string, string][] = [
   ["ja-JP", "日本語"],
   ["en-US", "English"],
-  ["zh-CN", "中文"],
+  ["zh-CN", "Chinese"],
 ];
 
-export function CommandBox({ value, onChange, onSend, onCancel, onQuickCommand, quickCommands }: Props) {
+export function CommandBox({ value, onChange, onSend, onCancel, onQuickCommand, quickCommands, testCommands }: Props) {
   const speech = useSpeechRecognition(onChange);
 
   return (
@@ -29,9 +31,7 @@ export function CommandBox({ value, onChange, onSend, onCancel, onQuickCommand, 
       <textarea id="cmd" value={value} onChange={(event) => onChange(event.target.value)} />
       <div className="row">
         <button onClick={onSend}>送信</button>
-        <button className="secondary" onClick={onCancel}>
-          キャンセル
-        </button>
+        <MissionCancelButton onCancel={onCancel} />
         {speech.supported && (
           <>
             <button
@@ -57,8 +57,9 @@ export function CommandBox({ value, onChange, onSend, onCancel, onQuickCommand, 
           </>
         )}
       </div>
+      <h3>Mission Tests</h3>
       <div className="quick-grid">
-        {quickCommands.map((quick) => (
+        {(testCommands.length ? testCommands : quickCommands).map((quick) => (
           <button key={quick.label} onClick={() => onQuickCommand(quick.command)} title={quick.command}>
             {quick.label}
           </button>

@@ -4,7 +4,7 @@ gicp_localizer:
     # ── Map ──────────────────────────────────────────────────────────────────
     # Path to the 3D PLY map exported from GLIM.
     # This map is fixed (prior map); the localizer does NOT modify it.
-    map_path: "/home/ruan-x/robot_ws/maps/sim_factory_mid360_like_gpu_trueimu_011/map_3d.ply"
+    map_path: "/home/ruan-x/robot_ws/maps/sim_real_lab_001/map_3d.ply"
 
     # ── Downsampling ─────────────────────────────────────────────────────────
     # map_voxel_size: voxel grid applied once at startup to reduce map size.
@@ -23,10 +23,52 @@ gicp_localizer:
     max_correspondence_distance: 1.5
 
     # fitness_score_threshold: INLIER RMSE above this → localization rejected,
-    #   previous TF is rebroadcast unchanged. The sim warehouse map has repeated
-    #   shelf geometry and dynamic objects, so a wider threshold is used here.
-    #   Real robot launches should use a stricter profile.
+    #   previous TF is rebroadcast unchanged.  Tune after first run.
+    # Keep this aligned with the sim Agent health threshold. The Isaac MID360-like
+    # cloud routinely scores 0.30..0.45 after motion; rejecting those matches
+    # freezes map->odom and makes odom drift look like an undetected pose error.
     fitness_score_threshold: 0.50
+
+    # GICP needs 3-D geometry. Do not reuse the Nav2 laser-slice height band:
+    # the narrow [-0.8, -0.3] band made stationary warehouse matches unstable.
+    scan_min_height: -1000000000.0
+    scan_max_height: 1000000000.0
+    minimum_match_fitness: 0.25
+    scan_max_source_age_sec: 2.0
+    fast_lio_max_stamp_skew_sec: 0.5
+
+    # After RViz /initialpose, hold the clicked map->odom transform while several
+    # stationary Livox frames are accumulated. The first correction therefore
+    # uses a denser cloud instead of one sparse frame.
+    initialpose_accumulation_sec: 2.5
+    initialpose_min_scans: 10
+    initialpose_max_scans: 30
+    # Sim recovery waits for actual azimuth coverage, not a fixed guessed Hz.
+    # Measure coverage before matching filters. Timeout reports degraded state
+    # but continues observing bounded fresh data, allowing evidence-based retry.
+    # Scan-header simulation seconds, not wall seconds or a fixed RTF estimate.
+    initialpose_sim_accumulation_sec: 10.0
+    initialpose_accumulation_timeout_sec: 75.0
+    # Return coverage is not beam coverage: open directions can have no hits.
+    initialpose_sim_azimuth_coverage: 0.90
+
+    # The real-lab sim has repeated tables/chairs/flat walls. A single GICP
+    # match can have a low RMSE while still jumping to a nearby local optimum.
+    # Keep /wheel_odom + optional FAST-LIO as the continuous motion source, and
+    # let GICP apply only small global corrections to map->odom.
+    max_correction_translation_m: 0.35
+    max_correction_yaw_rad: 0.10
+    correction_alpha: 0.30
+    initialpose_relocalization_updates: 3
+    initialpose_max_correction_translation_m: 1.5
+    initialpose_max_correction_yaw_rad: 0.40
+    # Sim-only stability guard: if bounded correction rejection repeats, open a
+    # wider auto-relocalization window. Keep the normal correction gate small for
+    # steady navigation, but allow automatic recovery after map->odom has frozen.
+    auto_relocalization_reject_count: 8
+    auto_relocalization_updates: 3
+    auto_relocalization_max_correction_translation_m: 6.5
+    auto_relocalization_max_correction_yaw_rad: 1.40
 
     # normal_search_radius: KD-tree radius for normal estimation (m).
     #   ~3-4× voxel_size is a good starting point.

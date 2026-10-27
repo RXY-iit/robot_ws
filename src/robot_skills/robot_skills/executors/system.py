@@ -9,6 +9,7 @@ from robot_skills.schemas import SkillContext, SkillResult
 
 
 class SystemSkills:
+    # Receipt ages use monotonic wall time; sensor stamps stay in the ROS clock.
     def __init__(self, node, mode: str = "sim"):
         self.node = node
         self.mode = mode
@@ -17,9 +18,12 @@ class SystemSkills:
         self._last_robot_mode_time = 0.0
         self._last_safety_time = 0.0
         self._last_cmd_vel_time = 0.0
+        self._last_cmd_receipt_time = 0.0
         self._last_cmd_speed = 0.0
         self._last_nav2_cmd_vel_time = 0.0
         self._last_nav2_cmd_speed = 0.0
+        self._latest_wheel_odom_pose = None
+        self._last_wheel_odom_time = 0.0
         self._local_planner_required = False
         self._local_planner_required_reason = "idle"
         self._local_planner_state_label = "UNKNOWN"
@@ -33,50 +37,80 @@ class SystemSkills:
         self._stationary_drift_yaw_rad = 0.0
         self._localization_warning = "UNKNOWN_ODOM"
         self._last_trusted_pose = None
+        self._wheel_odom_pose_at_trust = None
         self._last_trusted_pose_time = 0.0
+        self._trusted_pose_stamp = None
+        self._wheel_odom_stamp = None
+        self._evidence_stamp = None
+        self._evidence_odom_anchor = None
+        self._recovery_accumulating = False
+        self._recovery_status_received = 0.0
         self._gicp_score = None
         self._last_gicp_score_time = 0.0
+        self._last_localization_pose_time = 0.0
+        self._gicp_good_samples_after_initialpose = 0
+        self._gicp_min_good_samples = 3
+        self._localization_data_stale_sec = 3.0
         if mode == "real":
             self._gicp_warn_threshold = 0.25
             self._gicp_bad_threshold = 0.5
             self._stationary_drift_warn_m = 0.05
             self._stationary_drift_warn_yaw_rad = 0.10
+            self._trusted_pose_delta_warn_m = 0.12
+            self._trusted_pose_delta_warn_yaw_rad = 0.20
         else:
             self._gicp_warn_threshold = 0.5
             self._gicp_bad_threshold = 0.65
             self._stationary_drift_warn_m = 0.15
             self._stationary_drift_warn_yaw_rad = 0.20
+            self._trusted_pose_delta_warn_m = 0.25
+            self._trusted_pose_delta_warn_yaw_rad = 0.35
         self._last_initialpose_time = 0.0
         self._initialpose_settle_sec = 10.0
+        self._stationary_cmd_speed_threshold = 0.02
+        self._stationary_cmd_fresh_sec = 0.5
 
     def update_robot_mode(self, value: str):
         self.robot_mode = value
-        self._last_robot_mode_time = time.time()
+        self._last_robot_mode_time = time.monotonic()
 
     def update_safety_status(self, value: str):
         self.safety_status = value
-        self._last_safety_time = time.time()
+        self._last_safety_time = time.monotonic()
 
     def update_gicp_score(self, score: float):
         self._gicp_score = float(score)
-        self._last_gicp_score_time = time.time()
+        self._last_gicp_score_time = time.monotonic()
         if self._gicp_score >= self._gicp_bad_threshold:
+            self._gicp_good_samples_after_initialpose = 0
             self._localization_warning = "GICP_SCORE_BAD"
         elif self._gicp_score >= self._gicp_warn_threshold:
+            self._gicp_good_samples_after_initialpose = 0
             self._localization_warning = "GICP_SCORE_WARN"
+        else:
+            self._gicp_good_samples_after_initialpose += 1
 
     def update_initialpose(self):
-        self._last_initialpose_time = time.time()
+        self._last_initialpose_time = time.monotonic()
         self._stationary_pose = None
         self._stationary_drift_m = 0.0
         self._stationary_drift_yaw_rad = 0.0
+        self._latest_odom_pose = None
+        # initialpose resets the map estimate, not the physical odometry frame.
+        # Keep the previously verified map/odom anchor for bounded recovery.
+        # Clock rollback and odometry jumps still invalidate it in the odom callback.
+        self._last_localization_pose_time = 0.0
+        self._gicp_score = None
+        self._last_gicp_score_time = 0.0
+        self._gicp_good_samples_after_initialpose = 0
         self._localization_warning = "MANUAL_INITIALPOSE_SETTLING"
 
     def update_cmd_vel(self, linear_x: float, linear_y: float, angular_z: float):
+        self._last_cmd_receipt_time = time.monotonic()
         cmd_speed = abs(linear_x) + abs(linear_y) + abs(angular_z)
         self._last_cmd_speed = cmd_speed
         if cmd_speed > 0.02:
-            self._last_cmd_vel_time = time.time()
+            self._last_cmd_vel_time = time.monotonic()
             self._stationary_pose = None
             self._stationary_drift_m = 0.0
             self._stationary_drift_yaw_rad = 0.0
@@ -86,24 +120,55 @@ class SystemSkills:
     def update_nav2_cmd_vel(self, linear_x: float, linear_y: float, angular_z: float):
         cmd_speed = abs(linear_x) + abs(linear_y) + abs(angular_z)
         self._last_nav2_cmd_speed = cmd_speed
-        self._last_nav2_cmd_vel_time = time.time()
+        self._last_nav2_cmd_vel_time = time.monotonic()
+
+    def update_wheel_odom_pose(self, x: float, y: float, yaw: float, stamp=None):
+        if stamp is not None and self._wheel_odom_stamp is not None:
+            dt = stamp - self._wheel_odom_stamp
+            previous = self._latest_wheel_odom_pose
+            if dt < 0 or (previous is not None and dt > 0 and (
+                math.hypot(x - previous[0], y - previous[1]) > 2 * dt + 0.15
+                or abs(self._angle_diff(yaw, previous[2])) > 3 * dt + 0.15)):
+                self.invalidate_localization_anchor()
+        self._wheel_odom_stamp = stamp
+        self._latest_wheel_odom_pose = (float(x), float(y), float(yaw))
+        self._last_wheel_odom_time = time.monotonic()
 
     def update_local_planner_state(self, label: str, state_id: int | None = None):
         self._local_planner_state_label = str(label or "UNKNOWN")
         self._local_planner_state_id = state_id
-        self._last_local_planner_state_time = time.time()
+        self._last_local_planner_state_time = time.monotonic()
 
     def set_local_planner_required(self, required: bool, reason: str = ""):
         self._local_planner_required = bool(required)
         self._local_planner_required_reason = reason or ("navigation_active" if required else "idle")
 
-    def update_odom_pose(self, x: float, y: float, yaw: float):
-        now_time = time.time()
+    def invalidate_localization_anchor(self):
+        self._last_trusted_pose = None
+        self._wheel_odom_pose_at_trust = None
+        self._trusted_pose_stamp = None
+        self._evidence_stamp = None
+        self._evidence_odom_anchor = None
+        self._gicp_good_samples_after_initialpose = 0
+        self._localization_warning = "GICP_POSE_STALE"
+
+    def update_odom_pose(self, x: float, y: float, yaw: float, stamp=None, odom_anchor=None):
+        self._evidence_stamp = stamp
+        self._evidence_odom_anchor = odom_anchor
+        now_time = time.monotonic()
         self._latest_odom_pose = (x, y, yaw)
+        self._last_localization_pose_time = now_time
+        nav2_motion_requested = (
+            self._last_nav2_cmd_speed > 0.02
+            and self._last_nav2_cmd_vel_time > 0.0
+            and now_time - self._last_nav2_cmd_vel_time <= 0.5
+        )
         idle = self._last_cmd_speed <= 0.02 and (
             self._last_cmd_vel_time == 0.0 or now_time - self._last_cmd_vel_time > 0.5
-        )
+        ) and not nav2_motion_requested
         if not idle:
+            if self.localization_is_healthy():
+                self._record_trusted_pose(x, y, yaw, now_time)
             return
         if self._stationary_pose is None:
             self._stationary_pose = (x, y, yaw)
@@ -137,14 +202,23 @@ class SystemSkills:
         metrics.update({
             "robot_mode": self.robot_mode,
             "safety_status": self.safety_status,
-            "robot_mode_age_sec": time.time() - self._last_robot_mode_time if self._last_robot_mode_time else None,
-            "safety_status_age_sec": time.time() - self._last_safety_time if self._last_safety_time else None,
+            "robot_mode_age_sec": time.monotonic() - self._last_robot_mode_time if self._last_robot_mode_time else None,
+            "safety_status_age_sec": time.monotonic() - self._last_safety_time if self._last_safety_time else None,
             "mode": context.mode if context else "unknown",
         })
         return make_result("get_robot_status", True, codes.OK, "Robot status collected.", started, metrics)
 
     def localization_is_healthy(self) -> bool:
+        now_time = time.monotonic()
         if self._latest_odom_pose is None:
+            return False
+        if self._gicp_score is None:
+            return False
+        if now_time - self._last_gicp_score_time > self._localization_data_stale_sec:
+            return False
+        if now_time - self._last_localization_pose_time > self._localization_data_stale_sec:
+            return False
+        if self._gicp_good_samples_after_initialpose < self._gicp_min_good_samples:
             return False
         if self.initialpose_is_settling():
             return False
@@ -154,23 +228,67 @@ class SystemSkills:
             return False
         return True
 
+    def localization_has_fresh_good_evidence(self, context: SkillContext | None = None) -> bool:
+        return self._localization_fresh_good_evidence_from_warning(self._score_warning() or self._localization_warning)
+
+    def localization_requires_recovery(self, context: SkillContext | None = None) -> bool:
+        metrics = self.localization_metrics(context)
+        return bool(metrics.get("localization_requires_recovery"))
+
     def localization_metrics(self, context: SkillContext | None = None) -> dict:
-        initialpose_age = time.time() - self._last_initialpose_time if self._last_initialpose_time else None
+        initialpose_age = time.monotonic() - self._last_initialpose_time if self._last_initialpose_time else None
+        trusted_delta_m, trusted_delta_yaw = self._trusted_pose_delta()
+        trusted_delta_warning = (
+            trusted_delta_m is not None
+            and (
+                trusted_delta_m > self._trusted_pose_delta_warn_m
+                or (trusted_delta_yaw is not None and trusted_delta_yaw > self._trusted_pose_delta_warn_yaw_rad)
+            )
+        )
+        score_warning = self._score_warning()
+        effective_warning = score_warning or self._localization_warning
+        if trusted_delta_warning and effective_warning in {
+            "GICP_POSE_STALE",
+            "GICP_SCORE_STALE",
+            "GICP_SCORE_WARN",
+        }:
+            effective_warning = "GICP_TRUSTED_POSE_DIVERGENCE"
         return {
             "latest_odom_pose": self._latest_odom_pose,
+            "latest_wheel_odom_pose": self._latest_wheel_odom_pose,
             "stationary_drift_m": self._stationary_drift_m,
             "stationary_drift_yaw_rad": self._stationary_drift_yaw_rad,
             "stationary_drift_warn_m": self._stationary_drift_warn_m,
             "stationary_drift_warn_yaw_rad": self._stationary_drift_warn_yaw_rad,
-            "localization_warning": self._localization_warning,
+            "trusted_pose_delta_m": trusted_delta_m,
+            "trusted_pose_delta_kind": "wheel_motion_since_trusted_anchor",
+            "trusted_pose_delta_yaw_rad": trusted_delta_yaw,
+            "trusted_pose_delta_warn_m": self._trusted_pose_delta_warn_m,
+            "trusted_pose_delta_warn_yaw_rad": self._trusted_pose_delta_warn_yaw_rad,
+            "localization_warning": effective_warning,
             "localization_healthy": self.localization_is_healthy(),
             "gicp_score": self._gicp_score,
-            "gicp_score_age_sec": time.time() - self._last_gicp_score_time if self._last_gicp_score_time else None,
+            "gicp_score_age_sec": time.monotonic() - self._last_gicp_score_time if self._last_gicp_score_time else None,
+            "localization_pose_age_sec": time.monotonic() - self._last_localization_pose_time if self._last_localization_pose_time else None,
+            "gicp_good_samples_after_initialpose": self._gicp_good_samples_after_initialpose,
+            "gicp_min_good_samples": self._gicp_min_good_samples,
+            "localization_data_stale_sec": self._localization_data_stale_sec,
             "last_trusted_pose": self._last_trusted_pose,
-            "last_trusted_pose_age_sec": time.time() - self._last_trusted_pose_time if self._last_trusted_pose_time else None,
+            "trusted_pose_frame": "base_footprint" if self._trusted_pose_stamp is not None else None,
+            "trusted_pose_stamp_sec": self._trusted_pose_stamp,
+            "trusted_odom_anchor": self._wheel_odom_pose_at_trust,
+            "wheel_odom_stamp_sec": self._wheel_odom_stamp,
+            "pose_source_age_sec": self._source_age(self._evidence_stamp),
+            "wheel_odom_source_age_sec": self._source_age(self._wheel_odom_stamp),
+            "odom_propagated_trusted_pose": self.odom_propagated_trusted_pose(),
+            "trusted_pose_has_odom_anchor": self._wheel_odom_pose_at_trust is not None,
+            "wheel_odom_age_sec": time.monotonic() - self._last_wheel_odom_time if self._last_wheel_odom_time else None,
+            "last_trusted_pose_age_sec": time.monotonic() - self._last_trusted_pose_time if self._last_trusted_pose_time else None,
             "initialpose_age_sec": initialpose_age,
             "initialpose_settling": self.initialpose_is_settling(),
             "initialpose_settle_sec": self._initialpose_settle_sec,
+            "localization_fresh_good_evidence": self._localization_fresh_good_evidence_from_warning(effective_warning),
+            "localization_requires_recovery": self._localization_requires_recovery_from_warning(effective_warning),
             "mode": context.mode if context else "unknown",
         }
 
@@ -179,18 +297,23 @@ class SystemSkills:
         local_planner = self.local_planner_metrics()
         safety_level = self._level_from_safety()
         mode_level = "OK" if self.robot_mode == "AUTO" else ("WARN" if self.robot_mode in {"MANUAL", "UNKNOWN"} else "WARN")
+        wall_now = time.monotonic()
+        mode_age = wall_now - self._last_robot_mode_time if self._last_robot_mode_time else None
+        safety_age = wall_now - self._last_safety_time if self._last_safety_time else None
+        mode_fresh = mode_age is not None and 0 <= mode_age <= 5.0
+        safety_fresh = safety_age is not None and 0 <= safety_age <= 5.0
         localization_level = self._level_from_localization(localization)
         local_planner_level = self._level_from_local_planner(local_planner)
         components = {
             "mode": {
-                "level": mode_level,
-                "summary": self.robot_mode or "UNKNOWN",
-                "details": {"robot_mode_age_sec": time.time() - self._last_robot_mode_time if self._last_robot_mode_time else None},
+                "level": mode_level if mode_fresh else "BAD",
+                "summary": (self.robot_mode or "UNKNOWN") if mode_fresh else "STALE",
+                "details": {"robot_mode_age_sec": mode_age, "last_value": self.robot_mode},
             },
             "safety": {
-                "level": safety_level,
-                "summary": self.safety_status or "UNKNOWN",
-                "details": {"safety_status_age_sec": time.time() - self._last_safety_time if self._last_safety_time else None},
+                "level": safety_level if safety_fresh else "BAD",
+                "summary": (self.safety_status or "UNKNOWN") if safety_fresh else "STALE",
+                "details": {"safety_status_age_sec": safety_age, "last_value": self.safety_status},
             },
             "localization": {
                 "level": localization_level,
@@ -218,7 +341,7 @@ class SystemSkills:
         }
 
     def local_planner_metrics(self) -> dict:
-        now_time = time.time()
+        now_time = time.monotonic()
         state_age = now_time - self._last_local_planner_state_time if self._last_local_planner_state_time else None
         nav2_cmd_age = now_time - self._last_nav2_cmd_vel_time if self._last_nav2_cmd_vel_time else None
         label = self._local_planner_state_label or "UNKNOWN"
@@ -247,8 +370,37 @@ class SystemSkills:
     def last_trusted_pose(self):
         return self._last_trusted_pose
 
+    def odom_propagated_trusted_pose(self) -> tuple[float, float, float] | None:
+        if self._last_trusted_pose is None:
+            return None
+        if self._latest_wheel_odom_pose is None or self._wheel_odom_pose_at_trust is None:
+            return self._last_trusted_pose
+
+        mx, my, myaw = self._last_trusted_pose
+        ox0, oy0, oyaw0 = self._wheel_odom_pose_at_trust
+        ox1, oy1, oyaw1 = self._latest_wheel_odom_pose
+        dx_odom = ox1 - ox0
+        dy_odom = oy1 - oy0
+        dyaw = self._angle_diff(oyaw1, oyaw0)
+
+        # Apply the wheel-odom relative motion in the trusted map pose frame.
+        heading_offset = self._angle_diff(myaw, oyaw0)
+        c = math.cos(heading_offset)
+        s = math.sin(heading_offset)
+        return (
+            mx + c * dx_odom - s * dy_odom,
+            my + s * dx_odom + c * dy_odom,
+            self._angle_diff(myaw + dyaw, 0.0),
+        )
+
     def initialpose_is_settling(self) -> bool:
-        return bool(self._last_initialpose_time and time.time() - self._last_initialpose_time < self._initialpose_settle_sec)
+        return bool((self._recovery_accumulating and time.monotonic() - self._recovery_status_received < 3)
+                    or (self._last_initialpose_time and time.monotonic() - self._last_initialpose_time < self._initialpose_settle_sec))
+
+    def _source_age(self, stamp):
+        if stamp is None or self.node is None:
+            return None
+        return self.node.get_clock().now().nanoseconds / 1e9 - stamp
 
     def _level_from_safety(self) -> str:
         normalized = str(self.safety_status or "").upper()
@@ -261,6 +413,10 @@ class SystemSkills:
         return "WARN"
 
     def _level_from_localization(self, metrics: dict) -> str:
+        if metrics.get("localization_healthy"):
+            return "OK"
+        if metrics.get("localization_fresh_good_evidence"):
+            return "WARN"
         score = metrics.get("gicp_score")
         if isinstance(score, (int, float)) and score >= self._gicp_bad_threshold:
             return "BAD"
@@ -273,11 +429,41 @@ class SystemSkills:
             return "OK"
         if warning == "MOVING":
             return "OK"
-        if warning in {"GICP_SCORE_BAD", "GICP_SCORE_WARN", "POSSIBLE_STATIONARY_DRIFT", "UNKNOWN_ODOM"}:
+        if warning in {
+            "GICP_SCORE_BAD",
+            "GICP_SCORE_WARN",
+            "GICP_SCORE_MISSING",
+            "GICP_SCORE_STALE",
+            "GICP_POSE_STALE",
+            "GICP_TRUSTED_POSE_DIVERGENCE",
+            "POSSIBLE_STATIONARY_DRIFT",
+            "UNKNOWN_ODOM",
+        }:
             return "BAD"
         if warning in {"MANUAL_INITIALPOSE_SETTLING"}:
             return "WARN"
         return "UNKNOWN"
+
+    def _localization_fresh_good_evidence_from_warning(self, warning: str) -> bool:
+        now_time = time.monotonic()
+        if self._latest_odom_pose is None or self._gicp_score is None:
+            return False
+        if now_time - self._last_gicp_score_time > self._localization_data_stale_sec:
+            return False
+        if now_time - self._last_localization_pose_time > self._localization_data_stale_sec:
+            return False
+        if self._gicp_score >= self._gicp_warn_threshold:
+            return False
+        return str(warning or "UNKNOWN") in {"OK", "MOVING", "MANUAL_INITIALPOSE_SETTLING"}
+
+    def _localization_requires_recovery_from_warning(self, warning: str) -> bool:
+        if self._gicp_score is not None and self._gicp_score >= self._gicp_bad_threshold:
+            return True
+        return str(warning or "UNKNOWN") in {
+            "GICP_SCORE_BAD",
+            "GICP_TRUSTED_POSE_DIVERGENCE",
+            "POSSIBLE_STATIONARY_DRIFT",
+        }
 
     def _level_from_local_planner(self, metrics: dict) -> str:
         required = bool(metrics.get("required"))
@@ -300,22 +486,45 @@ class SystemSkills:
         return max(levels or ["UNKNOWN"], key=lambda item: rank.get(item, 2))
 
     def _record_trusted_pose(self, x: float, y: float, yaw: float, timestamp: float):
+        if self._evidence_stamp is not None and self._evidence_odom_anchor is None:
+            return
         self._last_trusted_pose = (float(x), float(y), float(yaw))
+        self._wheel_odom_pose_at_trust = self._evidence_odom_anchor if self._evidence_stamp is not None else self._latest_wheel_odom_pose
+        self._trusted_pose_stamp = self._evidence_stamp
         self._last_trusted_pose_time = timestamp
 
+    def _trusted_pose_delta(self) -> tuple[float | None, float | None]:
+        if self._latest_wheel_odom_pose is None or self._wheel_odom_pose_at_trust is None:
+            return None, None
+        x, y, yaw = self._latest_wheel_odom_pose
+        tx, ty, tyaw = self._wheel_odom_pose_at_trust
+        return math.hypot(x - tx, y - ty), abs(self._angle_diff(yaw, tyaw))
+
     def _score_warning(self) -> str | None:
+        now_time = time.monotonic()
+        if self._gicp_score is None:
+            return "MANUAL_INITIALPOSE_SETTLING" if self.initialpose_is_settling() else "GICP_SCORE_MISSING"
+        if now_time - self._last_gicp_score_time > self._localization_data_stale_sec:
+            return "GICP_SCORE_STALE"
+        # A fresh rejected/bad match explains why the last accepted GICP pose
+        # became stale. Report the root cause instead of the downstream symptom.
         if self._gicp_score is not None and self._gicp_score >= self._gicp_bad_threshold:
             return "GICP_SCORE_BAD"
         if self._gicp_score is not None and self._gicp_score >= self._gicp_warn_threshold:
             return "GICP_SCORE_WARN"
+        if (
+            self._last_localization_pose_time
+            and now_time - self._last_localization_pose_time > self._localization_data_stale_sec
+        ):
+            return "GICP_POSE_STALE"
         if self.initialpose_is_settling():
             return "MANUAL_INITIALPOSE_SETTLING"
         return None
 
     def await_robot_auto_mode(self, context: SkillContext | None = None, timeout_sec: float = 0.1) -> SkillResult:
         started = now()
-        deadline = time.time() + max(0.0, timeout_sec)
-        while time.time() <= deadline:
+        deadline = time.monotonic() + max(0.0, timeout_sec)
+        while time.monotonic() <= deadline:
             if self.robot_mode == "AUTO":
                 return make_result(
                     "await_robot_auto_mode",
@@ -343,18 +552,27 @@ class SystemSkills:
         timeout_sec: float = 180.0,
     ) -> SkillResult:
         started = now()
-        deadline = time.time() + max(0.0, timeout_sec)
+        deadline = time.monotonic() + max(0.0, timeout_sec)
         settle_started_at: float | None = None
-        while time.time() <= deadline:
-            moving = self._last_cmd_speed > 0.02 or (
-                self._last_cmd_vel_time > 0.0 and time.time() - self._last_cmd_vel_time < 0.5
+        while time.monotonic() <= deadline:
+            if context is not None and getattr(context, "cancel_check", lambda: False)():
+                return make_result("await_robot_stationary", False, codes.CANCELLED,
+                                   "Stationary wait cancelled.", started)
+            received = self._last_cmd_receipt_time
+            command_fresh = received > 0 and time.monotonic() - received <= self._stationary_cmd_fresh_sec
+            cmd_speed_threshold = self._stationary_cmd_speed_threshold
+            moving = self._last_cmd_speed > cmd_speed_threshold or (
+                self._last_cmd_vel_time > 0.0
+                and time.monotonic() - self._last_cmd_vel_time < self._stationary_cmd_fresh_sec
+                and self._last_cmd_speed > 0.02
+                and self.mode == "real"
             )
-            if moving:
+            if moving or (self.mode != "dry_run" and not command_fresh):
                 settle_started_at = None
             else:
                 if settle_started_at is None:
-                    settle_started_at = time.time()
-                if time.time() - settle_started_at >= max(0.0, settle_sec):
+                    settle_started_at = time.monotonic()
+                if time.monotonic() - settle_started_at >= max(0.0, settle_sec):
                     return make_result(
                         "await_robot_stationary",
                         True,
@@ -364,7 +582,9 @@ class SystemSkills:
                         {
                             "settle_sec": settle_sec,
                             "last_cmd_speed": self._last_cmd_speed,
-                            "last_cmd_vel_age_sec": time.time() - self._last_cmd_vel_time if self._last_cmd_vel_time else None,
+                            "cmd_speed_threshold": cmd_speed_threshold,
+                            "last_cmd_vel_age_sec": time.monotonic() - self._last_cmd_vel_time if self._last_cmd_vel_time else None,
+                            "cmd_vel_receipt_age_sec": time.monotonic() - received if received else None,
                         },
                     )
             time.sleep(0.05)
@@ -379,7 +599,9 @@ class SystemSkills:
                 "settle_sec": settle_sec,
                 "timeout_sec": timeout_sec,
                 "last_cmd_speed": self._last_cmd_speed,
-                "last_cmd_vel_age_sec": time.time() - self._last_cmd_vel_time if self._last_cmd_vel_time else None,
+                "cmd_speed_threshold": self._stationary_cmd_speed_threshold,
+                "last_cmd_vel_age_sec": time.monotonic() - self._last_cmd_vel_time if self._last_cmd_vel_time else None,
+                "cmd_vel_receipt_age_sec": time.monotonic() - self._last_cmd_receipt_time if self._last_cmd_receipt_time else None,
             },
         )
 

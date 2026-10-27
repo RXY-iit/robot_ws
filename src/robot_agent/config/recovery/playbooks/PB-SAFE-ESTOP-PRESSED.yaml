@@ -1,0 +1,51 @@
+id: PB-SAFE-ESTOP-PRESSED
+handling_class: safety_event
+number: 10
+severity: blocking
+title: Physical E-stop pressed
+version: 1
+domain: H1
+layer: safety
+affects_capabilities: [manual_drive, auto_navigation, lift]
+envs:
+  real:
+    status: supported
+    verified: false
+    note: All three BLVD DIN3 inputs = 0 -> physical_estop BLOCKED.
+  sim:
+    status: injection_only
+    verified: false
+    note: Sim has no E-stop circuit (fixed SIMULATION_ASSUMPTION); tested via fake_item injection.
+
+trigger:
+  any:
+    - {item: physical_estop, status_in: [BLOCKED]}
+
+diagnosis:
+  - id: estop_blocked
+    probe: health_item
+    args: {item: physical_estop, status_in: [BLOCKED]}
+    on_mismatch: {reject: true}
+
+recovery:
+  - type: action
+    primitive: cancel_motion
+  - type: operator_request
+    template: release_estop
+    done_when:
+      - {probe: health_item, args: {item: physical_estop}}
+  # TODO(Q-R3): whether BLVD needs alarm reset / re-enable after release.
+
+verify:
+  - {probe: health_item, args: {item: physical_estop}, within_sec: 10}
+
+policy:
+  retry_budget: 0
+  on_fail: needs_human
+
+fault_injection:
+  sim: {injector: fake_item, args: {item: physical_estop, status: BLOCKED}}
+
+operator_text:
+  en: "The red E-stop is pressed. Check that the area around the robot is clear, then twist to release it."
+  ja: "赤い非常停止ボタンが押されています。周囲の安全を確認してから、回して解除してください。"

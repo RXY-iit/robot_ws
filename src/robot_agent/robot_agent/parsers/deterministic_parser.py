@@ -6,8 +6,55 @@ import unicodedata
 from robot_agent.schemas import MissionIntent
 
 
+STEP_SEPARATOR = re.compile(
+    r"\s*(?:,?\s+then\s+|,\s*then\s+|然后|然後|それから|そして|"
+    r"(?:[,，]\s*|\s+and\s+)(?=(?:go\b|move\b|turn\b|rotate\b|look\b|see\b|set\s+pose\b|左を見|右を見)))\s*",
+    re.IGNORECASE,
+)
+
+
+def conditional_parts(text: str) -> list[str] | None:
+    """Bounded positive detection branch; the negative branch never actuates."""
+    match = re.fullmatch(
+        r"\s*if\s+(?:you\s+)?find\s+([^,;]+),\s*(.+?);\s*otherwise\s+(?:stay still|remain stationary|do not move)\s*[.!]?\s*",
+        text, re.I)
+    if not match or re.search(r"\b(if|unless|otherwise)\b", " ".join(match.groups()), re.I):
+        return None
+    action = match.group(2).strip()
+    translation = r"(?:go|move)\s+(?:forward|back|backward|left|right)\s+(?:\d+(?:\.\d+)?\s*(?:mm|cm|m)?|a little|little|slightly)"
+    rotation = r"(?:turn|rotate)\s+(?:left|right|around|back)"
+    if not re.fullmatch(rf"(?:{translation}|{rotation})", action, re.I):
+        return None
+    return ["find " + match.group(1).strip(), match.group(2).strip()]
+
+
+def bind_detection_condition(intent: MissionIntent) -> bool:
+    steps = intent.constraints.get("steps", [])
+    if (intent.task_type != "sequence" or len(steps) != 2
+            or steps[0].get("task_type") not in {"search_object", "search_object_here"}
+            or steps[1].get("task_type") not in {"move_relative", "rotate_relative"}):
+        return False
+    steps[1].setdefault("constraints", {}).update(run_if="previous_search_found", dependency_policy="required_condition")
+    intent.constraints.update(dependency_policy="required_condition", else_action="stay_still")
+    return True
+
+
+def command_guard_reason(text: str) -> str | None:
+    """Reject unsupported control flow/placeholders, regardless of parser provider."""
+    if re.search(r"(?:\.{3,}|…|\.\.\.)", text):
+        return "incomplete_command_placeholder"
+    if re.fullmatch(r"\s*(?:go\s+to|navigate\s+to|find|search\s+for|set\s+pose)\s*[.!?]?\s*", text, re.I):
+        return "incomplete_command_missing_target"
+    if re.search(r"^\s*(?:if\b|unless\b|如果|若|もし)|\botherwise\b|否则|否則", text, re.IGNORECASE):
+        if conditional_parts(text) is None:
+            return "unsupported_conditional_structure"
+    if len([p for p in STEP_SEPARATOR.split(text) if p.strip(" ,，.。")]) > 3:
+        return "more_than_three_tasks"
+    return None
+
+
 class DeterministicParser:
-    def __init__(self, known_targets: frozenset[str] | None = None):
+    def __init__(self, known_targets: frozenset[str] | None = None, defer_target_resolution: bool = False):
         # Normalized (lowercase, whitespace-collapsed) known target ids/names from
         # the currently-selected map bundle, if one was loaded. The map is fixed
         # before parsing ever starts (ROBOT_MAP_ID is read once at process start),
@@ -16,6 +63,7 @@ class DeterministicParser:
         # qualifier (e.g. "front door" must not be mistaken for "near/in front of
         # <something>" just because it contains the word "front").
         self.known_targets = known_targets or frozenset()
+        self.defer_target_resolution = defer_target_resolution
 
     def parse(self, text: str) -> MissionIntent:
         raw = text.strip()
@@ -27,8 +75,23 @@ class DeterministicParser:
         # raw_text on MissionIntent as the verbatim user string, unnormalized.
         compact = unicodedata.normalize("NFKC", re.sub(r"\s+", " ", raw))
         lowered = compact.lower()
+        guard = command_guard_reason(compact)
+        if guard:
+            return MissionIntent(task_type="ask_human", raw_text=raw, requires_confirmation=True,
+                                 constraints={"guard_reason": guard})
         if not raw:
             return MissionIntent(task_type="ask_human", raw_text=raw)
+        route = re.fullmatch(r"(?:沿着\s*|沿\s*|follow\s+|move\s+along\s+)waypoint\s+list\s+([a-z][a-z0-9_]*)(?:\s*走行|\s*行驶)?[。.!]?", lowered)
+        if route:
+            return MissionIntent("follow_waypoint_list", target=route.group(1), raw_text=raw)
+        branches = conditional_parts(compact)
+        if branches:
+            intent = MissionIntent("sequence", raw_text=raw,
+                                   constraints={"steps": [self.parse(part).to_dict() for part in branches]})
+            if bind_detection_condition(intent):
+                return intent
+            return MissionIntent("ask_human", raw_text=raw, requires_confirmation=True,
+                                 constraints={"guard_reason": "unsupported_conditional_tasks"})
         if lowered in {"cancel", "stop task", "abort", "キャンセル", "タスクを停止"}:
             return MissionIntent(task_type="cancel", raw_text=raw)
         if lowered in {"status", "robot status", "robot health", "ロボット状態", "ロボットのステータス"}:
@@ -36,6 +99,21 @@ class DeterministicParser:
         if lowered in {"known targets", "known places", "list targets", "list known targets", "場所一覧"}:
             return MissionIntent(task_type="list_known_targets", raw_text=raw)
 
+        sequence = self._parse_sequence(compact)
+        if sequence is not None:
+            sequence.raw_text = raw
+            return sequence
+
+        arm = self._parse_arm_command(compact)
+        if arm is not None:
+            return arm
+
+        if re.search(r"danger|hazard|unsafe|describe|anything wrong|危険|危ない|危险|描述", compact, re.I):
+            direction, band = self._look_slots(compact)
+            return MissionIntent("observe_scene", object_query=raw, raw_text=raw,
+                                 constraints={"analysis_kind": "image_describe", "band": band,
+                                              "profile": "directional" if direction else "current_view",
+                                              **({"direction": direction} if direction else {})})
         look = self._parse_look_direction(compact)
         if look is not None:
             return look
@@ -80,7 +158,7 @@ class DeterministicParser:
                 raw_text=raw,
             )
 
-        nav_match = self._parse_structured_navigation(compact, self.known_targets)
+        nav_match = self._parse_structured_navigation(compact, self.known_targets, self.defer_target_resolution)
         if nav_match:
             target = nav_match
             task_type = "navigate_to_place" if self._looks_like_place(target) else "navigate_to_object"
@@ -101,6 +179,112 @@ class DeterministicParser:
             )
 
         return MissionIntent(task_type="ask_human", raw_text=raw)
+
+    def _parse_sequence(self, text: str) -> MissionIntent | None:
+        original = text
+        cleanup_suffix = r"\s+regardless of whether it is found\s*[.!]?\s*$"
+        explicit_cleanup = bool(re.search(cleanup_suffix, text, re.IGNORECASE))
+        if explicit_cleanup:
+            text = re.sub(cleanup_suffix, "", text, flags=re.IGNORECASE)
+        parts = [
+            item.strip(" ,，.。")
+            for item in STEP_SEPARATOR.split(text)
+            if item.strip(" ,，.。")
+        ]
+        if len(parts) < 2:
+            return None
+        steps: list[dict] = []
+        for part in parts:
+            intent = self.parse(part)
+            if intent.task_type in {"ask_human", "sequence"}:
+                return None
+            steps.append(intent.to_dict())
+        constraints = {"steps": steps}
+        if explicit_cleanup:
+            constraints.update(dependency_policy="cleanup_after_attempt", explicit_continue_after_not_found=True)
+        return MissionIntent(task_type="sequence", constraints=constraints, raw_text=original)
+
+    @staticmethod
+    def _parse_arm_command(text: str) -> MissionIntent | None:
+        lowered = text.lower().strip()
+        pose_patterns = [
+            r"^(?:set\s+)?(?:arm\s+)?pose\s+(.+)$",
+            r"^arm\s+(?:to\s+)?(.+?)\s+pose$",
+            r"^(?:手臂|アーム)(?:を)?(.+?)(?:姿態|姿勢|ポーズ)(?:にして|へ|に)?$",
+            r"^(?:打个招呼|打招呼|挥手|wave hello|wave)$",
+        ]
+        for pattern in pose_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if not match:
+                continue
+            pose = "wave" if "wave" in lowered or "招呼" in text or "挥手" in text else match.group(1)
+            return MissionIntent(task_type="set_pose", target=DeterministicParser._clean_arm_phrase(pose), raw_text=text)
+
+        near_match = re.search(
+            r"^(?:go to|move to)\s+(.+?)\s+and\s+(touch|press|pick up|grasp|grab)\s+(.+)$",
+            text,
+            re.IGNORECASE,
+        )
+        if near_match:
+            action = near_match.group(2).lower()
+            task_type = {
+                "touch": "touch_object_near_place",
+                "press": "press_object_near_place",
+                "pick up": "grasp_object_near_place",
+                "grasp": "grasp_object_near_place",
+                "grab": "grasp_object_near_place",
+            }[action]
+            return MissionIntent(
+                task_type=task_type,
+                target=DeterministicParser._clean_target(near_match.group(1)),
+                object_query=DeterministicParser._extract_perception_query(near_match.group(3)),
+                raw_text=text,
+            )
+
+        put_match = re.search(r"^(?:put|place)\s+(.+?)\s+(?:into|in|on)\s+(.+)$", text, re.IGNORECASE)
+        if put_match:
+            return MissionIntent(
+                task_type="grasp_object",
+                target=DeterministicParser._clean_arm_phrase(put_match.group(1)),
+                object_query=DeterministicParser._extract_perception_query(put_match.group(1)),
+                constraints={"destination": DeterministicParser._clean_arm_phrase(put_match.group(2))},
+                raw_text=text,
+            )
+
+        action_match = re.search(r"^(touch|press|pick up|grasp|grab)\s+(.+)$", text, re.IGNORECASE)
+        if action_match:
+            action = action_match.group(1).lower()
+            query = DeterministicParser._extract_perception_query(action_match.group(2))
+            task_type = {
+                "touch": "touch_object",
+                "press": "press_object",
+                "pick up": "grasp_object",
+                "grasp": "grasp_object",
+                "grab": "grasp_object",
+            }[action]
+            return MissionIntent(task_type=task_type, target=query, object_query=query, raw_text=text)
+
+        jp_action = re.search(r"^(.+?)(?:を)?(触って|タッチして|押して|プレスして|掴んで|つかんで|取って|持って)$", text)
+        if jp_action:
+            action = jp_action.group(2)
+            query = DeterministicParser._extract_perception_query(jp_action.group(1))
+            task_type = "press_object" if "押" in action or "プレス" in action else (
+                "grasp_object" if any(token in action for token in ["掴", "つか", "取", "持"]) else "touch_object"
+            )
+            return MissionIntent(task_type=task_type, target=query, object_query=query, raw_text=text)
+
+        zh_action = re.search(r"^(?:请)?(?:触碰|碰一下|按下|按一下|抓起|抓取|拿起)(.+)$", text)
+        if zh_action:
+            action = text[: text.find(zh_action.group(1))]
+            query = DeterministicParser._extract_perception_query(zh_action.group(1))
+            task_type = "press_object" if "按" in action else ("grasp_object" if any(token in action for token in ["抓", "拿"]) else "touch_object")
+            return MissionIntent(task_type=task_type, target=query, object_query=query, raw_text=text)
+
+        return None
+
+    @staticmethod
+    def _clean_arm_phrase(text: str) -> str:
+        return re.sub(r"^(?:the|a|an)\s+", "", str(text).strip(" ，,。.?？"), flags=re.IGNORECASE)
 
     @staticmethod
     def _parse_structured_search_near(text: str) -> tuple[str, str] | None:
@@ -180,13 +364,14 @@ class DeterministicParser:
         return query
 
     @staticmethod
-    def _parse_structured_navigation(text: str, known_targets: frozenset[str] | None = None) -> str | None:
+    def _parse_structured_navigation(text: str, known_targets: frozenset[str] | None = None,
+                                     defer_target_resolution: bool = False) -> str | None:
         match = re.search(r"^(?:move to|go to)\s+(.+)$", text, re.IGNORECASE)
         if match:
             target = DeterministicParser._clean_target(match.group(1), known_targets)
             if not DeterministicParser._is_plausible_phrase(target):
                 return None
-            return target if DeterministicParser._target_is_recognizable(target, known_targets) else None
+            return target if defer_target_resolution or DeterministicParser._target_is_recognizable(target, known_targets) else None
         jp_match = re.search(
             r"^(0?[1-6]棚|0?[1-5][-_ー〜~]0?[2-6]棚)(?:に|へ)?\s*(?:行って|行く|移動して|移動|戻って|戻る)$", text
         )
@@ -197,7 +382,7 @@ class DeterministicParser:
             target = DeterministicParser._clean_target(jp_free_match.group(1), known_targets)
             if not DeterministicParser._is_plausible_phrase(target):
                 return None
-            return target if DeterministicParser._target_is_recognizable(target, known_targets) else None
+            return target if defer_target_resolution or DeterministicParser._target_is_recognizable(target, known_targets) else None
         return None
 
     @staticmethod
@@ -535,7 +720,7 @@ class DeterministicParser:
     # the two-word alternative first because the filler whitelist can't
     # absorb "left"/"right" itself).
     _LOOK_DIRECTION_RE = re.compile(
-        r"^(look|view|check)\s+(?:to\s+the\s+|towards?\s+|at\s+)?"
+        r"^(look|view|check|see)\s+(?:to\s+the\s+|towards?\s+|at\s+)?"
         r"(front left|front right|left|right|front|forward|up|down)"
         r"(?:\s+(?:please|now|for me|thanks|thank you))?[.!?]*$",
         re.IGNORECASE,

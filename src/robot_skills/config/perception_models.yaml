@@ -3,6 +3,14 @@ camera:
   artifact_root: debug-output/perception
   capture_wait_sec: 1.5
 
+ocr:
+  # Workspace-local deployment keeps the real robot reproducible without sudo.
+  tesseract_cmd: models/ocr/tesseract/usr/bin/tesseract
+  tessdata_prefix: models/ocr/tesseract/usr/share/tesseract-ocr/4.00/tessdata
+  easyocr_model_dir: models/perception/easyocr
+  easyocr_languages: [en]
+  easyocr_download_enabled: false
+
 providers:
   yolo11s_ocr:
     detector: ultralytics
@@ -11,6 +19,7 @@ providers:
     image_size: 640
     min_confidence: 0.5
     ocr_backend: auto
+    easyocr_fallback: true
     shelf_label_classes: [label, sign, shelf_label, number]
   yolo11s:
     detector: ultralytics

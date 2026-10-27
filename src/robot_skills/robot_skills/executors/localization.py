@@ -17,13 +17,31 @@ class LocalizationSkills:
         self._cmd_vel_pub = node.create_publisher(Twist, "/cmd_vel_raw", 10)
         self._initialpose_pub = node.create_publisher(PoseWithCovarianceStamped, "/initialpose", 10)
 
-    def check_localization_health(self, context: SkillContext, settle_timeout_sec: float = 2.0) -> SkillResult:
+    def check_localization_health(
+        self,
+        context: SkillContext,
+        settle_timeout_sec: float = 2.0,
+        allow_warmup_pass: bool = False,
+    ) -> SkillResult:
         started = now()
         metrics = self.system.localization_metrics(context)
         if context.mode == "dry_run":
             return dry_run_result("check_localization_health", "Dry-run localization check accepted.", metrics)
         deadline = time.time() + max(0.0, float(settle_timeout_sec))
-        while metrics.get("latest_odom_pose") is None and time.time() < deadline:
+        while not self.system.localization_is_healthy() and time.time() < deadline:
+            if allow_warmup_pass and self.system.localization_has_fresh_good_evidence(context):
+                metrics = self.system.localization_metrics(context)
+                metrics["warmup_pass"] = True
+                return make_result(
+                    "check_localization_health",
+                    True,
+                    codes.OK,
+                    "Localization evidence is fresh and good; continuing while warm-up gates settle.",
+                    started,
+                    metrics,
+                )
+            if self.system.localization_requires_recovery(context):
+                break
             time.sleep(0.05)
             metrics = self.system.localization_metrics(context)
         if self.system.localization_is_healthy():
@@ -39,7 +57,7 @@ class LocalizationSkills:
             "check_localization_health",
             False,
             codes.FAILED_LOCALIZATION,
-            "Localization is not healthy; recovery is required before continuing.",
+            "Localization is not healthy enough for base motion.",
             started,
             metrics,
         )
@@ -57,7 +75,7 @@ class LocalizationSkills:
             return dry_run_result(
                 "recover_localization_spin",
                 "Dry-run localization recovery accepted.",
-                {"timeout_sec": timeout_sec, "angular_z": angular_z},
+                {"timeout_sec": timeout_sec, "angular_z": angular_z, "motion": "stationary"},
             )
         if context.robot_mode != "AUTO":
             return make_result(
@@ -68,8 +86,8 @@ class LocalizationSkills:
                 started,
                 self.system.localization_metrics(context),
             )
-        trusted_pose = self.system.last_trusted_pose()
-        if trusted_pose is None:
+        recovery_pose = self.system.odom_propagated_trusted_pose()
+        if recovery_pose is None:
             return make_result(
                 "recover_localization_spin",
                 False,
@@ -80,34 +98,36 @@ class LocalizationSkills:
             )
 
         self._publish_stop(repeat=3)
-        self._publish_initialpose(trusted_pose)
-        settle_until = time.time() + min(6.0, timeout_sec * 0.4)
+        self._publish_initialpose(recovery_pose)
+        settle_cap_sec = 3.0 if context.mode == "sim" else 6.0
+        settle_until = time.time() + min(settle_cap_sec, timeout_sec * 0.25)
         while time.time() < settle_until:
             self._publish_stop(repeat=1)
+            if self.system.localization_is_healthy():
+                break
             time.sleep(0.2)
         deadline = time.time() + timeout_sec
-        first_spin_until = time.time() + min(6.0, timeout_sec)
         while time.time() < deadline:
-            twist = Twist()
-            twist.angular.z = angular_z
-            self._cmd_vel_pub.publish(twist)
-            time.sleep(0.1)
-            if time.time() >= first_spin_until and self.system.localization_is_healthy():
+            self._publish_stop(repeat=1)
+            time.sleep(0.2)
+            if self.system.localization_is_healthy():
                 self._publish_stop(repeat=3)
                 metrics = self.system.localization_metrics(context)
-                metrics["recovery_action"] = "initialpose_reset_settle_then_spin"
+                metrics["recovery_action"] = "initialpose_reset_stationary_pointcloud_settle"
+                metrics["recovery_initialpose"] = recovery_pose
                 return make_result(
                     "recover_localization_spin",
                     True,
                     codes.OK,
-                    "Localization recovered after initialpose reset, settling, and spin.",
+                    "Localization recovered after initialpose reset and stationary point-cloud settling.",
                     started,
                     metrics,
                 )
 
         self._publish_stop(repeat=3)
         metrics = self.system.localization_metrics(context)
-        metrics["recovery_action"] = "initialpose_reset_settle_then_spin"
+        metrics["recovery_action"] = "initialpose_reset_stationary_pointcloud_settle"
+        metrics["recovery_initialpose"] = recovery_pose
         return make_result(
             "recover_localization_spin",
             False,

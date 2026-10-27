@@ -1,0 +1,73 @@
+id: PB-CAMERA-STALE
+number: 41
+severity: degraded
+title: Navigation camera stream stopped
+version: 2
+handling_class: known_recovery
+domain: H4
+layer: ros_delivery
+affects_capabilities: [auto_navigation, stationary_perception]
+envs:
+  real:
+    status: supported
+    verified: false
+    note: Diagnose the configured camera producer before any restart or physical intervention.
+    diagnosis:
+      - id: camera_node
+        probe: node_alive
+        args: {component: "${producer}"}
+        on_mismatch: {handoff: PB-NODE-DOWN}
+      - id: unresolved_stream_failure
+        probe: health_item
+        args: {item: "${root_item}"}
+        on_mismatch: {escalate: R3}
+    recovery:
+      - type: action
+        primitive: restart_component
+        args: {component: realsense}
+      - type: operator_request
+        template: replug_camera_usb
+  sim:
+    status: supported
+    verified: false
+    note: Isaac camera OmniGraph publisher (navigation D435-like camera and the Arm Camera).
+    supporting_evidence:
+      - {probe: sim_clock_advancing}
+    trigger:
+      any:
+        - {item: camera_color_diagnostics, class_in: [FAULT, UNCERTAIN], for_sec: 3}
+        - {item: camera_depth_diagnostics, class_in: [FAULT, UNCERTAIN], for_sec: 3}
+        - {item: arm_camera_color_stream, class_in: [FAULT, UNCERTAIN], for_sec: 3}
+
+trigger:
+  any:
+    - {item: camera_color_diagnostics, class_in: [FAULT, UNCERTAIN], for_sec: 3}
+    - {item: camera_depth_diagnostics, class_in: [FAULT, UNCERTAIN], for_sec: 3}
+
+diagnosis:
+  - id: publisher_present
+    probe: topic_has_publisher
+    args: {component: "${producer}"}
+    expect: fail
+    on_unknown: mismatch
+    on_mismatch: {escalate: R3}
+
+recovery:
+  - type: operator_request
+    template: restart_sim_camera
+    done_when:
+      - {probe: health_item, args: {item: "${root_item}"}}
+
+verify:
+  - {probe: health_item, args: {item: "${root_item}"}, within_sec: 15}
+
+policy:
+  retry_budget: 1
+  cooldown_sec: 60
+
+fault_injection:
+  sim: {injector: stall_topic, args: {topic: /camera/camera/color/image_raw}}
+
+operator_text:
+  en: "Camera output is unavailable. Sim: restore the missing sensor publisher. A live publisher without fresh images needs investigation; do not assume a disconnected USB cable."
+  ja: "カメラ出力がありません。sim: 不在のセンサ publisher を復元してください。publisher が存在するのに画像が更新されない場合は調査が必要です。USB 断線とは断定しません。"

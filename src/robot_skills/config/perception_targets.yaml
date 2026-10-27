@@ -1,13 +1,12 @@
-# yolo_open_vocab_classes is the ground truth for "can YOLO actually see this at
-# all" -- it is the literal class list baked into the configured checkpoint
-# (models/perception/yolo11s.pt), extracted via:
-#   torch.load(path, weights_only=False)['model'].names
-# Regenerate this list whenever perception_models.yaml's yolo11s/yolo11s_ocr
-# weights change. Anything not in this list and not covered by an `objects:`
-# entry's classes/fallback_classes below is not detectable by the current
-# model, full stop -- no heuristic guessing about which nouns "sound like"
-# objects.
-yolo_open_vocab_classes:
+schema_version: 2
+# Closed-set detector capabilities, NOT open-vocabulary detection.
+# Check against checkpoint model.names when changing weights/providers.
+# Registration is semantic support, not a guarantee of visual detection.
+detector_contract:
+  weights: models/perception/yolo11s.pt
+  providers: [yolo11s, yolo11s_ocr]
+  vocabulary: closed_set
+detector_classes:
   [person, bicycle, car, motorcycle, airplane, bus, train, truck, boat,
    "traffic light", "fire hydrant", "stop sign", "parking meter", bench, bird,
    cat, dog, horse, sheep, cow, elephant, bear, zebra, giraffe, backpack,
@@ -20,6 +19,15 @@ yolo_open_vocab_classes:
    sink, refrigerator, book, clock, vase, scissors, "teddy bear",
    "hair drier", toothbrush]
 
+# Only these configured HSV masks are supported. Do not infer shades from a
+# base color. Overlapping red/orange/yellow ranges are not exclusive classes.
+color_contract:
+  backend: opencv_hsv
+  hue_range: [0, 180]
+  saturation_value_range: [0, 255]
+  same_instance_required_for_color_object: true
+  unsupported_shades: [light_blue, dark_blue, turquoise, pink, purple, brown, gray]
+  lighting_calibrated: false
 colors:
   red:
     aliases: [red, reddish, 赤, 赤い, 赤色]
@@ -59,41 +67,47 @@ colors:
       - lower: [0, 0, 180]
         upper: [180, 55, 255]
 
-objects:
-  box:
-    aliases: [box, boxes, carton, package, parcel, 箱, 盒子, ボックス, 段ボール]
-    detector: yolo11s
-    classes: [box, package, carton, suitcase]
-    fallback_classes: [suitcase]
-    fallback_requires_human: true
+# Optional names/aliases or explicit unions of supported classes, not extra
+# model capabilities. Every classes entry MUST occur in detector_classes.
+# Exact classes need no entry here. No implicit substitute/fallback classes.
+object_aliases:
   bottle:
     aliases: [bottle, bottles, 瓶, 瓶子, ボトル]
     detector: yolo11s
     classes: [bottle]
-  bucket:
-    aliases: [bucket, pail, barrel, container, 桶, バケツ]
-    detector: yolo11s
-    classes: [bucket, pail, barrel, container]
-    fallback_classes: [bottle, cup, bowl]
-    fallback_requires_human: true
   car:
-    aliases: [car, vehicle, auto, 車, 自動車, くるま]
+    aliases: [car, auto, 車, 自動車, くるま]
+    detector: yolo11s
+    classes: [car]
+  vehicle:
+    # A broad supported category must not silently widen the narrower car query.
+    aliases: [vehicle, vehicles, 車両]
     detector: yolo11s
     classes: [car, truck, bus]
   person:
     aliases: [person, human, worker, 人, 人間, 作業員]
     detector: yolo11s
     classes: [person]
-  forklift:
-    aliases: [forklift, フォークリフト]
-    detector: yolo11s
-    classes: [forklift]
-    fallback_classes: [truck]
-    fallback_requires_human: true
-  pallet:
-    aliases: [pallet, パレット]
-    detector: yolo11s
-    classes: [pallet]
+
+# A semantic lexicon of known gaps. These are NEVER executable object checks.
+# Unknown nouns are also unsupported; this list is not an exhaustive denylist.
+unsupported_objects:
+  box: {aliases: [box, boxes, carton, package, parcel, 箱, 盒子, ボックス, 段ボール], reason: No box class in the installed checkpoint}
+  bucket: {aliases: [bucket, pail, 桶, バケツ], reason: No bucket class in the installed checkpoint}
+  forklift: {aliases: [forklift, フォークリフト], reason: No forklift class in the installed checkpoint}
+  pallet: {aliases: [pallet, パレット], reason: No pallet class in the installed checkpoint}
+
+# These are query kinds, not trained YOLO labels. Current deployment uses
+# English OCR resources; arbitrary CJK OCR and scene description are not promised.
+text_contract:
+  providers: [yolo11s_ocr]
+  languages: [en]
+  scripts: [latin, digits]
+  matching: exact_token
+  literal_queries: true
+  standalone_kind_query: unsupported_requires_literal
+  arbitrary_scene_description: false
+  alternatives: explicit_or_mapped_contract_only
 
 text:
   digit:

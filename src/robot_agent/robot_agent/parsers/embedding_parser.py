@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import os
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -29,6 +30,7 @@ class EmbeddingParser:
         self.clarify_threshold = clarify_threshold
         self.examples = self._flatten_examples(templates)
         self._model = None
+        self._model_load_error = None
         self._example_embeddings = None
         self._tfidf_vocab: dict[str, int] = {}
         self._tfidf_vectors: list[list[float]] = []
@@ -74,10 +76,16 @@ class EmbeddingParser:
             return self._top_matches_tfidf(text, limit)
 
     def _top_matches_sentence_transformers(self, text: str, limit: int) -> list[tuple[float, TemplateExample]]:
+        if self._model_load_error:
+            raise RuntimeError(self._model_load_error)
         if self._model is None:
             from sentence_transformers import SentenceTransformer
 
-            self._model = SentenceTransformer(self.model_name)
+            try:
+                self._model = SentenceTransformer(self.model_name, local_files_only=os.environ.get("ROBOT_EMBEDDING_ALLOW_DOWNLOAD") != "1")
+            except Exception as exc:
+                self._model_load_error = str(exc)
+                raise
             self._example_embeddings = self._model.encode([item.text for item in self.examples], normalize_embeddings=True)
         query_embedding = self._model.encode([text], normalize_embeddings=True)[0]
         scored: list[tuple[float, TemplateExample]] = []
@@ -193,6 +201,20 @@ class EmbeddingParser:
                 constraints={"direction": direction, "band": band},
                 raw_text=raw,
             )
+        if example.task_type == "set_pose":
+            return MissionIntent(task_type="set_pose", target=EmbeddingParser._extract_pose_name(raw), raw_text=raw)
+        if example.task_type in {"touch_object", "press_object", "grasp_object"}:
+            query = EmbeddingParser._extract_arm_object_query(raw)
+            return MissionIntent(task_type=example.task_type, target=query, object_query=query, raw_text=raw)
+        if example.task_type in {"touch_object_near_place", "press_object_near_place", "grasp_object_near_place"}:
+            target, query = EmbeddingParser._extract_arm_near_slots(raw)
+            return MissionIntent(
+                task_type=example.task_type,
+                target=target,
+                relation=EmbeddingParser._relation_from_text(raw),
+                object_query=query,
+                raw_text=raw,
+            )
         if example.task_type == "search_object_here":
             return MissionIntent(
                 task_type="search_object_here",
@@ -259,6 +281,40 @@ class EmbeddingParser:
         cleaned = re.sub(r"^(check|find|search|look for)\s+(for\s+)?", "", text.strip(), flags=re.IGNORECASE)
         cleaned = re.sub(r"が?(?:ありますか|あります|ある|見える)$|を(?:探して|さがして)$", "", cleaned)
         return cleaned.strip(" ，,。.?？") or None
+
+    @staticmethod
+    def _extract_pose_name(text: str) -> str | None:
+        lowered = text.lower()
+        if "wave" in lowered or "招呼" in text or "挥手" in text:
+            return "wave"
+        cleaned = re.sub(r"^(set\s+)?(arm\s+)?pose\s+", "", text.strip(), flags=re.IGNORECASE)
+        cleaned = re.sub(r"^(手臂|アーム)(を)?", "", cleaned)
+        cleaned = re.sub(r"(姿態|姿勢|ポーズ)(にして|へ|に)?$", "", cleaned)
+        return cleaned.strip(" ，,。.?？") or None
+
+    @staticmethod
+    def _extract_arm_object_query(text: str) -> str | None:
+        cleaned = re.sub(
+            r"^(touch|press|pick up|grasp|grab|put|place)\s+",
+            "",
+            text.strip(),
+            flags=re.IGNORECASE,
+        )
+        cleaned = re.sub(r"\s+(into|in|on)\s+.+$", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"^(?:触碰|碰一下|按下|按一下|抓起|抓取|拿起)", "", cleaned)
+        cleaned = re.sub(r"(を)?(触って|タッチして|押して|プレスして|掴んで|つかんで|取って|持って)$", "", cleaned)
+        return cleaned.strip(" ，,。.?？") or None
+
+    @staticmethod
+    def _extract_arm_near_slots(text: str) -> tuple[str | None, str | None]:
+        match = re.search(
+            r"^(?:go to|move to)\s+(.+?)\s+and\s+(?:touch|press|pick up|grasp|grab)\s+(.+)$",
+            text,
+            re.IGNORECASE,
+        )
+        if match:
+            return EmbeddingParser._extract_target(match.group(1)), EmbeddingParser._extract_arm_object_query(match.group(2))
+        return EmbeddingParser._extract_target(text), EmbeddingParser._extract_arm_object_query(text)
 
     @staticmethod
     def _extract_relative_slots(text: str) -> tuple[str | None, float | None]:

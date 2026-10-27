@@ -14,6 +14,7 @@ const AGENT_ORDER = [
   "Navigation Agent",
   "Health / Recovery Agent",
   "Perception Agent",
+  "Arm Agent",
 ] as const;
 export type AgentName = (typeof AGENT_ORDER)[number];
 export { AGENT_ORDER };
@@ -29,9 +30,10 @@ const NAVIGATION_SKILLS = new Set([
   "cancel_motion",
 ]);
 const HEALTH_SKILLS = new Set(["check_localization_health", "recover_localization_spin"]);
-const PERCEPTION_SKILLS = new Set(["set_camera_pose", "capture_observation", "detect_known_object"]);
+const PERCEPTION_SKILLS = new Set(["set_camera_pose", "capture_observation", "detect_known_object", "search_at_place", "capture_view_set", "move_camera_and_capture"]);
 
 export function agentForSkill(name: string): AgentName {
+  if (["set_pose", "set_arm_pose", "touch", "grasp", "move_lift_bounded"].includes(name)) return "Arm Agent";
   if (NAVIGATION_SKILLS.has(name)) return "Navigation Agent";
   if (HEALTH_SKILLS.has(name)) return "Health / Recovery Agent";
   if (PERCEPTION_SKILLS.has(name)) return "Perception Agent";
@@ -247,9 +249,11 @@ export function alignPlanResults(plan: SkillCall[], skillResults: SkillResult[] 
 
 export function levelClass(level?: string): string {
   const normalized = String(level || "UNKNOWN").toLowerCase();
-  if (normalized === "ok") return "ok";
-  if (normalized === "warn") return "warn";
-  if (normalized === "bad") return "bad";
+  if (["ok", "available", "observed", "verified", "active", "idle"].includes(normalized)) return "ok";
+  if (["warn", "degraded", "estimated", "reported", "recovered", "supervised_only"].includes(normalized)) return "warn";
+  // "error" is real_robot_monitor's level string (real hardware only); treat it
+  // the same as "bad" so hardware faults render with the same red state.
+  if (["bad", "error", "failed", "offline", "blocked", "stale"].includes(normalized)) return "bad";
   return "unknown";
 }
 
@@ -290,8 +294,10 @@ export function computeAgentStatus(
   const plan = mission.plan || [];
   const current = Number.isInteger(mission.current_step_index) ? (mission.current_step_index as number) : 0;
   const isDone = statusText.includes("DONE");
+  const owners: Record<string, AgentName> = { mission: "Mission Agent", navigation: "Navigation Agent", perception: "Perception Agent", arm: "Arm Agent" };
   plan.forEach((call, index) => {
-    const agent = agentForSkill(call.name);
+    if (call.kind === "task_end") return;
+    const agent = (call.owner && owners[call.owner]) || agentForSkill(call.name);
     if (index < current) status[agent] = { state: "done", detail: "関連ステップ完了" };
     if (index === current && !isDone) {
       status[agent] = { state: "active", detail: call.name };
@@ -334,5 +340,13 @@ export function computeAgentStatus(
     status["Health / Recovery Agent"] = { state: recoveryState, detail: liveDetail };
   }
 
+  for (const task of mission.tasks || []) {
+    const owner = owners[task.owner];
+    if (!owner) continue;
+    const state = task.state === "WAITING_HUMAN" ? "waiting" : task.state === "CANCELLED" ? "waiting"
+      : task.state === "COMPLETED" && task.outcome === "UNMET" ? "waiting"
+      : task.goal_satisfied === false ? "failed" : task.state === "COMPLETED" ? "done" : "active";
+    status[owner] = { state, detail: `${task.task_type}: ${task.outcome || task.state}` };
+  }
   return status;
 }

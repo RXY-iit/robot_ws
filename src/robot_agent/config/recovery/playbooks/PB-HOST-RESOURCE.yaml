@@ -1,0 +1,42 @@
+id: PB-HOST-RESOURCE
+number: 20
+severity: degraded
+title: Host resource pressure
+version: 1
+domain: H2
+layer: platform
+affects_capabilities: []
+envs:
+  real: {status: supported, verified: false}
+  sim: {status: supported, verified: false}
+
+trigger:
+  any:
+    - {item: host_resources, class_in: [FAULT, DEGRADED], for_sec: 10}
+
+supporting_evidence:
+  - {probe: fresh_observation, args: {item: host_resources}}
+
+diagnosis:
+  - id: still_pressured
+    probe: health_item
+    args: {item: host_resources, class_in: [FAULT, DEGRADED]}
+    on_mismatch: {reject: true}
+
+recovery:
+  # Advice only: killing processes automatically is never done.
+  - type: operator_request
+    template: reduce_host_load
+
+verify:
+  - {probe: health_item, args: {item: host_resources}}
+
+policy:
+  retry_budget: 0
+
+fault_injection:
+  sim: {injector: stress, args: {resource: cpu}}
+
+operator_text:
+  en: "A measured host limit was crossed. Inspect the specific evidence below; this does not imply CPU and memory are both exhausted. For temperature warnings, reduce optional workload and inspect cooling. Retry only reopens the operator workflow."
+  ja: "ホストの測定値が閾値を超えました。下の根拠を確認してください。CPU・メモリの両方の不足を意味しません。温度警告なら不要な負荷を減らし冷却を確認してください。Retry は操作員への確認を再開するだけです。"

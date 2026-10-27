@@ -1,0 +1,43 @@
+id: PB-FAST-LIO-RESET
+number: 63
+severity: degraded
+title: FAST-LIO source-time guard requires restart
+version: 1
+domain: H5
+layer: function
+affects_capabilities: [auto_navigation]
+match_priority: 20
+envs:
+  real: {status: n/a, note: Sim source-time guard; real policy unchanged.}
+  sim: {status: supported, verified: false}
+trigger:
+  any:
+    - {item: fast_lio_timing, status_in: [ERROR], for_sec: 3}
+diagnosis:
+  - id: explicit_guard_report
+    probe: health_item
+    args: {item: fast_lio_timing, status_in: [ERROR]}
+  - id: fresh_guard_report
+    probe: fresh_observation
+    args: {item: fast_lio_timing, max_age_sec: 3}
+  - id: lidar_input_restored
+    probe: health_item
+    args: {item: sim_lidar_adapter_cloud}
+  - id: imu_input_restored
+    probe: health_item
+    args: {item: sim_lidar_imu}
+preconditions: [mode_manual, cmd_vel_zero_fresh]
+recovery:
+  - type: action
+    primitive: restart_component
+    args: {component: fast_lio}
+verify:
+  - {probe: node_alive, args: {component: fast_lio}, within_sec: 30}
+  - {probe: health_item, args: {item: fast_lio_timing}, within_sec: 30}
+  - {probe: health_item, args: {item: fast_lio_odom}, within_sec: 30}
+policy:
+  retry_budget: 0
+  cooldown_sec: 60
+operator_text:
+  en: "FAST-LIO explicitly stopped after a source-time discontinuity or long LiDAR gap. Restart only FAST-LIO after inputs recover and the base is stationary in MANUAL. This resets its local map, not the global GICP map or robot pose. Fresh timing and odometry are required; GICP readiness remains a separate check."
+  ja: "時刻不連続または LiDAR 長時間断流により FAST-LIO が停止しました。入力復旧・MANUAL・停止を確認して FAST-LIO のみ再起動します。局所地図は初期化されますが、GICP 地図・ロボット位置は変更しません。新しい状態報告と odometry を検証し、GICP の就緒状態は別途確認します。"

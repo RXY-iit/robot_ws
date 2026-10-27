@@ -1,0 +1,54 @@
+id: PB-CAMERA-MODEL-MISMATCH
+number: 42
+severity: advisory
+title: Camera dimensions differ from supported simulation profiles
+version: 1
+domain: H4
+layer: ros_delivery
+affects_capabilities: [stationary_perception, so101_arm]
+envs:
+  real:
+    status: n/a
+    note: Real cameras are the reference; the resolution check exists only in sim health items.
+  sim:
+    status: supported
+    verified: false
+    note: >-
+      Configuration deviation, not a runtime fault. Supported profiles as of 2026-10-12:
+      base RGB 1280x720 / Arm 640x480 (standard), or base RGB 640x480 / Arm 320x240 (low).
+      An explicitly supported low-resolution size is not a mismatch. Dimensions alone
+      do not prove intrinsic/extrinsic calibration or sim-to-real perception equivalence.
+      Sim item `sim_camera_model` checks the base camera_info, not temperature.
+
+trigger:
+  any:
+    - {item: arm_camera_model, status_in: [DEGRADED], for_sec: 3}
+    - {item: sim_camera_model, status_in: [DEGRADED], for_sec: 3}
+
+diagnosis:
+  - id: resolution_mismatch
+    probe: text_matches
+    args: {item: "${root_item}", field: summary, pattern: "(?i)should match real|should be \\d+x\\d+"}
+    on_mismatch: {escalate: R3}
+
+supporting_evidence:
+  - {probe: sim_clock_advancing}
+  - {probe: fresh_observation, args: {item: "${root_item}"}}
+
+recovery:
+  # Nothing to restart: the Isaac camera setup must change, or the deviation is accepted.
+  - type: operator_request
+    template: fix_isaac_camera_resolution
+
+verify:
+  - {probe: health_item, args: {item: "${root_item}"}}
+
+policy:
+  retry_budget: 0
+
+fault_injection:
+  sim: {injector: isaac_camera_resolution, args: {width: 320, height: 240}}
+
+operator_text:
+  en: "Sim camera dimensions are outside supported profiles (${root_item}). Standard: base RGB 1280x720 / Arm 640x480; low: base RGB 640x480 / Arm 320x240. Apply the selected Quick Start camera setup. Matching dimensions alone do not verify calibration."
+  ja: "sim カメラの解像度が対応プロファイル外です（${root_item}）。標準: 底盤 RGB 1280x720 / Arm 640x480、低解像度: 640x480 / 320x240。Quick Start の選択に対応するカメラ設定を適用してください。解像度一致だけでは校正の正しさは確認できません。"

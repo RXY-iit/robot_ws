@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from std_msgs.msg import String
+import time
+
+from std_msgs.msg import Float32, String
 
 from robot_skills import result_codes as codes
 from robot_skills.executors.base import make_result, now
@@ -13,6 +15,18 @@ class LiftSkills:
         self.cmd_pub = node.create_publisher(String, "/lift/command", 10)
         self._stop_timer = None
         self.lift_speed_m_s = 0.06
+        self._position_mm: float | None = None
+        self._position_feedback_time = 0.0
+        self._state = "UNKNOWN"
+        node.create_subscription(Float32, "/lift/position", self._position_cb, 10)
+        node.create_subscription(String, "/lift/state", self._state_cb, 10)
+
+    def _position_cb(self, msg: Float32):
+        self._position_mm = float(msg.data)
+        self._position_feedback_time = time.monotonic()
+
+    def _state_cb(self, msg: String):
+        self._state = str(msg.data)
 
     def move_lift_bounded(
         self,
@@ -66,6 +80,38 @@ class LiftSkills:
                     "lift_speed_m_s": self.lift_speed_m_s,
                 },
             )
+        if context.mode == "real":
+            if context.robot_mode != "MANUAL":
+                return make_result(
+                    "move_lift_bounded",
+                    False,
+                    codes.NEEDS_HUMAN,
+                    "Real lift motion requires MANUAL mode. Press B and retry.",
+                    started,
+                    {"robot_mode": context.robot_mode},
+                )
+            if self.cmd_pub.get_subscription_count() < 1:
+                return make_result(
+                    "move_lift_bounded",
+                    False,
+                    codes.FAILED_PRECHECK,
+                    "Real lift driver is not subscribed to /lift/command.",
+                    started,
+                )
+            feedback_age = (
+                time.monotonic() - self._position_feedback_time
+                if self._position_feedback_time
+                else float("inf")
+            )
+            if feedback_age > 1.0:
+                return make_result(
+                    "move_lift_bounded",
+                    False,
+                    codes.FAILED_PRECHECK,
+                    "Real lift position feedback is missing or stale.",
+                    started,
+                    {"feedback_age_sec": feedback_age},
+                )
         if self._stop_timer is not None:
             self._stop_timer.cancel()
             self._stop_timer = None
@@ -90,5 +136,7 @@ class LiftSkills:
                 "duration_sec": duration,
                 "lift_speed_m_s": self.lift_speed_m_s,
                 "stop_timer_active": True,
+                "position_before_mm": self._position_mm,
+                "lift_state_before": self._state,
             },
         )

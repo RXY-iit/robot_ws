@@ -1,0 +1,54 @@
+id: PB-DRIVE-LINK-LOST
+handling_class: hardware_intervention
+number: 30
+severity: blocking
+title: Drive communication link lost (USB / power)
+version: 1
+domain: H1
+layer: power_device
+affects_capabilities: [manual_drive, auto_navigation]
+envs:
+  real:
+    status: supported
+    verified: false
+    note: drive feedback stale and the RS-485 serial device is missing.
+  sim:
+    status: injection_only
+    verified: false
+    note: Simulated by fake_device_missing(drive_serial) + stopping sim_drive.
+
+trigger:
+  any:
+    - {item: drive_health, class_in: [FAULT], for_sec: 3}
+    - {item: drive_feedback, class_in: [FAULT], for_sec: 3}
+
+diagnosis:
+  - id: device_missing
+    probe: device_present
+    args: {device: drive_serial}
+    expect: fail
+    on_mismatch: {reject: true}   # device present -> not a link problem
+
+recovery:
+  - type: operator_request
+    template: check_drive_usb_power
+    done_when:
+      - {probe: device_present, args: {device: drive_serial}}
+  # After the device reappears the driver usually needs a restart.
+  - type: wait_evidence
+    until:
+      - {probe: device_present, args: {device: drive_serial}}
+
+verify:
+  - {probe: device_present, args: {device: drive_serial}}
+
+policy:
+  retry_budget: 0
+  then: PB-DRIVE-PROC-DOWN
+
+fault_injection:
+  sim: {injector: fake_device_missing, args: {device: drive_serial, stop_component: sim_drive}}
+
+operator_text:
+  en: "Drive motor serial device not detected. Check the RS-485 USB cable at the PC and the motor power switch."
+  ja: "駆動モータのシリアルデバイスが見つかりません。PC 側の RS-485 USB ケーブルとモータ電源を確認してください。"

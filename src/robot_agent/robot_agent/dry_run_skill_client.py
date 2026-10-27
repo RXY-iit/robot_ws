@@ -7,6 +7,7 @@ from robot_skills.executors.base import dry_run_result, make_result, now
 from robot_skills.executors.semantic import SemanticSkills
 from robot_skills.registry import SkillRegistry
 from robot_skills.schemas import Pose2D, SkillContext, SkillResult
+from robot_skills.extensions import load_extensions, resolve_alias
 
 
 class DryRunSkillClient:
@@ -16,6 +17,8 @@ class DryRunSkillClient:
         self.semantic = SemanticSkills()
         self.robot_mode = "AUTO"
         self.safety_status = "OK"
+        self.extensions = load_extensions()
+        self._cancelled_runs = set()
 
     def list_skills(self) -> list[str]:
         return self.registry.list_names()
@@ -29,6 +32,20 @@ class DryRunSkillClient:
         )
 
     def execute_skill(self, skill_name: str, payload: dict[str, Any], context: SkillContext) -> SkillResult:
+        if self.is_cancelled(context.run_id) and skill_name != "cancel_motion":
+            return make_result(skill_name, False, codes.CANCELLED, "Dry-run cancelled.")
+        if skill_name in self.extensions["aliases"]:
+            target, args = resolve_alias(self.extensions, skill_name, payload)
+            result = self.execute_skill(target, args, context)
+            result.metrics["implementation_skill"] = target
+            result.skill_name = skill_name
+            return result
+        if skill_name in self.extensions["checks"]:
+            return dry_run_result(skill_name, "Capability not checked against hardware.",
+                                  {"supported": None, "available": None, "ready": None})
+        if skill_name in self.extensions.get("composites", {}):
+            from robot_skills.executors.observation import execute_observation
+            return execute_observation(self, skill_name, payload, context)
         started = now()
         if skill_name == "get_robot_status":
             return make_result(
@@ -181,6 +198,27 @@ class DryRunSkillClient:
                     {"pan_deg": pan_deg, "tilt_deg": tilt_deg},
                 )
             return dry_run_result(skill_name, f"Dry-run {skill_name} accepted.", payload)
+        if skill_name == "set_pose":
+            return dry_run_result(
+                "set_pose",
+                f"Dry-run arm pose accepted: {payload.get('name', 'unknown')}.",
+                {"name": payload.get("name"), "repeat": payload.get("repeat", 1)},
+            )
+        if skill_name == "touch":
+            return dry_run_result(
+                "touch",
+                f"Dry-run touch accepted: {payload.get('target', 'target')}.",
+                {"target": payload.get("target"), "mode": payload.get("mode", "touch")},
+            )
+        if skill_name == "grasp":
+            return make_result(
+                "grasp",
+                False,
+                codes.NEEDS_HUMAN,
+                "Dry-run grasp requires a configured VLA endpoint.",
+                started,
+                {"target": payload.get("target"), "destination": payload.get("destination")},
+            )
         if skill_name == "move_lift_bounded":
             direction = str(payload.get("direction", "")).upper()
             distance_m = payload.get("distance_m")
@@ -214,4 +252,11 @@ class DryRunSkillClient:
         raise ValueError(f"Unknown skill: {skill_name}")
 
     def cancel_all(self, run_id: str) -> SkillResult:
+        self._cancelled_runs.add(run_id)
+        return self.stop_all(run_id)
+
+    def is_cancelled(self, run_id):
+        return run_id in self._cancelled_runs
+
+    def stop_all(self, run_id):
         return self.execute_skill("cancel_motion", {}, self.context(run_id))

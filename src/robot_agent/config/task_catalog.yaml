@@ -1,0 +1,74 @@
+schema_version: 1
+# Task semantics only. Hardware availability belongs to capability checks.
+# Add an owner handler and tests before adding a new type here.
+tasks:
+  follow_waypoint_list:
+    owner: navigation
+    description: Follow a registered frozen waypoint list in order, resuming the unfinished waypoint after recovery
+    legacy: follow_waypoint_list
+    unmet_perception_policy: ask_before_motion
+    slots: {target: text}
+  get_robot_status: {owner: mission, description: Report robot status, legacy: robot_status, slots: {}}
+  list_known_targets: {owner: mission, description: List known map targets, legacy: list_known_targets, slots: {}}
+  cancel: {owner: mission, description: Cancel execution, legacy: cancel, slots: {}}
+  move_relative:
+    owner: mission
+    description: Relative base translation by direction and distance or dx/dy
+    legacy: move_relative
+    unmet_perception_policy: ask_before_motion
+    defaults: {small_distance_m: 0.2}
+    slots: {direction: [forward, back, left, right], distance_m: number, dx_m: number, dy_m: number}
+  rotate_relative:
+    owner: mission
+    description: Rotate the base by a relative angle
+    legacy: rotate_relative
+    unmet_perception_policy: ask_before_motion
+    defaults: {left_yaw_deg: 90.0, right_yaw_deg: -90.0, around_yaw_deg: 180.0}
+    slots: {yaw_deg: number}
+  move_lift: {owner: arm, description: Move the lift a bounded distance, legacy: move_lift_bounded, slots: {direction: [UP, DOWN], distance_m: number}}
+  set_arm_pose:
+    owner: arm
+    description: Set a named posture or gesture of the arm
+    parsing_contract: Explicit arm posture requests belong here. If the actuator or reference frame is omitted and a navigation reading is also plausible, request clarification instead of forcing this interpretation. Arm validates pose names after clarification.
+    human_label: Move the arm to the requested named pose (not base navigation)
+    legacy: set_pose
+    slots: {pose: [home, see_front, see_ground, see_left, see_right, wave]}
+  observe_scene:
+    owner: perception
+    description: Acquire views or inspect/describe a scene; preserve interpretation and hazard questions for Perception, never reduce them to capture-only
+    legacy: look_direction
+    slots: {direction: [left, front, right, front_left, front_right], band: [ground, middle, upper], profile: [directional, surroundings, current_view], analysis_kind: [capture_only, image_describe]}
+  search_object:
+    owner: perception
+    description: Find an object or verify its identity or attributes at the current place
+    legacy: search_object_here
+    slots: {object_query: text, goal_mode: [find, verify]}
+  navigate_to:
+    owner: navigation
+    description: Drive the base to a place or semantic object; requires a locomotion goal, not merely a name also used by a pose
+    parsing_contract: Classify the requested action and its argument role together. A map destination is different from an arm posture, camera viewpoint or observed object. Delegate location resolution to Navigation.
+    human_label: Drive the base to the requested map location (not an arm pose)
+    legacy: navigate_to_place
+    unmet_perception_policy: ask_before_motion
+    slots: {target: text, relation: text}
+  interact_with_object: {owner: arm, description: Touch or press an identified object, legacy: touch_object, slots: {object_query: text, operation: [touch, press]}}
+  manipulate_object:
+    owner: arm
+    description: Grasp or place or release an object; recognize the goal even when the execution policy is unavailable
+    legacy: grasp_object
+    slots: {object_query: text, desired_end_state: [held, placed_at, released], destination: text}
+aliases:
+  robot_status: get_robot_status
+  move_relative_xy: move_relative
+  move_lift_bounded: move_lift
+  set_pose: set_arm_pose
+  look_direction: observe_scene
+  search_object_here: search_object
+  verify_target: search_object
+  navigate_to_place: navigate_to
+  navigate_to_object: navigate_to
+  touch_object: interact_with_object
+  press_object: interact_with_object
+  grasp_object: manipulate_object
+  place_object: manipulate_object
+  release_object: manipulate_object

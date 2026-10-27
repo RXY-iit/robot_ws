@@ -1,0 +1,59 @@
+id: PB-NAV-BLOCKED
+number: 61
+severity: degraded
+title: Navigation blocked / controller stuck
+version: 1
+domain: H6
+layer: function
+affects_capabilities: [auto_navigation]
+envs:
+  real:
+    status: supported
+    verified: false
+    note: Near obstacles come from the D435 local costmap (not a Livox /scan).
+  sim:
+    status: supported
+    verified: false
+
+# Navigation failure with healthy navigation infrastructure: only reported by
+# the mission agent, never visible as a health item.
+mission_trigger:
+  capabilities: [auto_navigation]
+  result_codes: [FAILED_NAVIGATION, FAILED_TIMEOUT]
+  only_without_health_fault: true
+  items: [navigation_progress]
+
+diagnosis:
+  - id: controller_active
+    probe: health_item
+    args: {item: lifecycle_controller_server}
+    on_mismatch: {handoff: PB-NAV-LIFECYCLE}
+  - id: localization_ok
+    probe: health_item
+    args: {item: gicp_score}
+    on_mismatch: {handoff: PB-LOC-LOST}
+
+supporting_evidence:
+  - {probe: health_item, args: {item: lifecycle_controller_server}}
+  - {probe: health_item, args: {item: gicp_score}}
+  - {probe: health_item, args: {item: gicp_pose}}
+
+recovery:
+  - type: action
+    primitive: clear_costmap
+    args: {which: local}
+  - type: operator_request
+    template: remove_obstacle
+
+verify:
+  - {probe: health_item, args: {item: lifecycle_controller_server}}
+
+policy:
+  retry_budget: 1
+
+fault_injection:
+  sim: {injector: spawn_obstacle, args: {on_path: true}}
+
+operator_text:
+  en: "The path seems blocked. Remove the obstacle in front of the robot or drive it manually."
+  ja: "経路が塞がれているようです。前方の障害物を取り除くか、手動で操作してください。"

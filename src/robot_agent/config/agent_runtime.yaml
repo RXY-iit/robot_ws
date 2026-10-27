@@ -1,5 +1,5 @@
-mode: sim
-ros_domain_id: 20
+mode: real
+ros_domain_id: 13
 default_language: zh
 log_root: debug-output/agent
 auto_mode_policy: human_confirm_required

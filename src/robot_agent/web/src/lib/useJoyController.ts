@@ -7,7 +7,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 export const JOY_AXIS = {
   STRAFE: 0,
   FORWARD: 1,
+  LIFT_UP_TRIGGER: 2,
   YAW: 3,
+  LIFT_DOWN_TRIGGER: 5,
   CAMERA_PAN: 6,
   CAMERA_TILT: 7,
 } as const;
@@ -25,7 +27,10 @@ const AXIS_COUNT = 8;
 const BUTTON_COUNT = 8;
 const HEARTBEAT_MS = 100;
 
-export function useJoyController(sendJoyState: (axes: number[], buttons: number[]) => void) {
+export function useJoyController(
+  sendJoyState: (axes: number[], buttons: number[]) => void,
+  enabled = true,
+) {
   const axesRef = useRef<number[]>(new Array(AXIS_COUNT).fill(0));
   const buttonsRef = useRef<number[]>(new Array(BUTTON_COUNT).fill(0));
   const heartbeatRef = useRef<number | null>(null);
@@ -40,7 +45,7 @@ export function useJoyController(sendJoyState: (axes: number[], buttons: number[
   const ensureHeartbeat = useCallback(() => {
     if (heartbeatRef.current != null) return;
     heartbeatRef.current = window.setInterval(() => {
-      if (isNeutral()) {
+      if (!enabled || isNeutral()) {
         if (heartbeatRef.current != null) {
           window.clearInterval(heartbeatRef.current);
           heartbeatRef.current = null;
@@ -49,29 +54,31 @@ export function useJoyController(sendJoyState: (axes: number[], buttons: number[
       }
       publish();
     }, HEARTBEAT_MS);
-  }, [publish]);
+  }, [enabled, publish]);
 
   const setAxis = useCallback(
     (index: number, value: number) => {
       if (axesRef.current[index] === value) return;
+      if (!enabled) return;
       axesRef.current[index] = value;
       publish();
       if (value !== 0) ensureHeartbeat();
       bump((n) => n + 1);
     },
-    [publish, ensureHeartbeat],
+    [enabled, publish, ensureHeartbeat],
   );
 
   const setButton = useCallback(
     (index: number, pressed: boolean) => {
       const value = pressed ? 1 : 0;
       if (buttonsRef.current[index] === value) return;
+      if (!enabled) return;
       buttonsRef.current[index] = value;
       publish();
       if (value !== 0) ensureHeartbeat();
       bump((n) => n + 1);
     },
-    [publish, ensureHeartbeat],
+    [enabled, publish, ensureHeartbeat],
   );
 
   const resetAll = useCallback(() => {
@@ -91,6 +98,10 @@ export function useJoyController(sendJoyState: (axes: number[], buttons: number[
       resetAll();
     };
   }, [resetAll]);
+
+  useEffect(() => {
+    if (!enabled) resetAll();
+  }, [enabled, resetAll]);
 
   return {
     axes: axesRef.current,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import time
@@ -26,7 +27,8 @@ except Exception:  # pragma: no cover - lets non-ROS unit imports survive.
 
 class PerceptionQueryAnalyzer:
     def __init__(self, target_config: dict[str, Any]):
-        self.target_config = target_config
+        from robot_skills.perception_capabilities import normalize_targets
+        self.target_config = normalize_targets(target_config)
 
     def analyze(self, query: str) -> dict[str, Any]:
         raw = str(query or "").strip()
@@ -44,8 +46,7 @@ class PerceptionQueryAnalyzer:
         text_query = re.fullmatch(r"(?:text|label|word|letter)_([A-Za-z0-9][A-Za-z0-9_]*)", normalized)
         if text_query:
             target_text = text_query.group(1).replace("_", "")
-            if len(target_text) <= 1:
-                return self._unsupported(raw, f'Bare single-character text query "{target_text}" is ambiguous with shelf labels.')
+            # The explicit text_ prefix resolves the ambiguity of a bare digit.
             return self._text_plan(raw, target_text, "text", [])
 
         object_query = re.fullmatch(r"object_([a-z0-9_]+)", normalized)
@@ -53,6 +54,9 @@ class PerceptionQueryAnalyzer:
             object_name = object_query.group(1)
             if object_name in (self.target_config.get("objects") or {}):
                 return self._object_plan(raw, [object_name])
+            classes = {str(c).replace(" ", "_"): c for c in self.target_config.get("yolo_open_vocab_classes", [])}
+            if object_name in classes:
+                return {"type": "legacy", "query": classes[object_name]}
             return self._unsupported(raw, f'Object "{object_name}" is not configured in perception_targets.yaml.')
 
         color_query = re.fullmatch(r"color_([a-z0-9_]+)", normalized)
@@ -177,11 +181,13 @@ class PerceptionSkills:
     def __init__(self, node):
         self.node = node
         self.config = self._load_config("perception_models.yaml")
-        self.target_config = self._load_config("perception_targets.yaml")
+        from robot_skills.perception_capabilities import normalize_targets
+        self.target_config = normalize_targets(self._load_config("perception_targets.yaml"))
         self.query_analyzer = PerceptionQueryAnalyzer(self.target_config)
         self.color_topic = self.config.get("camera", {}).get("color_topic", "/camera/camera/color/image_raw")
         self.artifact_root = str(self.config.get("camera", {}).get("artifact_root", "debug-output/perception"))
         self.capture_wait_sec = float(self.config.get("camera", {}).get("capture_wait_sec", 1.5))
+        self.ocr_config = self.config.get("ocr", {}) or {}
         self._latest_image = None
         self._latest_image_time = 0.0
         self._observations_by_run: dict[str, list[dict[str, Any]]] = {}
@@ -198,7 +204,12 @@ class PerceptionSkills:
         started = now()
         deadline = time.monotonic() + min(context.max_duration_sec, self.capture_wait_sec)
         while not self._has_usable_image(min_image_time_monotonic) and time.monotonic() < deadline:
+            if getattr(context, "cancel_check", lambda: False)():
+                return make_result("capture_observation", False, codes.CANCELLED, "Capture cancelled.")
             time.sleep(0.02)
+
+        if getattr(context, "cancel_check", lambda: False)():
+            return make_result("capture_observation", False, codes.CANCELLED, "Capture cancelled.")
 
         if not self._has_usable_image(min_image_time_monotonic):
             return make_result(
@@ -322,25 +333,18 @@ class PerceptionSkills:
                 {"query": query, "provider": provider},
             )
         matching_query = self._matching_query_from_plan(query, plan)
+        self._provider_errors = []
         try:
             detections = self._run_detection_plan(provider, observations, query, matching_query, plan, min_confidence)
-        except ImportError as exc:
+        except (ImportError, FileNotFoundError, RuntimeError) as exc:
             return make_result(
                 "detect_known_object",
-                True,
-                codes.PERCEPTION_STUB,
-                f"{provider} dependencies are not installed yet: {exc}",
+                False,
+                codes.FAILED_PERCEPTION,
+                f"{provider} inference could not complete: {exc}",
                 started,
-                {"query": query, "provider": provider, "stub": True},
-            )
-        except FileNotFoundError as exc:
-            return make_result(
-                "detect_known_object",
-                True,
-                codes.PERCEPTION_STUB,
-                f"{provider} model file is not available yet: {exc}",
-                started,
-                {"query": query, "provider": provider, "stub": True},
+                {"query": query, "provider": provider, "inference_completed": False,
+                 "provider_errors": self._provider_errors or [{"error": str(exc)}]},
             )
 
         required_digits = list(plan.get("required_digits") or self._required_digit_tokens(query))
@@ -369,7 +373,7 @@ class PerceptionSkills:
         elif approximate_found and not found:
             code = codes.NEEDS_HUMAN
         else:
-            code = codes.OK if found else codes.NEEDS_HUMAN
+            code = codes.OK
         if unsupported_reasons and any(item.get("matched_query") for item in detections):
             message = (
                 f'Found partial candidates for "{query}", but human confirmation is required: '
@@ -406,7 +410,7 @@ class PerceptionSkills:
         )
         return make_result(
             "detect_known_object",
-            found,
+            code == codes.OK,
             code,
             message,
             started,
@@ -418,6 +422,10 @@ class PerceptionSkills:
                 "provider": provider,
                 "detections": detections,
                 "observation_count": len(observations),
+                "inference_completed": True,
+                "goal_satisfied": found,
+                "outcome": "FOUND" if found else ("NOT_FOUND" if code == codes.OK else "NEEDS_CONFIRMATION"),
+                "provider_warnings": self._provider_errors,
                 "required_digits": required_digits,
                 "matched_digits": matched_digits,
                 "primitive_results": primitive_results,
@@ -486,6 +494,9 @@ class PerceptionSkills:
         detection_query = str(plan.get("target_text") or original_query)
         for observation in observations:
             image_path = observation["image_path"]
+            import cv2
+            if cv2.imread(image_path) is None:
+                raise RuntimeError(f"Observation image is missing or unreadable: {image_path}")
             if plan["type"] in {"color", "composite"}:
                 for color in plan.get("colors", []):
                     detections.extend(self._detect_color_regions(image_path, color, min_confidence))
@@ -494,7 +505,7 @@ class PerceptionSkills:
         if plan["type"] in {"object", "composite"} and plan.get("objects"):
             detections.extend(self._run_yolo_provider(provider, observations, query, plan, min_confidence))
         if plan["type"] == "composite":
-            detections.extend(self._match_composite_detections(detections, original_query, min_confidence))
+            detections.extend(self._match_composite_detections(detections, original_query, min_confidence, plan))
         return detections
 
     def _run_yolo_provider(
@@ -570,7 +581,9 @@ class PerceptionSkills:
         annotated: list[dict[str, Any]] = []
         run_dir = self._run_dir(run_id)
         for image_path, image_detections in by_image.items():
-            output_path = run_dir / f"annotated_{Path(image_path).stem}.jpg"
+            import hashlib
+            query_key = hashlib.sha256(query.encode("utf-8")).hexdigest()[:12]
+            output_path = run_dir / f"annotated_{Path(image_path).stem}_{query_key}.jpg"
             ok = self._draw_detections(image_path, output_path, query, image_detections)
             if not ok:
                 continue
@@ -670,14 +683,18 @@ class PerceptionSkills:
 
     def _ocr_text_detections(self, image_path: str, query: str, min_confidence: float) -> list[dict[str, Any]]:
         detections: list[dict[str, Any]] = []
-        try:
-            detections.extend(self._tesseract_detections(image_path, query, min_confidence))
-        except Exception:
-            pass
-        try:
-            detections.extend(self._easyocr_detections(image_path, query, min_confidence))
-        except Exception:
-            pass
+        completed = 0
+        errors = []
+        for name, detector in (("tesseract", self._tesseract_detections), ("easyocr", self._easyocr_detections)):
+            try:
+                detections.extend(detector(image_path, query, min_confidence))
+                completed += 1
+            except Exception as exc:
+                errors.append({"backend": name, "image_path": image_path,
+                               "error_type": type(exc).__name__, "error": str(exc)})
+        self._provider_errors = getattr(self, "_provider_errors", []) + errors
+        if not completed:
+            raise RuntimeError("All OCR backends failed; absence of detections is not a NOT_FOUND result")
         return detections
 
     @staticmethod
@@ -753,12 +770,34 @@ class PerceptionSkills:
         detections: list[dict[str, Any]],
         query: str,
         min_confidence: float,
+        plan: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
-        color_items = [item for item in detections if item.get("primitive") == "color"]
-        object_items = [item for item in detections if item.get("primitive") == "object"]
+        plan = plan if plan is not None else self._build_detection_plan(query)
+        colors = set(plan.get("colors") or [])
+        classes = {self._normalize_token(name) for name in plan.get("yolo_classes", [])}
+
+        def usable(item):
+            try:
+                confidence = float(item.get("confidence", 0))
+                bbox = item.get("bbox") or []
+                return (item.get("matched_query") is True and bool(item.get("image_path"))
+                        and not item.get("approximate_match") and not item.get("fallback_requires_human")
+                        and math.isfinite(confidence) and min_confidence <= confidence <= 1
+                        and len(bbox) == 4 and all(math.isfinite(float(v)) for v in bbox)
+                        and float(bbox[2]) > float(bbox[0]) and float(bbox[3]) > float(bbox[1]))
+            except (TypeError, ValueError):
+                return False
+
+        color_items = [item for item in detections if item.get("primitive") == "color"
+                       and item.get("color") in colors and usable(item)]
+        object_items = [item for item in detections if item.get("primitive") == "object"
+                        and self._normalize_token(str(item.get("label", ""))) in classes and usable(item)]
         composite: list[dict[str, Any]] = []
         for color_item in color_items:
             for object_item in object_items:
+                # Pixel coordinates are comparable only within the same observation.
+                if color_item["image_path"] != object_item["image_path"]:
+                    continue
                 overlap = self._bbox_overlap_ratio(color_item.get("bbox"), object_item.get("bbox"))
                 if overlap < 0.15:
                     continue
@@ -783,6 +822,10 @@ class PerceptionSkills:
                         "query": query,
                         "color_label": color_item.get("label"),
                         "object_label": object_item.get("label"),
+                        "color_image_path": color_item["image_path"],
+                        "object_image_path": object_item["image_path"],
+                        "color_bbox": color_item["bbox"],
+                        "object_bbox": object_item["bbox"],
                         "overlap_ratio": overlap,
                     }
                 )
@@ -837,12 +880,14 @@ class PerceptionSkills:
         from ultralytics import YOLO
 
         weights = str(cfg.get("weights", "models/perception/yolo11s.pt"))
-        path = Path(weights)
-        if not path.is_absolute():
-            path = Path.cwd() / path
+        path = self._workspace_path(weights)
         if not path.exists():
             raise FileNotFoundError(str(path))
         model = YOLO(str(path))
+        if self.target_config.get("schema_version") == 2:
+            names = model.names.values() if isinstance(model.names, dict) else model.names
+            if set(names) != set(self.target_config["detector_classes"]):
+                raise ValueError("Loaded detector classes do not match perception_targets.yaml; review capability registration before inference.")
         self._yolo_models[provider] = model
         return model
 
@@ -893,12 +938,12 @@ class PerceptionSkills:
                 return None
         return None
 
-    @staticmethod
-    def _tesseract_crop(image_path: str, bbox: list[float], query: str = "") -> str | None:
+    def _tesseract_crop(self, image_path: str, bbox: list[float], query: str = "") -> str | None:
         try:
             import cv2
             import pytesseract
 
+            self._configure_tesseract(pytesseract)
             image = cv2.imread(image_path)
             if image is None:
                 return None
@@ -912,14 +957,81 @@ class PerceptionSkills:
         except Exception:
             return None
 
-    @staticmethod
-    def _tesseract_detections(image_path: str, query: str, min_confidence: float) -> list[dict[str, Any]]:
+    def _tesseract_detections(self, image_path: str, query: str, min_confidence: float) -> list[dict[str, Any]]:
+        detections = self._tesseract_at_scale(image_path, query, min_confidence, 1.0)
+        # Small shelf labels need more pixels; keep the confidence threshold unchanged.
+        if self._required_digit_tokens(query) and not any(item["matched_tokens"] for item in detections):
+            detections.extend(self._tesseract_at_scale(image_path, query, min_confidence, 2.0))
+        if self._required_digit_tokens(query) and not any(item["matched_tokens"] for item in detections):
+            detections.extend(self._tesseract_numeric_labels(image_path, query, min_confidence))
+        return detections
+
+    def _tesseract_numeric_labels(self, image_path, query, min_confidence):
+        import cv2
+        import numpy as np
+        import pytesseract
+
+        self._configure_tesseract(pytesseract)
+        image = cv2.imread(image_path)
+        if image is None:
+            raise RuntimeError(f"Cannot read OCR image: {image_path}")
+        # Geometry comes from the image, never from the requested digits.
+        mask = cv2.inRange(cv2.cvtColor(image, cv2.COLOR_BGR2HSV), (0, 0, 160), (179, 60, 255))
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        detections, attempts = [], 0
+        for contour in sorted(contours, key=cv2.contourArea, reverse=True):
+            rectangle = cv2.minAreaRect(contour)
+            width, height = rectangle[1]
+            if min(width, height) < 12 or max(width, height) > 240:
+                continue
+            if max(width, height) / min(width, height) > 3 or cv2.contourArea(contour) / (width * height) < .55:
+                continue
+            points = cv2.boxPoints(rectangle)
+            sums, differences = points.sum(axis=1), points[:, 1] - points[:, 0]
+            source = points[[sums.argmin(), differences.argmin(), sums.argmax(), differences.argmax()]]
+            if len(np.unique(source, axis=0)) != 4:
+                continue
+            w = max(1, int(np.linalg.norm(source[1] - source[0]) * 3))
+            h = max(1, int(np.linalg.norm(source[3] - source[0]) * 3))
+            destination = np.float32([[0, 0], [w - 1, 0], [w - 1, h - 1], [0, h - 1]])
+            crop = cv2.warpPerspective(image, cv2.getPerspectiveTransform(source, destination), (w, h))
+            crop = cv2.copyMakeBorder(crop, 12, 12, 12, 12, cv2.BORDER_CONSTANT, value=(255, 255, 255))
+            data = pytesseract.image_to_data(
+                crop, config="--psm 7", output_type=pytesseract.Output.DICT, timeout=2)
+            for text, raw_confidence in zip(data.get("text", []), data.get("conf", [])):
+                text = str(text).strip()
+                confidence = float(raw_confidence) / 100
+                if not text.isascii() or not text.isdigit() or confidence < min_confidence:
+                    continue
+                lo, hi = points.min(axis=0), points.max(axis=0)
+                detections.append({
+                    "image_path": image_path, "label": "ocr_text", "text": text,
+                    "confidence": min(.99, confidence),
+                    "bbox": [max(0., float(lo[0])), max(0., float(lo[1])),
+                             min(float(image.shape[1]), float(hi[0])), min(float(image.shape[0]), float(hi[1]))],
+                    "matched_query": self._matches_query(query, "ocr_text", text, confidence, min_confidence),
+                    "matched_tokens": self._matched_digit_tokens(query, text, confidence, min_confidence),
+                    "primitive": "text", "ocr_backend": "tesseract", "ocr_scale": 3,
+                    "ocr_preprocess": "rectified_light_label", "bbox_scope": "label_region",
+                })
+            attempts += 1
+            if attempts >= 8:
+                break
+        return detections
+
+    def _tesseract_at_scale(self, image_path: str, query: str, min_confidence: float, scale: float) -> list[dict[str, Any]]:
         import cv2
         import pytesseract
 
+        self._configure_tesseract(pytesseract)
         image = cv2.imread(image_path)
         if image is None:
-            return []
+            raise RuntimeError(f"Cannot read OCR image: {image_path}")
+        if scale != 1.0:
+            # Avoid cubic ringing on small label strokes; retain exact-token and
+            # confidence checks after recognition rather than relaxing acceptance.
+            image = cv2.resize(image, None, fx=scale, fy=scale, interpolation=cv2.INTER_LINEAR)
         allowlist = PerceptionSkills._ocr_allowlist(query)
         data = pytesseract.image_to_data(
             image,
@@ -952,12 +1064,13 @@ class PerceptionSkills:
                     "image_path": image_path,
                     "label": "ocr_text",
                     "confidence": confidence,
-                    "bbox": [x, y, x + w, y + h],
+                    "bbox": [x / scale, y / scale, (x + w) / scale, (y + h) / scale],
                     "text": text,
                     "matched_query": PerceptionSkills._matches_query(query, "ocr_text", text, confidence, min_confidence),
                     "matched_tokens": PerceptionSkills._matched_digit_tokens(query, text, confidence, min_confidence),
                     "primitive": "text",
                     "ocr_backend": "tesseract",
+                    "ocr_scale": scale,
                 }
             )
         return detections
@@ -976,7 +1089,7 @@ class PerceptionSkills:
             return None
         reader = self._ocr_readers.get("en")
         if reader is None:
-            reader = easyocr.Reader(["en"], gpu=bool(torch.cuda.is_available()), verbose=False)
+            reader = self._create_easyocr_reader(easyocr, torch)
             self._ocr_readers["en"] = reader
         allowlist = "0123456789"
         if any(ch.isalpha() for ch in query) or any(token in query.lower() for token in ["letter", "text", "label"]):
@@ -995,7 +1108,7 @@ class PerceptionSkills:
             return []
         reader = self._ocr_readers.get("en")
         if reader is None:
-            reader = easyocr.Reader(["en"], gpu=bool(torch.cuda.is_available()), verbose=False)
+            reader = self._create_easyocr_reader(easyocr, torch)
             self._ocr_readers["en"] = reader
         detections: list[dict[str, Any]] = []
         for bbox_points, text, confidence in reader.readtext(
@@ -1027,6 +1140,36 @@ class PerceptionSkills:
             )
         return detections
 
+    def _configure_tesseract(self, pytesseract_module) -> None:
+        command = self._workspace_path(str(self.ocr_config.get("tesseract_cmd", "tesseract")))
+        if command.is_file():
+            pytesseract_module.pytesseract.tesseract_cmd = str(command)
+        tessdata = self._workspace_path(str(self.ocr_config.get("tessdata_prefix", "")))
+        if tessdata.is_dir():
+            os.environ["TESSDATA_PREFIX"] = str(tessdata)
+
+    def _create_easyocr_reader(self, easyocr_module, torch_module):
+        languages = [str(item) for item in self.ocr_config.get("easyocr_languages", ["en"])]
+        model_dir = self._workspace_path(
+            str(self.ocr_config.get("easyocr_model_dir", "models/perception/easyocr"))
+        )
+        return easyocr_module.Reader(
+            languages,
+            gpu=bool(torch_module.cuda.is_available()),
+            model_storage_directory=str(model_dir),
+            user_network_directory=str(model_dir / "user_network"),
+            download_enabled=bool(self.ocr_config.get("easyocr_download_enabled", False)),
+            verbose=False,
+        )
+
+    @staticmethod
+    def _workspace_path(value: str) -> Path:
+        path = Path(value).expanduser()
+        if path.is_absolute():
+            return path
+        root = Path(os.environ.get("ROBOT_WS", str(Path.cwd()))).expanduser()
+        return root / path
+
     @staticmethod
     def _ocr_allowlist(query: str) -> str:
         allowlist = "0123456789"
@@ -1037,6 +1180,8 @@ class PerceptionSkills:
     def _build_detection_plan(self, query: str) -> dict[str, Any]:
         analyzed = self.query_analyzer.analyze(query)
         capable_classes = self._capable_class_map()
+        if analyzed.get("type") == "legacy" and str(query).startswith("object_"):
+            query = analyzed.get("query", query)
 
         if analyzed.get("type") in {"text", "unsupported"}:
             return analyzed
@@ -1142,7 +1287,7 @@ class PerceptionSkills:
             cfg = (self.target_config.get("objects") or {}).get(object_name, {})
             primary = {self._normalize_text(c): c for c in cfg.get("classes") or []}
             fallback = {self._normalize_text(c): c for c in cfg.get("fallback_classes") or []}
-            direct_hits = [c for key, c in primary.items() if key in capable_classes]
+            direct_hits = [c for key, c in primary.items() if key in capable_classes and key not in fallback]
             fallback_hits = [c for key, c in fallback.items() if key in capable_classes]
             if direct_hits:
                 yolo_classes.update(self._normalize_token(item) for item in direct_hits)
@@ -1188,8 +1333,8 @@ class PerceptionSkills:
 
     def _capable_class_map(self) -> dict[str, str]:
         """Normalized-key -> canonical-name map of what the configured model can
-        actually detect (yolo_open_vocab_classes, extracted straight from the
-        checkpoint's own class list -- see perception_targets.yaml). This is
+        actually detect (detector_classes, exposed internally through the legacy
+        yolo_open_vocab_classes key; checked against model.names on load). This is
         the single source of truth for "can we detect this at all"; nothing
         else in this file should guess at plausibility.
         """
@@ -1357,6 +1502,8 @@ class PerceptionSkills:
     def _matches_query(query: str, label: str, text: str | None, confidence: float, threshold: float) -> bool:
         if confidence < threshold:
             return False
+        if PerceptionSkills._required_digit_tokens(query):
+            return bool(PerceptionSkills._matched_digit_tokens(query, text, confidence, threshold))
         normalized_query = query.lower().replace(" ", "")
         normalized_label = label.lower().replace(" ", "")
         query_digits = "".join(ch for ch in normalized_query if ch.isdigit())
@@ -1430,10 +1577,7 @@ class PerceptionSkills:
 
         tokens: list[str] = []
         for match in re.findall(r"\d+", query):
-            if len(match) >= 2:
-                tokens.append(match[-2:])
-            elif len(match) == 1:
-                tokens.append(match)
+            tokens.append(match)
         seen = set()
         out = []
         for token in tokens:
@@ -1449,17 +1593,11 @@ class PerceptionSkills:
         query_tokens = PerceptionSkills._required_digit_tokens(query)
         if not query_tokens:
             return []
-        text_digits = "".join(ch for ch in text if ch.isdigit())
-        candidates = {text_digits, text_digits.lstrip("0")}
         digit_runs = re.findall(r"\d+", str(text))
-        for index in range(max(0, len(text_digits) - 1)):
-            pair = text_digits[index : index + 2]
-            if len(pair) == 2:
-                candidates.add(pair)
-                candidates.add(pair.lstrip("0"))
+        shelf_label = bool(re.search(r"shelf[_\s-]*label[_\s-]*\d+", query, re.IGNORECASE))
         matched = []
         for token in query_tokens:
-            if any(run == token for run in digit_runs):
+            if any(run == token or (shelf_label and int(run) == int(token)) for run in digit_runs):
                 matched.append(token)
         return matched
 

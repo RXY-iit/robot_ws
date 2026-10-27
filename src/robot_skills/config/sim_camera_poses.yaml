@@ -1,0 +1,30 @@
+# Sim camera pose mapping for the Isaac D455 pan/tilt bridge.
+#
+# Skill plans and detection profiles keep using the historical sim logical
+# angles.  The current sim_lift_command_node intentionally accepts the same
+# raw feedback-style pan/tilt values as the real robot, so sim mode maps named
+# scan bands once here before publishing to /chokudomotor/* and
+# /cameraswingmotor/*.
+calibration:
+  status: sim_raw_targets_from_real_calibrated_pose_names
+  use_calibrated_poses: true
+  feedback_tolerance_deg: 2.0
+  real_navigation_reference:
+    hardware_pan_deg: 267.1
+    hardware_tilt_deg: 101.8
+  logical_reference:
+    pan_deg: 0.0
+    tilt_deg: 67.0
+
+poses:
+  ground_left:   {hardware_pan_deg: 320.0, hardware_tilt_deg: 88.0, note: "sim command matching real left/down"}
+  ground_center: {hardware_pan_deg: 271.0, hardware_tilt_deg: 88.0, note: "sim command matching real front/down"}
+  ground_right:  {hardware_pan_deg: 212.0, hardware_tilt_deg: 107.0, note: "sim command matching real right/down"}
+  middle_left:   {hardware_pan_deg: 320.0, hardware_tilt_deg: 60.0, note: "sim command matching real left/center"}
+  middle_center: {hardware_pan_deg: 267.0, hardware_tilt_deg: 65.0, note: "sim command matching real front/center"}
+  middle_right:  {hardware_pan_deg: 215.0, hardware_tilt_deg: 78.0, note: "sim command matching real right/center"}
+  upper_left:    {hardware_pan_deg: 334.0, hardware_tilt_deg: 47.0, note: "sim command matching real left/up"}
+  upper_center:  {hardware_pan_deg: 267.0, hardware_tilt_deg: 33.0, note: "sim command matching real front/up"}
+  upper_right:   {hardware_pan_deg: 213.0, hardware_tilt_deg: 54.0, note: "sim command matching real right/up"}
+
+  return_home: {hardware_pan_deg: 267.1, hardware_tilt_deg: 101.8, note: "sim navigation/home raw reference"}

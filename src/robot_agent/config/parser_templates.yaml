@@ -142,3 +142,66 @@ templates:
       - リフトを大きく下げて
     intent:
       task_type: move_lift_bounded
+
+  - id: set_pose
+    examples:
+      - set pose home
+      - arm home pose
+      - wave hello
+      - 手臂回home姿態
+      - 打个招呼
+      - アームをhome姿勢にして
+    intent:
+      task_type: set_pose
+
+  - id: touch_object
+    examples:
+      - touch the red cube
+      - touch red_box
+      - 触碰红色方块
+      - 赤い箱を触って
+    intent:
+      task_type: touch_object
+
+  - id: press_object
+    examples:
+      - press the green button
+      - press the button
+      - 按下绿色按钮
+      - ボタンを押して
+    intent:
+      task_type: press_object
+
+  - id: grasp_object
+    examples:
+      - pick up the red cube
+      - grasp red_box
+      - put the red cube into the bowl
+      - 抓起红色方块
+      - 赤い箱を掴んで
+    intent:
+      task_type: grasp_object
+
+  - id: press_object_near_place
+    examples:
+      - go to the panel and press the green button
+      - move to shelf 06 and press the button
+      - パネルへ移動してボタンを押して
+    intent:
+      task_type: press_object_near_place
+
+  - id: touch_object_near_place
+    examples:
+      - go to shelf 06 and touch the red cube
+      - move to the table and touch red_box
+      - 棚へ移動して赤い箱を触って
+    intent:
+      task_type: touch_object_near_place
+
+  - id: grasp_object_near_place
+    examples:
+      - go to the table and pick up the red cube
+      - move to shelf 06 and grasp red_box
+      - テーブルへ移動して赤い箱を掴んで
+    intent:
+      task_type: grasp_object_near_place

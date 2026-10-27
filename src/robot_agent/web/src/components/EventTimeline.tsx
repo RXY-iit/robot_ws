@@ -6,8 +6,8 @@ interface Props {
 
 export function EventTimeline({ events }: Props) {
   return (
-    <>
-      <h2>ミッションイベント</h2>
+    <details className="raw-evidence">
+      <summary>実行ログ · {events.length}</summary>
       <div className="timeline">
         {events.map((event, index) => (
           <div key={index} className="event">
@@ -19,6 +19,6 @@ export function EventTimeline({ events }: Props) {
           </div>
         ))}
       </div>
-    </>
+    </details>
   );
 }

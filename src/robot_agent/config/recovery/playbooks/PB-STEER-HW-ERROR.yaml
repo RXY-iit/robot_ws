@@ -1,0 +1,59 @@
+id: PB-STEER-HW-ERROR
+handling_class: hardware_intervention
+number: 33
+severity: blocking
+title: DYNAMIXEL steering hardware error
+version: 1
+domain: H1
+layer: driver
+affects_capabilities: [manual_drive, auto_navigation]
+envs:
+  real:
+    status: supported
+    verified: false
+    note: Hardware Error Status (overload / overheat / voltage). Reboot behaviour to be confirmed (Q-R4).
+  sim:
+    status: injection_only
+    verified: false
+
+trigger:
+  any:
+    - {item: dynamixel_hardware_status, class_in: [FAULT, DEGRADED], for_sec: 1}
+
+supporting_evidence:
+  - {probe: fresh_observation, args: {item: dynamixel_hardware_status}}
+
+diagnosis:
+  - id: hw_error_present
+    probe: health_item
+    args: {item: dynamixel_hardware_status, class_in: [FAULT, DEGRADED]}
+    on_mismatch: {reject: true}
+
+preconditions:
+  - cmd_vel_zero_fresh
+  - base_stationary
+
+recovery:
+  - type: action
+    primitive: cancel_motion
+  - type: operator_request
+    template: inspect_steer_motor
+  - type: action
+    primitive: dynamixel_reboot
+    risk: A2
+
+verify:
+  - {probe: health_item, args: {item: dynamixel_hardware_status}, within_sec: 10}
+  - {probe: health_item, args: {item: steer_feedback}, within_sec: 10}
+
+policy:
+  retry_budget: 1
+  cooldown_sec: 300
+  chronic: {count: 2, window_sec: 3600, then: human_only}
+
+fault_injection:
+  sim: {injector: fake_item, args: {item: dynamixel_hardware_status, status: ERROR, error: overheat}}
+
+operator_text:
+  en: "A steering motor reports a hardware error (overload/overheat/voltage). Let it cool and check for obstruction, then confirm reboot."
+  ja: "ステアリングモータがハードウェアエラーを報告しています。冷却と障害物の確認後、再起動を確認してください。"

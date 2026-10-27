@@ -1,4 +1,4 @@
-"""
+r"""
 Phase 2 camera local-costmap verification launch.
 
 Starts only the Nav2 pieces needed to test:
@@ -66,9 +66,8 @@ def generate_launch_description():
                 plugin='depth_image_proc::PointCloudXyzNode',
                 name='point_cloud_xyz_node',
                 remappings=[
-                    ('image_rect', '/camera/camera/depth/image_rect_raw'),
-                    ('camera_info', '/camera/camera/depth/camera_info'),
-                    ('/camera_info', '/camera/camera/depth/camera_info'),
+                    ('image_rect', '/camera/camera/aligned_depth_to_color/image_raw'),
+                    ('camera_info', '/camera/camera/aligned_depth_to_color/camera_info'),
                     ('points', '/camera/depth/points'),
                 ],
             ),

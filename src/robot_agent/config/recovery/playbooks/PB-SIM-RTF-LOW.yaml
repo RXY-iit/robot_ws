@@ -1,0 +1,44 @@
+id: PB-SIM-RTF-LOW
+number: 22
+severity: advisory
+title: Isaac Sim real-time factor too low
+version: 2
+handling_class: known_recovery
+domain: H2
+layer: platform
+affects_capabilities: []
+envs:
+  real:
+    status: n/a
+    note: Sim only.
+  sim:
+    status: supported
+    verified: false
+    note: Receiver-measured simulation clock evidence; advisory, never changes control periods.
+
+trigger:
+  any:
+    - {item: sim_rtf, class_in: [DEGRADED], for_sec: 10}
+
+diagnosis:
+  - id: clock_evidence
+    probe: health_item
+    args: {item: sim_rtf, class_in: [DEGRADED]}
+    on_mismatch: {reject: true}
+
+supporting_evidence:
+  - {probe: sim_clock_advancing}
+
+recovery:
+  - type: operator_request
+    template: inspect_sim_clock_and_load
+
+verify:
+  - {probe: health_item, args: {item: sim_rtf}}
+
+policy:
+  retry_budget: 0
+
+operator_text:
+  en: "Simulation is advancing slowly. Inspect CPU/GPU load and sensor/render workload before selecting a reversible adjustment. No automatic control-period changes; pause/offline are separate environment states."
+  ja: "シミュレーション時刻は低速で進行しています。CPU/GPU 負荷とセンサ・描画負荷を確認し、元に戻せる調整を選んでください。制御周期は自動変更しません。停止状態は別途表示します。"

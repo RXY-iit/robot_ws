@@ -1,0 +1,77 @@
+id: PB-LOC-LOST
+number: 60
+severity: blocking
+title: Localization lost
+version: 3
+domain: H5
+layer: function
+affects_capabilities: [auto_navigation]
+envs:
+  real: {status: supported, verified: false}
+  sim:
+    status: supported
+    verified: false
+    note: Test with kidnap injection; Isaac ground truth is used for evaluation only.
+
+trigger:
+  any:
+    - {item: gicp_score, class_in: [FAULT, DEGRADED], for_sec: 5}
+    - {item: gicp_pose, class_in: [FAULT], for_sec: 5}
+    - {item: localization_consistency, status_in: [ERROR], for_sec: 5}
+
+diagnosis:
+  - id: lidar_ok
+    probe: health_item
+    args: {item: lidar_device_status}
+    on_mismatch: {handoff: PB-LIDAR-STALE}
+  - id: gicp_alive
+    probe: node_alive
+    args: {component: gicp}
+    on_mismatch: {handoff: PB-NODE-DOWN}
+
+preconditions:
+  - cmd_vel_zero_fresh
+
+# Positive LiDAR/node evidence is required by diagnosis above. Do not repeat
+# it as a pre-diagnosis gate: that prevents the explicit dead-node handoff.
+
+# 2026-10-05: recover_localization_spin is intentionally NOT used.
+# No global search or semantic landmark placeholder: try the bounded,
+# odometry-propagated last trusted pose once, then ask for an RViz pose.
+# Real remains unverified; without an env backend it proceeds to manual.
+recovery:
+  - type: action
+    primitive: cancel_motion
+    on_fail: next
+  - type: action
+    primitive: publish_initialpose
+    args: {source: last_trusted_pose}
+    success_when:
+      - {probe: health_item, args: {item: gicp_score}}
+      - {probe: health_item, args: {item: gicp_pose}}
+      - {probe: health_item, args: {item: localization_consistency}}
+    success_timeout_sec: 20
+    on_success: verify
+    on_fail: next
+  - type: operator_request
+    template: rviz_2d_pose_estimate
+    done_when:
+      - {probe: health_item, args: {item: gicp_score}}
+      - {probe: health_item, args: {item: gicp_pose}}
+      - {probe: health_item, args: {item: localization_consistency}}
+
+verify:
+  - {probe: health_item, args: {item: gicp_score}, within_sec: 15}
+  - {probe: health_item, args: {item: gicp_pose}, within_sec: 15}
+  - {probe: health_item, args: {item: localization_consistency}, within_sec: 15}
+
+policy:
+  retry_budget: 0
+  cooldown_sec: 30
+
+fault_injection:
+  sim: {injector: kidnap, args: {dx: 1.5, dy: 0.0, dyaw_deg: 30}}
+
+operator_text:
+  en: "Global localization is not verified. Recovery independently pauses dependent navigation and waits for its goal to terminate and fresh stopped feedback. Unrelated tasks may continue. Once stationary, try the last trusted pose once, then request an RViz pose if verification fails."
+  ja: "自己位置推定が未検証です。Recovery が依存するナビゲーションを一時停止し、ゴール終了と新しい停止情報を確認します。無関係なタスクは継続できます。停止後に最後の信頼できる位置を一度試み、検証できなければ RViz の位置指定を依頼します。"

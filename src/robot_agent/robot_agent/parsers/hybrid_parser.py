@@ -7,18 +7,19 @@ from typing import Any
 import yaml
 from ament_index_python.packages import PackageNotFoundError, get_package_share_directory
 
-from robot_agent.parsers.deterministic_parser import DeterministicParser
+from robot_agent.parsers.deterministic_parser import DeterministicParser, command_guard_reason
 from robot_agent.parsers.embedding_parser import EmbeddingParser
 from robot_agent.parsers.llama_cpp_parser import LlamaCppParser
 from robot_agent.schemas import MissionIntent
 
 
 class HybridParser:
-    def __init__(self, config_dir: str | None = None):
+    def __init__(self, config_dir: str | None = None, defer_target_resolution: bool = False):
         self.config_dir = config_dir or self._default_config_dir()
         self.model_policy = self._load_yaml("model_policy.yaml")
         self.parser_templates = self._load_yaml("parser_templates.yaml")
-        self.deterministic = DeterministicParser(known_targets=self._load_known_targets())
+        self.deterministic = DeterministicParser(known_targets=self._load_known_targets(),
+                                               defer_target_resolution=defer_target_resolution)
         providers = self.model_policy.get("providers", {})
         embedding_cfg = providers.get("embedding_parser", {})
         llama_cfg = providers.get("llama_cpp_parser", {})
@@ -38,6 +39,11 @@ class HybridParser:
 
     def parse(self, text: str) -> MissionIntent:
         route_steps: list[dict[str, Any]] = []
+        guard = command_guard_reason(text)
+        if guard:
+            self.last_metrics = {"source": "command_structure_guard", "reason": guard, "route_steps": []}
+            return MissionIntent(task_type="ask_human", raw_text=text, requires_confirmation=True,
+                                 constraints={"guard_reason": guard})
         deterministic = self.deterministic.parse(text)
         if deterministic.task_type != "ask_human":
             deterministic, slot_metrics = self._postprocess_slots(deterministic, text)
@@ -196,6 +202,13 @@ class HybridParser:
             "rotate_relative": "constraints={yaw_deg}",
             "look_direction": "constraints={direction, band}",
             "move_lift_bounded": "constraints={direction, distance_m}",
+            "set_pose": "target=<arm pose name>",
+            "touch_object": "object_query=<object phrase>",
+            "press_object": "object_query=<object phrase>",
+            "grasp_object": "object_query=<object phrase>, optional constraints.destination",
+            "touch_object_near_place": "target=<place>, object_query=<object phrase>",
+            "press_object_near_place": "target=<place>, object_query=<object phrase>",
+            "grasp_object_near_place": "target=<place>, object_query=<object phrase>",
         }
         lines: list[str] = []
         for item in templates:
@@ -215,7 +228,15 @@ class HybridParser:
     @staticmethod
     def _postprocess_slots(intent: MissionIntent, raw_text: str) -> tuple[MissionIntent, dict[str, Any]]:
         metrics: dict[str, Any] = {}
-        target_tasks = {"navigate_to_object", "navigate_to_place", "inspect_place", "search_object_near_place"}
+        target_tasks = {
+            "navigate_to_object",
+            "navigate_to_place",
+            "inspect_place",
+            "search_object_near_place",
+            "touch_object_near_place",
+            "press_object_near_place",
+            "grasp_object_near_place",
+        }
         if intent.task_type in target_tasks:
             original = intent.target
             cleaned = HybridParser._extract_clean_target(original or raw_text)
@@ -242,7 +263,16 @@ class HybridParser:
         if intent.task_type == "search_object_here" and not intent.object_query:
             metrics["needs_fallback"] = True
             metrics["slot_error"] = "missing_object_query"
-        if intent.task_type in {"search_object_here", "search_object_near_place"} and intent.object_query:
+        if intent.task_type in {
+            "search_object_here",
+            "search_object_near_place",
+            "touch_object",
+            "press_object",
+            "grasp_object",
+            "touch_object_near_place",
+            "press_object_near_place",
+            "grasp_object_near_place",
+        } and intent.object_query:
             normalized_query = HybridParser._normalize_perception_query(intent.object_query)
             if normalized_query:
                 if normalized_query != intent.object_query:

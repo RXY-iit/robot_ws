@@ -1,0 +1,9 @@
+schema_version: 1
+route_id: b1_return
+map_id: sim_factory_mid360_like_gpu_trueimu_011
+frame_id: map
+waypoints:
+- id: paired_start
+  x: -14.045956246127227
+  y: 4.17252592775927
+  yaw: 2.800580944125685

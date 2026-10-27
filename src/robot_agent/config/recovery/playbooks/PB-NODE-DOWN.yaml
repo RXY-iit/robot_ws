@@ -1,0 +1,61 @@
+id: PB-NODE-DOWN
+number: 50
+severity: degraded
+title: ROS node down (generic)
+version: 1
+domain: H2
+layer: ros_delivery
+affects_capabilities: []
+# Generic fallback: matched after the specific playbooks.
+match_priority: 90
+envs:
+  real:
+    status: supported
+    verified: false
+    note: Single-component restart depends on the process manager investigation (Q-R1).
+  sim:
+    status: supported
+    verified: false
+    note: Single-component restart depends on Q-S1.
+
+trigger:
+  any:
+    - {item: "*", class_in: [FAULT, UNCERTAIN], for_sec: 3}
+
+diagnosis:
+  - id: producer_process_missing
+    probe: process_alive
+    args: {component: "${producer}"}
+    expect: fail
+    confirm: true          # process gone -> confirmed even while the graph still lists it
+    on_unknown: continue   # no process pattern bound -> decide from the ROS graph
+    on_mismatch: {reject: true}
+  - id: producer_node_missing
+    probe: node_alive
+    args: {component: "${producer}"}
+    expect: fail
+    on_unknown: mismatch   # no ros_node binding -> this playbook cannot judge
+    on_mismatch: {reject: true}
+
+recovery:
+  # A1 minimum. Component restart_risk/preconditions raise this at runtime
+  # (e.g. sim_lift and arm_gateway are A2 even through this generic PB).
+  - type: action
+    primitive: restart_component
+    args: {component: "${producer}"}
+
+verify:
+  - {probe: node_alive, args: {component: "${producer}"}, within_sec: 15}
+  - {probe: health_item, args: {item: "${root_item}"}, within_sec: 20}
+
+policy:
+  retry_budget: 1
+  cooldown_sec: 60
+  chronic: {count: 3, window_sec: 3600, then: human_only}
+
+fault_injection:
+  sim: {injector: kill_process, args: {component: sim_lift}}
+
+operator_text:
+  en: "The node for ${producer} is missing (${root_item} unavailable). A configured start requires approval and fresh prerequisites; otherwise follow the manual request. Node presence alone is not full recovery."
+  ja: "${producer} のノードが見つかりません（${root_item} が更新停止）。対応済みの起動は承認と新しい前提条件の確認後に実行します。未対応の場合は手動依頼に従ってください。ノードの存在だけでは復旧完了になりません。"

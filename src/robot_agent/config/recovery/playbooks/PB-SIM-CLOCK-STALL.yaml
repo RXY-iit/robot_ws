@@ -1,0 +1,50 @@
+id: PB-SIM-CLOCK-STALL
+number: 21
+severity: blocking
+title: Simulation clock delivery requires investigation
+handling_class: unknown_investigation
+version: 1
+domain: H2
+layer: platform
+affects_capabilities: [manual_drive, auto_navigation, stationary_perception, lift, so101_arm]
+envs:
+  real:
+    status: n/a
+    note: Sim only.
+  sim:
+    status: supported
+    verified: false
+    note: Environment gate owns OFFLINE/PAUSED/STOPPED/UNKNOWN. Never infer a crash from missing clock alone. Legacy ID retained for logs.
+
+trigger:
+  any:
+    - {item: sim_clock, class_in: [FAULT, UNCERTAIN], for_sec: 2}
+
+diagnosis:
+  - id: isaac_process
+    probe: process_alive
+    args: {component: isaac}
+    informational: true   # running = paused/hung, not running = crashed
+  - id: clock_publisher
+    probe: topic_has_publisher
+    args: {topic: /clock}
+    informational: true
+
+recovery:
+  - type: operator_request
+    template: resume_or_restart_isaac
+    done_when:
+      - {probe: health_item, args: {item: sim_clock}}
+
+verify:
+  - {probe: health_item, args: {item: sim_clock}, within_sec: 30}
+
+policy:
+  retry_budget: 0
+
+fault_injection:
+  sim: {injector: sim_pause, args: {}}
+
+operator_text:
+  en: "Clock delivery is unavailable. Inspect the environment evidence and ROS bridge. Missing clock alone does not establish a simulator crash."
+  ja: "Clock 配信を確認できません。環境証拠と ROS bridge を確認してください。Clock の欠落だけではクラッシュと断定しません。"

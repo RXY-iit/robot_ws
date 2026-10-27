@@ -31,6 +31,11 @@ class SkillCall:
     reason: str = ""
     timeout_sec: float = 120.0
     requires_human_confirm: bool = False
+    catalog: dict[str, Any] = field(default_factory=dict)
+    kind: str = "skill"
+    task_id: str | None = None
+    owner: str | None = None
+    step_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -85,13 +90,21 @@ class MissionState:
     mode: str = "sim"
     mission_id: str = field(default_factory=lambda: uuid4().hex[:12])
     status: str = "RECEIVED"
+    outcome: str | None = None
     intent: MissionIntent | None = None
+    parsed_intent: dict[str, Any] | None = None
+    initial_plan: list[dict[str, Any]] = field(default_factory=list)
     parser_trace: dict[str, Any] = field(default_factory=dict)
+    agent_mode: str = "classic"
+    jev_trace: dict[str, Any] = field(default_factory=dict)
     plan: list[SkillCall] = field(default_factory=list)
+    tasks: list[dict[str, Any]] = field(default_factory=list)
     current_step_index: int = 0
     skill_results: list[dict[str, Any]] = field(default_factory=list)
     observations: list[dict[str, Any]] = field(default_factory=list)
     question_for_human: str | None = None
+    human_wait: dict[str, Any] | None = None
+    recovery_pause: dict[str, Any] | None = None
     final_message: str | None = None
     created_at: str = field(default_factory=utc_now)
     updated_at: str = field(default_factory=utc_now)

@@ -1,0 +1,67 @@
+id: PB-LIDAR-STALE
+number: 40
+severity: blocking
+title: LiDAR point cloud stopped
+version: 2
+handling_class: known_recovery
+domain: H4
+layer: ros_delivery
+affects_capabilities: [auto_navigation]
+envs:
+  real:
+    status: supported
+    verified: false
+    note: Missing driver is a software fault; stale data with a live driver needs investigation, not a cable-fault assertion.
+    diagnosis:
+      - id: driver_node
+        probe: node_alive
+        args: {component: livox}
+        on_mismatch: {handoff: PB-NODE-DOWN}
+      - id: unresolved_stream_failure
+        probe: health_item
+        args: {item: lidar_device_status}
+        on_mismatch: {escalate: R3}
+    recovery:
+      - type: action
+        primitive: restart_component
+        args: {component: livox}
+      - type: operator_request
+        template: check_livox_network
+  sim:
+    status: supported
+    verified: false
+    note: Missing Isaac publisher can be repaired by sensor setup. A present publisher with stale data is not a proven hardware fault.
+    supporting_evidence:
+      - {probe: sim_clock_advancing}
+
+trigger:
+  any:
+    - {item: lidar_device_status, class_in: [FAULT, UNCERTAIN], for_sec: 3}
+
+diagnosis:
+  - id: publisher_present
+    probe: topic_has_publisher
+    args: {component: "${producer}"}
+    expect: fail
+    on_unknown: mismatch
+    on_mismatch: {escalate: R3}
+
+recovery:
+  - type: operator_request
+    template: restart_sim_lidar
+    done_when:
+      - {probe: health_item, args: {item: lidar_device_status}}
+
+verify:
+  - {probe: health_item, args: {item: lidar_device_status}, within_sec: 15}
+
+policy:
+  retry_budget: 1
+  cooldown_sec: 60
+
+fault_injection:
+  sim: {injector: stall_topic, args: {topic: /livox/lidar_pc2_from_sim}}
+
+operator_text:
+  en: "LiDAR output is unavailable. Sim: the publisher is missing while the simulation advances; restore sensor setup. Data loss alone does not prove hardware damage."
+  ja: "LiDAR 出力がありません。sim: 時刻は進行していますが publisher がありません。センサ設定を復元してください。データ停止だけではハードウェア故障と断定しません。"

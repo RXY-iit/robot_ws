@@ -4,10 +4,16 @@ import os
 from typing import Any
 
 import yaml
-from ament_index_python.packages import get_package_share_directory
+
+try:
+    from ament_index_python.packages import get_package_share_directory
+except ModuleNotFoundError:  # Allows offline tests/tools without sourcing ROS.
+    get_package_share_directory = None
 
 
 def package_config_path(filename: str) -> str:
+    if get_package_share_directory is None:
+        return os.path.join(os.path.dirname(os.path.dirname(__file__)), "config", filename)
     return os.path.join(get_package_share_directory("robot_skills"), "config", filename)
 
 
@@ -16,6 +22,9 @@ class SkillRegistry:
         self.path = path or package_config_path("skill_registry.yaml")
         self.data = self._load(self.path)
         self.skills = {item["name"]: item for item in self.data.get("skills", [])}
+        if path is None:
+            from robot_skills.extensions import extend_definitions
+            extend_definitions(self.skills)
 
     @staticmethod
     def _load(path: str) -> dict[str, Any]:

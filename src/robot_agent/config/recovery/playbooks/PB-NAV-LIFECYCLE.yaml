@@ -1,0 +1,58 @@
+id: PB-NAV-LIFECYCLE
+number: 51
+severity: blocking
+title: Nav2 lifecycle node not active
+version: 1
+domain: H6
+layer: function
+affects_capabilities: [auto_navigation]
+envs:
+  real: {status: supported, verified: false}
+  sim:
+    status: supported
+    verified: false
+    preconditions: [mode_manual, cmd_vel_zero_fresh, base_stationary]
+    recovery:
+      - type: action
+        primitive: lifecycle_reset
+        risk: A2
+        args: {manager: /lifecycle_manager_navigation}
+
+trigger:
+  any:
+    - {item: lifecycle_controller_server, status_in: [DEGRADED], for_sec: 3}
+    - {item: lifecycle_planner_server, status_in: [DEGRADED], for_sec: 3}
+    - {item: lifecycle_bt_navigator, status_in: [DEGRADED], for_sec: 3}
+    - {item: lifecycle_local_costmap, status_in: [DEGRADED], for_sec: 3}
+
+supporting_evidence:
+  - {probe: fresh_observation, args: {item: "${root_item}"}}
+
+diagnosis:
+  - id: nav2_alive
+    probe: node_alive
+    args: {component: nav2}
+    on_mismatch: {handoff: PB-NODE-DOWN}
+
+recovery:
+  - type: action
+    primitive: lifecycle_reset
+    args: {manager: /lifecycle_manager_navigation}
+
+verify:
+  - {probe: node_alive, args: {component: nav2}, within_sec: 20}
+  - {probe: health_item, args: {item: lifecycle_controller_server}, within_sec: 20}
+  - {probe: health_item, args: {item: lifecycle_planner_server}, within_sec: 20}
+  - {probe: health_item, args: {item: lifecycle_bt_navigator}, within_sec: 20}
+  - {probe: health_item, args: {item: lifecycle_local_costmap}, within_sec: 20}
+
+policy:
+  retry_budget: 1
+  cooldown_sec: 60
+
+fault_injection:
+  sim: {injector: lifecycle_deactivate, args: {node: /controller_server}}
+
+operator_text:
+  en: "Nav2 node ${root_item} is not active. Resetting the Nav2 lifecycle."
+  ja: "Nav2 ノード ${root_item} が active ではありません。ライフサイクルをリセットします。"

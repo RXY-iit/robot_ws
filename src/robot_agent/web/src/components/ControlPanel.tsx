@@ -7,7 +7,9 @@ interface Props {
   cameraTiltAngle: number | null;
   liftPosition: number | null;
   liftState: string;
+  joySourceStatus: string;
   sendJoyState: (axes: number[], buttons: number[]) => void;
+  sendJoyControl: (action: "ACQUIRE_DASHBOARD" | "RELEASE_DASHBOARD") => void;
   onCancel: () => void;
 }
 
@@ -24,7 +26,9 @@ const AXIS_KEYS: Record<number, { pos: string; neg: string }> = {
   [JOY_AXIS.CAMERA_TILT]: { pos: "ArrowUp", neg: "ArrowDown" },
 };
 const PRESSABLE_KEYS = new Set(
-  Object.values(AXIS_KEYS).flatMap(({ pos, neg }) => [pos, neg]).concat(["Space", "ShiftLeft", "ShiftRight"]),
+  Object.values(AXIS_KEYS).flatMap(({ pos, neg }) => [pos, neg]).concat([
+    "Space", "ShiftLeft", "ShiftRight", "PageUp", "PageDown",
+  ]),
 );
 
 function isTypingTarget(el: EventTarget | null): boolean {
@@ -41,6 +45,10 @@ function useHoldHandlers(onDown: () => void, onUp: () => void) {
     onPointerCancel: onUp,
   };
 }
+
+const CAMERA_ENABLE_BUTTON = JOY_BUTTON.X;
+const BASE_ENABLE_BUTTON = JOY_BUTTON.L1;
+const BASE_AXIS_INDICES = [JOY_AXIS.FORWARD, JOY_AXIS.STRAFE, JOY_AXIS.YAW];
 
 interface ColorScheme {
   border: string;
@@ -61,6 +69,7 @@ function GamepadButton({
   onDown,
   onUp,
   colors,
+  disabled = false,
 }: {
   label: string;
   className?: string;
@@ -68,6 +77,7 @@ function GamepadButton({
   onDown: () => void;
   onUp: () => void;
   colors?: ColorScheme;
+  disabled?: boolean;
 }) {
   const handlers = useHoldHandlers(onDown, onUp);
   const style: CSSProperties = colors
@@ -79,7 +89,7 @@ function GamepadButton({
       ? { borderColor: "var(--accent)", background: "#eaf2ff" }
       : {};
   return (
-    <button className={`secondary ${className || ""}`} style={style} {...handlers}>
+    <button disabled={disabled} className={`secondary ${className || ""}`} style={style} {...handlers}>
       {label}
     </button>
   );
@@ -91,10 +101,23 @@ export function ControlPanel({
   cameraTiltAngle,
   liftPosition,
   liftState,
+  joySourceStatus,
   sendJoyState,
+  sendJoyControl,
   onCancel,
 }: Props) {
-  const joy = useJoyController(sendJoyState);
+  let source = "UNKNOWN";
+  let sourceReason = "Waiting for Joy source arbiter / Joy入力仲裁待ち";
+  let dashboardAcquired = false;
+  try {
+    const parsed = JSON.parse(joySourceStatus) as Record<string, unknown>;
+    source = String(parsed.source || "UNKNOWN");
+    sourceReason = String(parsed.reason || "");
+    dashboardAcquired = source === "DASHBOARD" && parsed.dashboard_acquired === true;
+  } catch {
+    sourceReason = joySourceStatus;
+  }
+  const joy = useJoyController(sendJoyState, dashboardAcquired);
   const pressedKeysRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
@@ -104,10 +127,24 @@ export function ControlPanel({
         const index = Number(indexStr);
         joy.setAxis(index, (pressed.has(keys.pos) ? 1 : 0) - (pressed.has(keys.neg) ? 1 : 0));
       }
-      joy.setButton(JOY_BUTTON.L1, pressed.has("Space"));
+      joy.setButton(
+        BASE_ENABLE_BUTTON,
+        pressed.has("Space") ||
+          pressed.has("KeyW") || pressed.has("KeyS") ||
+          pressed.has("KeyA") || pressed.has("KeyD") ||
+          pressed.has("KeyQ") || pressed.has("KeyE"),
+      );
       joy.setButton(JOY_BUTTON.R1, pressed.has("ShiftLeft") || pressed.has("ShiftRight"));
+      joy.setButton(
+        CAMERA_ENABLE_BUTTON,
+        pressed.has("ArrowLeft") || pressed.has("ArrowRight") ||
+          pressed.has("ArrowUp") || pressed.has("ArrowDown"),
+      );
+      joy.setAxis(JOY_AXIS.LIFT_UP_TRIGGER, pressed.has("PageUp") ? -1 : 0);
+      joy.setAxis(JOY_AXIS.LIFT_DOWN_TRIGGER, pressed.has("PageDown") ? -1 : 0);
     };
     const onKeyDown = (event: KeyboardEvent) => {
+      if (!dashboardAcquired) return;
       if (isTypingTarget(event.target) || !PRESSABLE_KEYS.has(event.code)) return;
       event.preventDefault();
       if (!pressedKeysRef.current.has(event.code)) {
@@ -127,7 +164,7 @@ export function ControlPanel({
       window.removeEventListener("keyup", onKeyUp);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [joy.setAxis, joy.setButton]);
+  }, [dashboardAcquired, joy.setAxis, joy.setButton]);
 
   const axisActive = (index: number, dir: 1 | -1) => Math.sign(joy.axes[index]) === dir;
   const buttonActive = (index: number) => joy.buttons[index] === 1;
@@ -138,9 +175,30 @@ export function ControlPanel({
       if (joy.axes[index] === value) joy.setAxis(index, 0);
     },
   });
+  const holdBaseAxis = (index: number, value: number) => ({
+    onDown: () => {
+      joy.setButton(BASE_ENABLE_BUTTON, true);
+      joy.setAxis(index, value);
+    },
+    onUp: () => {
+      if (joy.axes[index] === value) joy.setAxis(index, 0);
+      const baseStillActive = BASE_AXIS_INDICES.some((axisIndex) => joy.axes[axisIndex] !== 0);
+      if (!baseStillActive) joy.setButton(BASE_ENABLE_BUTTON, false);
+    },
+  });
   const holdButton = (index: number) => ({
     onDown: () => joy.setButton(index, true),
     onUp: () => joy.setButton(index, false),
+  });
+  const holdCameraAxis = (index: number, value: number) => ({
+    onDown: () => {
+      joy.setButton(CAMERA_ENABLE_BUTTON, true);
+      joy.setAxis(index, value);
+    },
+    onUp: () => {
+      if (joy.axes[index] === value) joy.setAxis(index, 0);
+      joy.setButton(CAMERA_ENABLE_BUTTON, false);
+    },
   });
 
   return (
@@ -150,10 +208,39 @@ export function ControlPanel({
         <span className="small">robot_mode: {robotMode}</span>
       </div>
       <div className="block-meta" style={{ marginBottom: 8 }}>
-        L1 (LB) を押しながらでないと底盘/カメラ/リフトは動きません（実機と同じ dead-man スイッチ）。
+        Dashboard buttons auto-hold their safety enables: W/A/S/D/Q/E drive the base, D-Pad moves the camera, LT/RT moves the lift.
+        物理Joyの場合だけ台車はL1、カメラはXを押してください。
         pan={cameraPanAngle != null ? cameraPanAngle.toFixed(1) : "?"}° tilt=
         {cameraTiltAngle != null ? cameraTiltAngle.toFixed(1) : "?"}° lift=
         {liftPosition != null ? liftPosition.toFixed(3) : "?"} ({liftState})
+      </div>
+
+      <div className="row" style={{ marginBottom: 10 }}>
+        <strong>Control source / 操作入力: {source}</strong>
+        <label className={`control-source-switch ${dashboardAcquired ? "active" : ""}`}>
+          <input
+            type="checkbox"
+            role="switch"
+            checked={dashboardAcquired}
+            onChange={(event) => {
+              if (event.target.checked) {
+                sendJoyControl("ACQUIRE_DASHBOARD");
+              } else {
+                joy.resetAll();
+                sendJoyControl("RELEASE_DASHBOARD");
+              }
+            }}
+          />
+          <span className="control-source-switch-track" aria-hidden="true"><span /></span>
+          <span>
+            {dashboardAcquired
+              ? "Dashboard control ON / Dashboard操作 ON"
+              : "Dashboard control OFF / Dashboard操作 OFF"}
+          </span>
+        </label>
+      </div>
+      <div className="block-meta" style={{ marginBottom: 8 }}>
+        {sourceReason}. Non-neutral physical input immediately pre-empts Dashboard control / 物理入力を検出するとDashboard操作権を直ちに解除します。
       </div>
 
       <div className="gamepad">
@@ -162,6 +249,7 @@ export function ControlPanel({
           label="LB / L1"
           active={buttonActive(JOY_BUTTON.L1)}
           colors={COLOR_ENABLE}
+          disabled={!dashboardAcquired}
           {...holdButton(JOY_BUTTON.L1)}
         />
         <GamepadButton
@@ -169,47 +257,65 @@ export function ControlPanel({
           label="RB / R1"
           active={buttonActive(JOY_BUTTON.R1)}
           colors={COLOR_TURBO}
+          disabled={!dashboardAcquired}
           {...holdButton(JOY_BUTTON.R1)}
+        />
+        <GamepadButton
+          className="gamepad-trigger"
+          label="LT / 上昇"
+          active={joy.axes[JOY_AXIS.LIFT_UP_TRIGGER] < -0.5}
+          colors={COLOR_ENABLE}
+          disabled={!dashboardAcquired}
+          {...holdAxis(JOY_AXIS.LIFT_UP_TRIGGER, -1)}
+        />
+        <GamepadButton
+          className="gamepad-trigger right"
+          label="RT / 下降"
+          active={joy.axes[JOY_AXIS.LIFT_DOWN_TRIGGER] < -0.5}
+          colors={COLOR_TURBO}
+          disabled={!dashboardAcquired}
+          {...holdAxis(JOY_AXIS.LIFT_DOWN_TRIGGER, -1)}
         />
 
         <div className="gamepad-dpad">
-          <GamepadButton className="round small up" label="▲" active={axisActive(JOY_AXIS.CAMERA_TILT, 1)} {...holdAxis(JOY_AXIS.CAMERA_TILT, 1)} />
-          <GamepadButton className="round small left" label="◀" active={axisActive(JOY_AXIS.CAMERA_PAN, -1)} {...holdAxis(JOY_AXIS.CAMERA_PAN, -1)} />
-          <GamepadButton className="round small right" label="▶" active={axisActive(JOY_AXIS.CAMERA_PAN, 1)} {...holdAxis(JOY_AXIS.CAMERA_PAN, 1)} />
-          <GamepadButton className="round small down" label="▼" active={axisActive(JOY_AXIS.CAMERA_TILT, -1)} {...holdAxis(JOY_AXIS.CAMERA_TILT, -1)} />
+          <GamepadButton disabled={!dashboardAcquired} className="round small up" label="▲" active={axisActive(JOY_AXIS.CAMERA_TILT, 1)} {...holdCameraAxis(JOY_AXIS.CAMERA_TILT, 1)} />
+          <GamepadButton disabled={!dashboardAcquired} className="round small left" label="◀" active={axisActive(JOY_AXIS.CAMERA_PAN, -1)} {...holdCameraAxis(JOY_AXIS.CAMERA_PAN, -1)} />
+          <GamepadButton disabled={!dashboardAcquired} className="round small right" label="▶" active={axisActive(JOY_AXIS.CAMERA_PAN, 1)} {...holdCameraAxis(JOY_AXIS.CAMERA_PAN, 1)} />
+          <GamepadButton disabled={!dashboardAcquired} className="round small down" label="▼" active={axisActive(JOY_AXIS.CAMERA_TILT, -1)} {...holdCameraAxis(JOY_AXIS.CAMERA_TILT, -1)} />
         </div>
 
         <div className="gamepad-center">
           <span>D-Pad: camera</span>
-          <span>M / Back / Start (未使用)</span>
+          <span>WASD/QE: base</span>
         </div>
 
         <div className="gamepad-face">
-          <GamepadButton className="round btn-y" label="Y" active={buttonActive(JOY_BUTTON.Y)} colors={COLOR_Y} {...holdButton(JOY_BUTTON.Y)} />
-          <GamepadButton className="round btn-x" label="X" active={buttonActive(JOY_BUTTON.X)} colors={COLOR_X} {...holdButton(JOY_BUTTON.X)} />
-          <GamepadButton className="round btn-b" label="B" active={buttonActive(JOY_BUTTON.B)} colors={COLOR_B} {...holdButton(JOY_BUTTON.B)} />
-          <GamepadButton className="round btn-a" label="A" active={buttonActive(JOY_BUTTON.A)} colors={COLOR_A} {...holdButton(JOY_BUTTON.A)} />
+          <GamepadButton disabled={!dashboardAcquired} className="round btn-y" label="Y" active={buttonActive(JOY_BUTTON.Y)} colors={COLOR_Y} {...holdButton(JOY_BUTTON.Y)} />
+          <GamepadButton disabled={!dashboardAcquired} className="round btn-x" label="X" active={buttonActive(JOY_BUTTON.X)} colors={COLOR_X} {...holdButton(JOY_BUTTON.X)} />
+          <GamepadButton disabled={!dashboardAcquired} className="round btn-b" label="B" active={buttonActive(JOY_BUTTON.B)} colors={COLOR_B} {...holdButton(JOY_BUTTON.B)} />
+          <GamepadButton disabled={!dashboardAcquired} className="round btn-a" label="A" active={buttonActive(JOY_BUTTON.A)} colors={COLOR_A} {...holdButton(JOY_BUTTON.A)} />
         </div>
 
         <div className="gamepad-stick left">
-          <GamepadButton className="round up" label="W" active={axisActive(JOY_AXIS.FORWARD, 1)} {...holdAxis(JOY_AXIS.FORWARD, 1)} />
-          <GamepadButton className="round left" label="A" active={axisActive(JOY_AXIS.STRAFE, 1)} {...holdAxis(JOY_AXIS.STRAFE, 1)} />
+          <GamepadButton disabled={!dashboardAcquired} className="round up" label="W" active={axisActive(JOY_AXIS.FORWARD, 1)} {...holdBaseAxis(JOY_AXIS.FORWARD, 1)} />
+          <GamepadButton disabled={!dashboardAcquired} className="round left" label="A" active={axisActive(JOY_AXIS.STRAFE, 1)} {...holdBaseAxis(JOY_AXIS.STRAFE, 1)} />
           <span className="center-label">L</span>
-          <GamepadButton className="round right" label="D" active={axisActive(JOY_AXIS.STRAFE, -1)} {...holdAxis(JOY_AXIS.STRAFE, -1)} />
-          <GamepadButton className="round down" label="S" active={axisActive(JOY_AXIS.FORWARD, -1)} {...holdAxis(JOY_AXIS.FORWARD, -1)} />
+          <GamepadButton disabled={!dashboardAcquired} className="round right" label="D" active={axisActive(JOY_AXIS.STRAFE, -1)} {...holdBaseAxis(JOY_AXIS.STRAFE, -1)} />
+          <GamepadButton disabled={!dashboardAcquired} className="round down" label="S" active={axisActive(JOY_AXIS.FORWARD, -1)} {...holdBaseAxis(JOY_AXIS.FORWARD, -1)} />
         </div>
 
         <div className="gamepad-stick right">
           <span className="center-label" style={{ gridColumn: 2, gridRow: 1 }}>R</span>
-          <GamepadButton className="round left" label="Q" active={axisActive(JOY_AXIS.YAW, 1)} {...holdAxis(JOY_AXIS.YAW, 1)} />
-          <GamepadButton className="round right" label="E" active={axisActive(JOY_AXIS.YAW, -1)} {...holdAxis(JOY_AXIS.YAW, -1)} />
+          <GamepadButton disabled={!dashboardAcquired} className="round left" label="Q" active={axisActive(JOY_AXIS.YAW, 1)} {...holdBaseAxis(JOY_AXIS.YAW, 1)} />
+          <GamepadButton disabled={!dashboardAcquired} className="round right" label="E" active={axisActive(JOY_AXIS.YAW, -1)} {...holdBaseAxis(JOY_AXIS.YAW, -1)} />
         </div>
       </div>
 
       <div className="block-meta" style={{ marginTop: 8 }}>
-        L スティック: 底盘移動 (WASD) ・ R スティック: 回転 (Q/E) ・ Y: L1+Y でリフト上昇
-        (⚠ cmd_vel_safety_node の ESTOP トグルも兼ねる、実機と同じ) ・ A: AUTO切替 / L1+A でリフト下降 ・
-        B: MANUAL切替+ナビキャンセル ・ X: 未使用
+        L スティック: 台車移動 (WASD、自動L1) ・ R スティック: 回転 (Q/E、自動L1) ・ LT: リフト上昇 (Page Up) ・
+        RT: リフト下降 (Page Down) ・ Y: safety ESTOP トグル ・ A: AUTO切替 ・
+        B: MANUAL切替+ナビキャンセル ・ D-Pad: カメラ操作 (自動X)。リフト位置はフィードバックなしの推定値で、
+        現在はソフトウェア可動範囲を強制しません。
       </div>
 
       <div className="row" style={{ marginTop: 12 }}>

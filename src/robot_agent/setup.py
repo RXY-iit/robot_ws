@@ -20,7 +20,11 @@ def _web_dist_data_files():
         dest = os.path.join('share', package_name, 'web') if rel_dir == '.' else os.path.join(
             'share', package_name, 'web', rel_dir
         )
-        entries.append((dest, [os.path.join(dirpath, name) for name in filenames]))
+        # Symlink builds retain old hashed filenames after Vite replaces dist.
+        files = [os.path.join(dirpath, name) for name in filenames
+                 if os.path.isfile(os.path.join(dirpath, name))]
+        if files:
+            entries.append((dest, files))
     return entries
 
 
@@ -32,6 +36,12 @@ setup(
         ('share/ament_index/resource_index/packages', ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
         (os.path.join('share', package_name, 'config'), glob('config/*.yaml')),
+        (os.path.join('share', package_name, 'config', 'recovery'), glob('config/recovery/*.yaml')),
+        (os.path.join('share', package_name, 'config', 'recovery', 'envs'), glob('config/recovery/envs/*.yaml')),
+        (
+            os.path.join('share', package_name, 'config', 'recovery', 'playbooks'),
+            glob('config/recovery/playbooks/*.yaml'),
+        ),
         (os.path.join('share', package_name, 'launch'), glob('launch/*.launch.py')),
         (os.path.join('share', package_name, 'foxglove'), glob('foxglove/*.json')),
         *_web_dist_data_files(),
@@ -46,6 +56,9 @@ setup(
         'console_scripts': [
             'agent_node = robot_agent.nodes.agent_node:main',
             'dashboard_node = robot_agent.nodes.dashboard_node:main',
+            'real_robot_monitor = robot_agent.nodes.real_robot_monitor:main',
+            'health_monitor = robot_agent.nodes.health_monitor:main',
+            'recovery_agent = robot_agent.nodes.recovery_agent:main',
             'agent_dry_run = robot_agent.nodes.agent_dry_run:main',
             'parser_dry_run_matrix = robot_agent.tools.parser_dry_run_matrix:main',
         ],

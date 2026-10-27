@@ -1,10 +1,48 @@
 from __future__ import annotations
 
+import pytest
+
 from robot_skills.executors.perception import PerceptionSkills
 
 
 def _planner() -> PerceptionSkills:
     return PerceptionSkills(node=None)
+
+
+def primitives():
+    common = {"confidence": .9, "bbox": [0, 0, 100, 100], "image_path": "observation_a.jpg", "matched_query": True}
+    return [{**common, "primitive": "color", "label": "color_region_red", "color": "red"},
+            {**common, "primitive": "object", "label": "suitcase"}]
+
+
+@pytest.mark.parametrize("index,changes", [
+    (1, {"label": "bus"}), (1, {"label": "truck", "matched_query": False}),
+    (1, {"image_path": "observation_b.jpg"}), (0, {"color": "blue"}),
+    (1, {"matched_query": False}), (1, {"approximate_match": True}),
+    (1, {"fallback_requires_human": True}), (1, {"image_path": None}),
+    (1, {"confidence": float("nan")}), (0, {"bbox": [0, 0, float("inf"), 100]}),
+    (1, {"bbox": [100, 0, 0, 100]}), (1, {"bbox": [200, 200, 300, 300]}),
+])
+def test_composite_rejects_unrelated_or_invalid_evidence(index, changes):
+    items = primitives()
+    items[index].update(changes)
+    assert _planner()._match_composite_detections(items, "red suitcase", .5) == []
+
+
+def test_composite_requires_same_image_and_retains_both_evidence_boxes():
+    items = primitives()
+    matches = _planner()._match_composite_detections(items, "red suitcase", .5)
+    assert len(matches) == 1
+    assert matches[0]["matched_query"]
+    assert matches[0]["object_image_path"] == matches[0]["color_image_path"] == items[0]["image_path"]
+    assert matches[0]["object_bbox"] == items[1]["bbox"]
+    assert matches[0]["color_bbox"] == items[0]["bbox"]
+
+
+def test_car_does_not_accept_bus_or_truck_as_exact_match():
+    planner = _planner()
+    assert planner._build_detection_plan("car")["yolo_classes"] == ["car"]
+    assert set(planner._build_detection_plan("vehicle")["yolo_classes"]) == {"car", "truck", "bus"}
 
 
 def test_open_vocab_composite_matches_real_model_class_without_preconfigured_object():
@@ -95,6 +133,7 @@ def test_plain_color_object_composite_does_not_call_ocr(monkeypatch):
     monkeypatch.setattr(planner, "_detect_color_regions", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(planner, "_run_yolo_provider", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(planner, "_match_composite_detections", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr("cv2.imread", lambda *_: object())
 
     detections = planner._run_detection_plan(  # noqa: SLF001 - planner regression
         "yolo11s_ocr",

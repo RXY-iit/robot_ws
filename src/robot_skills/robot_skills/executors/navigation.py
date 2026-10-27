@@ -8,8 +8,8 @@ import time
 from typing import Any
 
 import yaml
-from geometry_msgs.msg import Point, PoseStamped, Twist
-from nav_msgs.msg import OccupancyGrid
+from geometry_msgs.msg import Point, PolygonStamped, PoseStamped, Twist
+from nav_msgs.msg import OccupancyGrid, Odometry
 from nav2_msgs.action import ComputePathToPose, NavigateToPose
 from rclpy.action import ActionClient
 from rclpy.duration import Duration
@@ -22,6 +22,8 @@ from visualization_msgs.msg import Marker, MarkerArray
 from robot_skills import result_codes as codes
 from robot_skills.executors.base import dry_run_result, make_result, now
 from robot_skills.schemas import Pose2D, SkillContext, SkillResult
+from robot_skills.motion_clock import MotionClock
+from robot_skills.motion_evidence import MotionProgress, translation_error, swept_grid_clear
 
 
 ACTION_STATUS_SUCCEEDED = 4
@@ -29,6 +31,54 @@ ACTION_STATUS_CANCELED = 5
 ACTION_STATUS_ABORTED = 6
 PROGRESS_CHECK_INTERVAL_SEC = 2.0
 NARROW_PASSAGE_HEADING_TOLERANCE_RAD = math.radians(5.0)
+
+
+def update_recovered_pose_metrics(metrics, goal, final_pose, source):
+    """Keep pre-recovery evidence, but report final error against the original goal."""
+    keys = ("final_pose", "final_xy_error_m", "final_yaw_error_rad")
+    metrics.setdefault("pre_recovery_pose_evidence", {k: metrics.get(k) for k in keys})
+    metrics["final_pose_source"] = source
+    metrics["final_pose"] = final_pose
+    metrics["final_xy_error_m"] = None
+    metrics["final_yaw_error_rad"] = None
+    if final_pose is not None:
+        metrics["final_xy_error_m"] = math.hypot(final_pose["x"] - goal.x, final_pose["y"] - goal.y)
+        delta = final_pose["yaw"] - goal.yaw
+        metrics["final_yaw_error_rad"] = abs(math.atan2(math.sin(delta), math.cos(delta)))
+
+
+def near_goal_yaw_error(current, goal, xy_tolerance):
+    # None delegates tolerance to Nav2. Without its configured radius we cannot
+    # classify a pose as near-goal, including when dynamic_timeout is disabled.
+    if xy_tolerance is None:
+        return None
+    if current is None or math.hypot(current["x"] - goal.x, current["y"] - goal.y) > xy_tolerance:
+        return None
+    delta = current["yaw"] - goal.yaw
+    return abs(math.atan2(math.sin(delta), math.cos(delta)))
+
+
+def yaw_progress_reference(previous_best, current_error):
+    """Require cumulative improvement, not arbitrary rotation or oscillation."""
+    if current_error is None:
+        return previous_best, False
+    if previous_best is None:
+        return current_error, False
+    if previous_best - current_error >= 0.05:
+        return current_error, True
+    return previous_best, False
+
+
+def motion_failure_code(reason):
+    if reason == "navigation_localization_unhealthy":
+        return codes.FAILED_LOCALIZATION
+    if str(reason).startswith("micro_adjust_"):
+        return codes.FAILED_SAFETY
+    if reason == "relative_motion_off_path":
+        return codes.FAILED_NAVIGATION
+    if reason == "wheel_odom_stale":
+        return codes.FAILED_PRECHECK
+    return codes.FAILED_TIMEOUT
 
 
 def pose_to_stamped(node, pose: Pose2D) -> PoseStamped:
@@ -44,8 +94,13 @@ def pose_to_stamped(node, pose: Pose2D) -> PoseStamped:
 
 
 class NavigationSkills:
-    def __init__(self, node):
+    def __init__(self, node, localization_metrics=None):
         self.node = node
+        self._localization_metrics = localization_metrics
+        self._latest_footprint = None
+        self._latest_footprint_time = 0.0
+        self._footprint_sub = node.create_subscription(
+            PolygonStamped, "/local_costmap/published_footprint", self._footprint_cb, 1)
         self._action_client = ActionClient(node, NavigateToPose, "navigate_to_pose")
         self._compute_path_client = ActionClient(node, ComputePathToPose, "compute_path_to_pose")
         self._cmd_vel_pub = node.create_publisher(Twist, "/cmd_vel_raw", 10)
@@ -63,6 +118,16 @@ class NavigationSkills:
             self._local_costmap_cb,
             10,
         )
+        self._latest_wheel_odom_pose: dict[str, float] | None = None
+        self._latest_wheel_odom_time = 0.0
+        self._latest_wheel_odom_stamp = None
+        self._wheel_odom_lock = threading.Lock()
+        self._wheel_odom_sub = node.create_subscription(
+            Odometry,
+            "/wheel_odom",
+            self._wheel_odom_cb,
+            10,
+        )
         marker_qos = QoSProfile(depth=1)
         marker_qos.reliability = ReliabilityPolicy.RELIABLE
         marker_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
@@ -78,13 +143,22 @@ class NavigationSkills:
         )
         self._navigation_progress_pub = node.create_publisher(String, "/agent/navigation_progress", 10)
         self._navigation_route_state_pub = node.create_publisher(String, "/agent/navigation_route_state", 10)
+        self._motion_policy_profile_pub = node.create_publisher(
+            String,
+            "/motion_policy/profile",
+            10,
+        )
         self._active_goal_handle = None
+        self._pending_nav_goals = 0
+        self._nav_result_futures = []
+        self.stopping = False
         self._tf_buffer = Buffer()
         self._tf_listener = TransformListener(self._tf_buffer, node)
         self._navigation_annotations = self._load_navigation_annotations()
         self._nav2_map = self._load_nav2_map()
         self._current_route_path_points: list[dict[str, float]] | None = None
         self._last_global_plan_error: dict[str, Any] | None = None
+        self._direct_motion_cancel = False
 
     def goto_pose(
         self,
@@ -102,6 +176,8 @@ class NavigationSkills:
         alternate_goal_attempts: int = 1,
     ) -> SkillResult:
         started = now()
+        if getattr(context, "recovery_check", lambda: False)():
+            return make_result("goto_pose", False, codes.CANCELLED, "Navigation held by Recovery Agent.", started)
         started_monotonic = time.monotonic()
         task_xy_tolerance = float(xy_goal_tolerance_m) if xy_goal_tolerance_m is not None else None
         task_yaw_tolerance = float(yaw_goal_tolerance_rad) if yaw_goal_tolerance_rad is not None else None
@@ -174,11 +250,30 @@ class NavigationSkills:
                 {"pose": pose.to_dict()},
             )
 
+        if not self._navigation_localization_ok():
+            return make_result("goto_pose", False, codes.FAILED_LOCALIZATION,
+                               "Navigation requires fresh accepted localization evidence.", started)
+
         start_pose = self._current_map_pose()
+        reviewed_path = None
+        if context.navigation_review is not None:
+            if start_pose is None:
+                return make_result("goto_pose", False, codes.FAILED_LOCALIZATION,
+                                   "Cannot review route without a current map pose.", started)
+            reviewed_path = self._compute_global_path(start_pose, pose)
+            if not reviewed_path:
+                return make_result("goto_pose", False, codes.FAILED_NAVIGATION,
+                                   "No global path available for route review.", started,
+                                   {"global_plan_error": self._last_global_plan_error})
+            annotation = self._select_navigation_annotation(start_pose, pose, reviewed_path) if apply_navigation_annotations else None
+            blocked = self._review_before_motion(context, pose, start_pose, reviewed_path, annotation,
+                                                 tolerance_profile, started)
+            if blocked is not None:
+                return blocked
         if start_pose is not None:
             start_xy_distance = math.hypot(start_pose["x"] - pose.x, start_pose["y"] - pose.y)
             if apply_navigation_annotations:
-                global_plan_points = self._compute_global_path(start_pose, pose)
+                global_plan_points = reviewed_path if reviewed_path is not None else self._compute_global_path(start_pose, pose)
                 global_plan_error = self._last_global_plan_error
                 if global_plan_points is None:
                     if publish_goal_markers:
@@ -494,20 +589,29 @@ class NavigationSkills:
                             ),
                             active_kind="waypoint",
                         )
-                    navigation_annotation_result = self.goto_pose(
-                        context,
+                    traversal_policy = navigation_annotation_selected.get("traversal_policy") or {}
+                    self._publish_narrow_motion_profile(
+                        navigation_annotation_selected,
                         waypoint_goal,
-                        timeout_sec=waypoint_timeout,
-                        xy_goal_tolerance_m=waypoint_xy_tolerance,
-                        yaw_goal_tolerance_rad=waypoint_yaw_tolerance,
-                        tolerance_profile="annotation_waypoint",
-                        dynamic_timeout=True,
-                        max_timeout_sec=max(30.0, waypoint_timeout),
-                        recovery_policy=recovery_policy,
-                        apply_navigation_annotations=False,
-                        publish_goal_markers=False,
-                        alternate_goal_attempts=0,
+                        traversal_policy,
                     )
+                    try:
+                        navigation_annotation_result = self.goto_pose(
+                            context,
+                            waypoint_goal,
+                            timeout_sec=waypoint_timeout,
+                            xy_goal_tolerance_m=waypoint_xy_tolerance,
+                            yaw_goal_tolerance_rad=waypoint_yaw_tolerance,
+                            tolerance_profile="annotation_waypoint",
+                            dynamic_timeout=True,
+                            max_timeout_sec=max(30.0, waypoint_timeout),
+                            recovery_policy=recovery_policy,
+                            apply_navigation_annotations=False,
+                            publish_goal_markers=False,
+                            alternate_goal_attempts=0,
+                        )
+                    finally:
+                        self._clear_narrow_motion_profile()
                     if not navigation_annotation_result.success:
                         navigation_annotation_selected["waypoint_failure_action"] = "fail_before_final_goal"
                         navigation_annotation_selected["waypoint_failure_code"] = navigation_annotation_result.code
@@ -573,7 +677,7 @@ class NavigationSkills:
                         active_kind="final_goal",
                     )
             elif publish_goal_markers:
-                self._current_route_path_points = self._compute_global_path(start_pose, pose)
+                self._current_route_path_points = reviewed_path if reviewed_path is not None else self._compute_global_path(start_pose, pose)
                 global_plan_error = self._last_global_plan_error
                 if self._current_route_path_points is None:
                     self._publish_navigation_progress(
@@ -709,6 +813,8 @@ class NavigationSkills:
             },
         )
 
+        if getattr(context, "recovery_check", lambda: False)():
+            return make_result("goto_pose", False, codes.CANCELLED, "Navigation held before Nav2 dispatch by Recovery Agent.", started)
         goal = NavigateToPose.Goal()
         goal.pose = pose_to_stamped(self.node, pose)
         send_done = threading.Event()
@@ -728,15 +834,28 @@ class NavigationSkills:
                 self._active_goal_handle = goal_handle
                 holder["accepted"] = bool(goal_handle.accepted)
                 if goal_handle.accepted:
-                    goal_handle.get_result_async().add_done_callback(on_result)
+                    result_future = goal_handle.get_result_async()
+                    self._nav_result_futures.append(result_future)
+                    result_future.add_done_callback(on_result)
+                    if (self.stopping or getattr(context, "cancel_check", lambda: False)()
+                            or getattr(context, "recovery_check", lambda: False)()):
+                        goal_handle.cancel_goal_async()
                 else:
                     result_done.set()
             except Exception as exc:
                 holder["error"] = repr(exc)
                 result_done.set()
+            finally:
+                self._pending_nav_goals -= 1
             send_done.set()
 
-        self._action_client.send_goal_async(goal).add_done_callback(on_goal)
+        self._nav_result_futures = [f for f in self._nav_result_futures if not f.done()]
+        self._pending_nav_goals += 1
+        try:
+            self._action_client.send_goal_async(goal).add_done_callback(on_goal)
+        except Exception:
+            self._pending_nav_goals -= 1
+            raise
 
         if not send_done.wait(timeout=5.0):
             if publish_goal_markers:
@@ -754,12 +873,16 @@ class NavigationSkills:
                 self._clear_navigation_route_markers()
             return make_result("goto_pose", False, codes.FAILED_NAVIGATION, "Nav2 goal was rejected.", started)
 
-        hard_deadline = None if dynamic_timeout else time.monotonic() + effective_timeout
+        hard_deadline = time.monotonic() + (max_timeout_sec if dynamic_timeout else effective_timeout)
         progress_watchdog_sec = effective_timeout
         last_progress_check_time = time.monotonic()
         last_progress_reset_time = last_progress_check_time
         last_progress_distance = start_xy_distance
         last_progress_pose = start_pose
+        visited_progress_cells = set()
+        if start_pose:
+            visited_progress_cells.add((round(start_pose["x"] / .1), round(start_pose["y"] / .1)))
+        best_goal_yaw_error = near_goal_yaw_error(start_pose, pose, task_xy_tolerance)
         best_distance = start_xy_distance
         progress_reset_count = 0
         last_progress_publish_time = 0.0
@@ -769,6 +892,16 @@ class NavigationSkills:
             "goal_change": {"attempted": False},
         }
         while not result_done.wait(timeout=0.2):
+            if getattr(context, "recovery_check", lambda: False)():
+                self.cancel_navigation(context)
+                return make_result("goto_pose", False, codes.CANCELLED, "Navigation paused by Recovery Agent.", started,
+                                   {"recovery_pause": True})
+            if not self._navigation_localization_ok():
+                self.cancel_navigation(context)
+                self._publish_stop()
+                return make_result("goto_pose", False, codes.FAILED_LOCALIZATION,
+                                   "Navigation stopped: accepted localization evidence is unhealthy.", started,
+                                   {"pose": pose.to_dict(), "stop_reason": "localization_unhealthy"})
             if self._task_goal_reached(pose, task_xy_tolerance, task_yaw_tolerance):
                 self.cancel_navigation(context)
                 final_pose = self._current_map_pose()
@@ -857,6 +990,16 @@ class NavigationSkills:
                 current = self._current_map_pose()
                 if current is not None:
                     current_distance = math.hypot(current["x"] - pose.x, current["y"] - pose.y)
+                    # Final heading alignment is progress even with no XY movement.
+                    # Update before staged recovery can relax a still-progressing goal.
+                    best_goal_yaw_error, heading_improved = yaw_progress_reference(
+                        best_goal_yaw_error, near_goal_yaw_error(current, pose, task_xy_tolerance)
+                    )
+                    if heading_improved:
+                        last_progress_reset_time = now_monotonic
+                        progress_reset_count += 1
+                        timeout_policy = "progress_watchdog"
+                        staged_recovery["heading_progress_resets"] = staged_recovery.get("heading_progress_resets", 0) + 1
                     staged_elapsed = now_monotonic - last_progress_reset_time
                     staged_recovery["stalled_sec"] = staged_elapsed
                     staged_recovery["micro_adjust_threshold_sec"] = progress_watchdog_sec / 3.0
@@ -1054,12 +1197,11 @@ class NavigationSkills:
                             current["x"] - last_progress_pose["x"],
                             current["y"] - last_progress_pose["y"],
                         )
-                    distance_improved = (
-                        last_progress_distance is not None
-                        and last_progress_distance - current_distance >= 0.10
-                    )
-                    robot_moved = pose_delta is not None and pose_delta >= 0.08
+                    distance_improved = best_distance is not None and best_distance - current_distance >= 0.10
+                    cell = (round(current["x"] / .1), round(current["y"] / .1))
+                    robot_moved = pose_delta is not None and pose_delta >= 0.08 and cell not in visited_progress_cells
                     if distance_improved or robot_moved:
+                        visited_progress_cells.add(cell)
                         last_progress_reset_time = now_monotonic
                         last_progress_distance = current_distance
                         last_progress_pose = current
@@ -1071,12 +1213,15 @@ class NavigationSkills:
                         staged_recovery["goal_change"]["trigger_stalled_sec"] = now_monotonic - last_progress_reset_time
                         timeout_policy = "progress_watchdog_stalled"
                         break
-                    if best_distance is None or current_distance < best_distance:
-                        best_distance = current_distance
                 last_progress_check_time = now_monotonic
             if hard_deadline is not None and time.monotonic() >= hard_deadline:
                 break
 
+        if not self._navigation_localization_ok():
+            self.cancel_navigation(context)
+            self._publish_stop()
+            return make_result("goto_pose", False, codes.FAILED_LOCALIZATION,
+                               "Localization became unhealthy before navigation completion.", started)
         if not result_done.is_set():
             self.cancel_navigation(context)
             final_pose = self._current_map_pose()
@@ -1175,7 +1320,8 @@ class NavigationSkills:
                         task_yaw_tolerance,
                     ):
                         metrics["nav2_status"] = "timeout_recovered_by_near_goal_micro_adjust"
-                        metrics["final_pose"] = self._current_map_pose() or final_pose
+                        update_recovered_pose_metrics(
+                            metrics, pose, self._current_map_pose(), "near_goal_micro_adjust")
                         if publish_goal_markers:
                             self._publish_navigation_route_state(
                                 "near_goal_micro_adjust_success",
@@ -1286,6 +1432,20 @@ class NavigationSkills:
                         )
                         metrics["alternate_goal_result"] = alternate_result.to_dict()
                         if alternate_result.success:
+                            update_recovered_pose_metrics(
+                                metrics, pose, alternate_result.metrics.get("final_pose"),
+                                "alternate_goal_result")
+                            # A local escape is an intermediate point, not the requested destination.
+                            if metrics.get("final_pose") is None or not self._pose_within_task_tolerance(
+                                metrics.get("final_pose"), pose, task_xy_tolerance, task_yaw_tolerance
+                            ):
+                                metrics["original_goal_reached"] = False
+                                return make_result(
+                                    "goto_pose", False, codes.FAILED_NAVIGATION,
+                                    "Local alternate goal reached, but the original navigation goal remains unreached.",
+                                    started, metrics,
+                                )
+                            metrics["original_goal_reached"] = True
                             if publish_goal_markers:
                                 self._publish_navigation_route_state(
                                     "alternate_goal_success",
@@ -1389,6 +1549,9 @@ class NavigationSkills:
                             )
                             metrics["obstacle_escape_final_retry_result"] = retry_result.to_dict()
                             if retry_result.success:
+                                update_recovered_pose_metrics(
+                                    metrics, pose, retry_result.metrics.get("final_pose"),
+                                    "obstacle_escape_final_retry_result")
                                 if publish_goal_markers:
                                     self._publish_navigation_route_state(
                                         "obstacle_escape_final_success",
@@ -1560,6 +1723,9 @@ class NavigationSkills:
                     )
                     metrics["post_abort_escape_final_retry_result"] = retry_result.to_dict()
                     if retry_result.success:
+                        update_recovered_pose_metrics(
+                            metrics, pose, retry_result.metrics.get("final_pose"),
+                            "post_abort_escape_final_retry_result")
                         if publish_goal_markers:
                             self._publish_navigation_route_state(
                                 "post_abort_escape_final_success",
@@ -1768,7 +1934,10 @@ class NavigationSkills:
         except Exception as exc:
             self.node.get_logger().warn(f"Failed to publish navigation route state: {exc!r}")
         self._clear_navigation_goal_markers()
-        self._publish_navigation_route_markers(payload)
+        if phase in {"reached", "failed", "canceled", "task_tolerance_reached", "relaxed_tolerance_success"}:
+            self._clear_navigation_route_markers()
+        else:
+            self._publish_navigation_route_markers(payload)
 
     def _publish_navigation_route_markers(self, route_state: dict[str, Any]) -> None:
         markers = MarkerArray()
@@ -1776,6 +1945,7 @@ class NavigationSkills:
         clear.action = Marker.DELETEALL
         markers.markers.append(clear)
         marker_id = 0
+        marker_id = self._append_annotation_context_markers(markers, marker_id, route_state)
         marker_id = self._append_route_sequence_marker(markers, marker_id, route_state)
         marker_id = self._append_route_path_marker(markers, marker_id, route_state.get("path_points") or [])
         for item in route_state.get("items", []):
@@ -1797,7 +1967,129 @@ class NavigationSkills:
                 item.get("xy_tolerance_m"),
                 namespace_prefix="navigation_route",
             )
+        self._append_route_status_marker(markers, marker_id, route_state)
         self._route_marker_pub.publish(markers)
+
+    def _append_annotation_context_markers(
+        self,
+        markers: MarkerArray,
+        marker_id: int,
+        route_state: dict[str, Any],
+    ) -> int:
+        selected_passages = {
+            str(item.get("passage_id"))
+            for item in route_state.get("items", [])
+            if item.get("passage_id")
+        }
+        stamp = self.node.get_clock().now().to_msg()
+        for passage in self._navigation_annotations.get("narrow_passages", []):
+            passage_id = str(passage.get("id") or "narrow_passage")
+            selected = passage_id in selected_passages
+            enabled = bool(passage.get("enabled", True))
+            rgba = (
+                (1.0, 0.45, 0.02, 0.95)
+                if selected
+                else ((0.05, 0.75, 0.75, 0.58) if enabled else (0.45, 0.45, 0.45, 0.32))
+            )
+
+            centerline = passage.get("centerline") or []
+            if len(centerline) >= 2:
+                line = Marker()
+                line.header.frame_id = "map"
+                line.header.stamp = stamp
+                line.ns = "navigation_annotation_centerline"
+                line.id = marker_id
+                marker_id += 1
+                line.type = Marker.LINE_STRIP
+                line.action = Marker.ADD
+                line.pose.orientation.w = 1.0
+                line.scale.x = 0.075 if selected else 0.035
+                line.color.r, line.color.g, line.color.b, line.color.a = rgba
+                for item in centerline:
+                    point = Point()
+                    point.x = float(item.get("x", 0.0))
+                    point.y = float(item.get("y", 0.0))
+                    point.z = 0.065
+                    line.points.append(point)
+                markers.markers.append(line)
+
+                middle = centerline[len(centerline) // 2]
+                label = Marker()
+                label.header.frame_id = "map"
+                label.header.stamp = stamp
+                label.ns = "navigation_annotation_label"
+                label.id = marker_id
+                marker_id += 1
+                label.type = Marker.TEXT_VIEW_FACING
+                label.action = Marker.ADD
+                label.pose.position.x = float(middle.get("x", 0.0))
+                label.pose.position.y = float(middle.get("y", 0.0))
+                label.pose.position.z = 0.32
+                label.pose.orientation.w = 1.0
+                label.scale.z = 0.15
+                label.color.r, label.color.g, label.color.b, label.color.a = rgba
+                state = "SELECTED" if selected else ("enabled" if enabled else "disabled")
+                label.text = f"{passage_id} [{state}]"
+                markers.markers.append(label)
+
+            for zone in passage.get("alignment_zones", []):
+                polygon = zone.get("polygon") or []
+                if len(polygon) < 3:
+                    continue
+                boundary = Marker()
+                boundary.header.frame_id = "map"
+                boundary.header.stamp = stamp
+                boundary.ns = "navigation_annotation_alignment_zone"
+                boundary.id = marker_id
+                marker_id += 1
+                boundary.type = Marker.LINE_STRIP
+                boundary.action = Marker.ADD
+                boundary.pose.orientation.w = 1.0
+                boundary.scale.x = 0.025
+                boundary.color.r, boundary.color.g, boundary.color.b, boundary.color.a = rgba
+                for item in list(polygon) + [polygon[0]]:
+                    point = Point()
+                    point.x = float(item.get("x", 0.0))
+                    point.y = float(item.get("y", 0.0))
+                    point.z = 0.05
+                    boundary.points.append(point)
+                markers.markers.append(boundary)
+        return marker_id
+
+    def _append_route_status_marker(
+        self,
+        markers: MarkerArray,
+        marker_id: int,
+        route_state: dict[str, Any],
+    ) -> int:
+        items = route_state.get("items", [])
+        anchor = next(
+            (item.get("pose") for item in reversed(items) if isinstance(item.get("pose"), dict)),
+            route_state.get("current_pose"),
+        )
+        if not isinstance(anchor, dict):
+            return marker_id
+        passage_ids = [str(item.get("passage_id")) for item in items if item.get("passage_id")]
+        marker = Marker()
+        marker.header.frame_id = str(anchor.get("frame_id") or "map")
+        marker.header.stamp = self.node.get_clock().now().to_msg()
+        marker.ns = "navigation_route_status"
+        marker.id = marker_id
+        marker.type = Marker.TEXT_VIEW_FACING
+        marker.action = Marker.ADD
+        marker.pose.position.x = float(anchor.get("x", 0.0))
+        marker.pose.position.y = float(anchor.get("y", 0.0))
+        marker.pose.position.z = 0.72
+        marker.pose.orientation.w = 1.0
+        marker.scale.z = 0.19
+        if passage_ids:
+            marker.color.r, marker.color.g, marker.color.b, marker.color.a = (1.0, 0.45, 0.02, 0.98)
+            marker.text = f"NARROW ROUTE: {passage_ids[0]}"
+        else:
+            marker.color.r, marker.color.g, marker.color.b, marker.color.a = (0.2, 0.7, 1.0, 0.92)
+            marker.text = "DIRECT ROUTE: no narrow passage selected"
+        markers.markers.append(marker)
+        return marker_id + 1
 
     def _append_route_sequence_marker(
         self,
@@ -2440,6 +2732,34 @@ class NavigationSkills:
             "footprint_polygon": [{"x": px, "y": py} for px, py in poly],
         }
 
+    def _review_before_motion(self, context, pose, start_pose, path, annotation, role, started):
+        cancelled = getattr(context, "cancel_check", lambda: False)
+        if cancelled():
+            return make_result("goto_pose", False, codes.CANCELLED, "Cancelled before route review.", started)
+        try:
+            decision = context.navigation_review({"path": path, "target_pose": pose.to_dict(),
+                                                  "annotation": annotation, "execution_role": role})
+        except Exception as exc:
+            decision = {"decision": "ask_human", "reason": f"Route review failed: {exc}"}
+        # Model latency must not let a cancellation or changed localization dispatch a goal.
+        if cancelled():
+            return make_result("goto_pose", False, codes.CANCELLED, "Cancelled during route review.", started)
+        if not isinstance(decision, dict) or decision.get("decision") != "execute":
+            if not isinstance(decision, dict):
+                decision = {"decision": "ask_human", "reason": "Invalid route review response"}
+            return make_result("goto_pose", False, codes.NEEDS_HUMAN,
+                               "Navigation paused before dispatch: " + str(decision.get("reason") or "route review requires clarification"),
+                               started, {"navigation_review": decision})
+        if not self._navigation_localization_ok():
+            return make_result("goto_pose", False, codes.FAILED_LOCALIZATION,
+                               "Localization changed during route review.", started)
+        current = self._current_map_pose()
+        if (current is None or math.hypot(current["x"] - start_pose["x"], current["y"] - start_pose["y"]) > 0.15
+                or abs(self._normalize_angle(current.get("yaw", 0.0) - start_pose.get("yaw", 0.0))) > 0.15):
+            return make_result("goto_pose", False, codes.FAILED_PRECHECK,
+                               "Robot pose changed during route review; replan before moving.", started)
+        return None
+
     def _compute_global_path(
         self,
         start_pose: dict[str, float],
@@ -2663,6 +2983,12 @@ class NavigationSkills:
                         waypoint_policy.get("yaw_goal_tolerance_rad", math.radians(20.0))
                     ),
                     "waypoint_timeout_sec": float(waypoint_policy.get("timeout_sec", 24.0)),
+                    "traversal_policy": dict(passage.get("traversal_policy") or {}),
+                    # Orient the centerline in the actual traversal direction so
+                    # signed cross-track error has the same meaning both ways.
+                    "centerline": list(passage.get("centerline") or [])
+                    if direction == "entry_to_exit"
+                    else list(reversed(passage.get("centerline") or [])),
                 }
                 if alignment is not None:
                     best.update(alignment)
@@ -3225,7 +3551,52 @@ class NavigationSkills:
                 "xy_goal_tolerance_m": xy_goal_tolerance_m,
                 "yaw_goal_tolerance_rad": yaw_goal_tolerance_rad,
             },
+            motion_guard=lambda: self._micro_adjust_guard(base_x * scale, base_y * scale),
         )
+
+    def _footprint_cb(self, msg):
+        self._latest_footprint = msg
+        self._latest_footprint_time = time.monotonic()
+
+    def _navigation_localization_ok(self):
+        callback = self._localization_metrics
+        return callback is not None and callback().get("localization_healthy") is True
+
+    def _micro_adjust_guard(self, dx, dy, rotating=False):
+        if not self._navigation_localization_ok():
+            return "navigation_localization_unhealthy"
+        grid, footprint = self._latest_local_costmap, self._latest_footprint
+        wall = time.monotonic()
+        if grid is None or footprint is None or wall - min(self._latest_local_costmap_time, self._latest_footprint_time) > 2:
+            return "micro_adjust_collision_evidence_stale"
+        source_now = self.node.get_clock().now().nanoseconds / 1e9
+        for msg in (grid, footprint):
+            age = source_now - (msg.header.stamp.sec + msg.header.stamp.nanosec / 1e9)
+            if not -0.1 <= age <= 2:
+                return "micro_adjust_collision_stamp_stale"
+        frame = grid.header.frame_id
+        if frame != footprint.header.frame_id:
+            return "micro_adjust_footprint_frame_mismatch"
+        try:
+            tf = self._tf_buffer.lookup_transform(frame, "base_footprint", Time(), timeout=Duration(seconds=0.05))
+        except TransformException:
+            return "micro_adjust_tf_unavailable"
+        tf_age = source_now - (tf.header.stamp.sec + tf.header.stamp.nanosec / 1e9)
+        if not -0.1 <= tf_age <= 2:
+            return "micro_adjust_tf_stale"
+        yaw = self._yaw_from_quaternion(tf.transform.rotation)
+        delta = (math.cos(yaw) * dx - math.sin(yaw) * dy, math.sin(yaw) * dx + math.cos(yaw) * dy)
+        origin = grid.info.origin
+        polygon = [(p.x, p.y) for p in footprint.polygon.points]
+        if rotating and polygon:
+            cx, cy = tf.transform.translation.x, tf.transform.translation.y
+            radius = max(math.hypot(x - cx, y - cy) for x, y in polygon)
+            # Enclose every orientation, including corners between samples.
+            polygon = [(cx + sx * radius, cy + sy * radius) for sx, sy in ((-1, -1), (-1, 1), (1, 1), (1, -1))]
+        clear = swept_grid_clear(grid.data, grid.info.width, grid.info.height, grid.info.resolution,
+                                 (origin.position.x, origin.position.y, self._yaw_from_quaternion(origin.orientation)),
+                                 polygon, delta)
+        return None if clear else "micro_adjust_swept_footprint_blocked"
 
     def _sample_trusted_front_open_area_goal(
         self,
@@ -3383,14 +3754,6 @@ class NavigationSkills:
                 {"distance_m": distance},
             )
         current = self._current_map_pose()
-        if current is None:
-            return make_result(
-                "move_relative",
-                False,
-                codes.FAILED_LOCALIZATION,
-                "Current map pose is unavailable; cannot execute relative motion.",
-                started,
-            )
         local_dx = 0.0
         local_dy = 0.0
         if direction == "forward":
@@ -3442,14 +3805,6 @@ class NavigationSkills:
                 {"dx_m": dx, "dy_m": dy, "distance_m": distance},
             )
         current = self._current_map_pose()
-        if current is None:
-            return make_result(
-                "move_relative_xy",
-                False,
-                codes.FAILED_LOCALIZATION,
-                "Current map pose is unavailable; cannot execute relative xy motion.",
-                started,
-            )
         if context.mode == "dry_run":
             return dry_run_result(
                 "move_relative_xy",
@@ -3489,14 +3844,6 @@ class NavigationSkills:
                 {"yaw_deg": yaw_deg},
             )
         current = self._current_map_pose()
-        if current is None:
-            return make_result(
-                "rotate_relative",
-                False,
-                codes.FAILED_LOCALIZATION,
-                "Current map pose is unavailable; cannot execute relative rotation.",
-                started,
-            )
         if context.mode == "dry_run":
             return dry_run_result(
                 "rotate_relative",
@@ -3523,46 +3870,83 @@ class NavigationSkills:
         dy_m: float,
         timeout_sec: float,
         metrics: dict[str, Any],
+        motion_guard=None,
     ) -> SkillResult:
         started = now()
         start_pose = self._current_map_pose()
+        start_wheel_pose = self._current_wheel_odom_pose()
         distance = math.hypot(dx_m, dy_m)
-        if start_pose is None:
+        if start_wheel_pose is None:
             return make_result(
                 skill_name,
                 False,
                 codes.FAILED_LOCALIZATION,
-                "Current map pose is unavailable; cannot execute direct relative motion.",
+                "Fresh wheel odom is unavailable; map corrections cannot measure relative motion.",
                 started,
                 metrics,
             )
         if distance <= 0.0:
             return make_result(skill_name, True, codes.OK, "No relative motion requested.", started, metrics)
 
-        speed = min(0.12, max(0.04, distance / 2.0))
+        self._direct_motion_cancel = False
+        speed = min(0.18, max(0.06, distance / 1.6))
         vx = speed * dx_m / distance
         vy = speed * dy_m / distance
-        deadline = time.monotonic() + max(0.1, float(timeout_sec))
+        motion_clock = MotionClock(float(timeout_sec), context.mode == "sim",
+                                   self.node.get_clock().now().nanoseconds / 1e9, time.monotonic())
+        progress = MotionProgress(distance, motion_clock.start_source, motion_clock.start_wall, .01)
+        along = cross = 0.0
+        position_error = distance
         reached = False
+        canceled = False
         last_pose = start_pose
-        while time.monotonic() < deadline:
+        last_wheel_pose = start_wheel_pose
+        while not motion_clock.expired(self.node.get_clock().now().nanoseconds / 1e9, time.monotonic()):
+            if self._direct_motion_cancel or getattr(context, "recovery_check", lambda: False)():
+                canceled = True
+                break
+            if motion_guard is not None:
+                motion_clock.reason = motion_guard()
+                if motion_clock.reason:
+                    break
+            current_wheel = self._current_wheel_odom_pose()
+            if start_wheel_pose is not None and current_wheel is None:
+                motion_clock.reason = "wheel_odom_stale"
+                metrics["wheel_odom_rejection"] = dict(getattr(self, "_last_wheel_odom_evidence", {}))
+                break
             current = self._current_map_pose()
-            if current is not None:
-                last_pose = current
-                travelled = math.hypot(current["x"] - start_pose["x"], current["y"] - start_pose["y"])
-                if travelled >= distance * 0.95:
+            if current_wheel is not None and start_wheel_pose is not None:
+                last_wheel_pose = current_wheel
+                along, cross, position_error = translation_error(start_wheel_pose, current_wheel, dx_m, dy_m)
+                if position_error <= max(.01, distance * .05):
                     reached = True
                     break
+                if cross > max(.05, distance * .15) or along < -.05 or along > distance + .05:
+                    motion_clock.reason = "relative_motion_off_path"
+                    break
+            if progress.stalled(position_error, self.node.get_clock().now().nanoseconds / 1e9, time.monotonic()):
+                motion_clock.reason = "motion_no_progress"
+                break
             twist = Twist()
             twist.linear.x = vx
             twist.linear.y = vy
             self._cmd_vel_pub.publish(twist)
             time.sleep(0.05)
         self._publish_stop()
-        elapsed = time.monotonic() - (deadline - max(0.1, float(timeout_sec)))
+        elapsed = time.monotonic() - motion_clock.start_wall
+        metrics.update(timeout_time_basis="sim" if motion_clock.simulation else "wall",
+                       wall_timeout_sec=motion_clock.wall_limit, timeout_reason=motion_clock.reason)
         final_pose = self._current_map_pose() or last_pose
+        final_wheel_pose = self._current_wheel_odom_pose() or last_wheel_pose
         final_distance = None
-        if final_pose is not None:
+        distance_source = "map_tf"
+        if final_wheel_pose is not None and start_wheel_pose is not None:
+            final_distance = math.hypot(
+                final_wheel_pose["x"] - start_wheel_pose["x"],
+                final_wheel_pose["y"] - start_wheel_pose["y"],
+            )
+            distance_source = "wheel_odom"
+        elif final_pose is not None and start_pose is not None:
             final_distance = math.hypot(final_pose["x"] - start_pose["x"], final_pose["y"] - start_pose["y"])
         metrics.update(
             {
@@ -3574,13 +3958,28 @@ class NavigationSkills:
                 "duration_sec": elapsed,
                 "start_pose": start_pose,
                 "final_pose": final_pose,
+                "start_wheel_odom_pose": start_wheel_pose,
+                "final_wheel_odom_pose": final_wheel_pose,
                 "travelled_m": final_distance,
+                "along_track_m": along,
+                "cross_track_m": cross,
+                "position_error_m": position_error,
+                "travelled_source": distance_source,
                 "target_distance_m": distance,
+                "canceled": canceled,
             }
         )
-        success = reached or (final_distance is not None and final_distance >= distance * 0.75)
-        code = codes.OK if success else codes.FAILED_TIMEOUT
-        message = "Direct relative motion completed." if success else "Direct relative motion timed out before reaching requested distance."
+        success = not canceled and motion_clock.reason is None and reached
+        code = codes.CANCELLED if canceled else (codes.OK if success else motion_failure_code(motion_clock.reason))
+        message = (
+            "Direct relative motion was canceled."
+            if canceled
+            else (
+                "Direct relative motion completed."
+                if success
+                else f"Direct relative motion stopped before completion: {motion_clock.reason}."
+            )
+        )
         return make_result(skill_name, success, code, message, started, metrics)
 
     def _direct_rotate(
@@ -3594,47 +3993,84 @@ class NavigationSkills:
     ) -> SkillResult:
         started = now()
         start_pose = self._current_map_pose()
-        if start_pose is None:
+        start_wheel_pose = self._current_wheel_odom_pose()
+        if start_wheel_pose is None:
             return make_result(
                 skill_name,
                 False,
                 codes.FAILED_LOCALIZATION,
-                "Current map pose is unavailable; cannot execute direct relative rotation.",
+                "Fresh wheel odom is unavailable; map corrections cannot measure relative rotation.",
                 started,
                 metrics,
             )
+        feedback_start_pose = start_wheel_pose or start_pose
         target_abs = abs(yaw_delta)
-        speed = min(0.25, max(0.08, target_abs / 2.0))
+        # Sim drive rejects wheel speeds below 0.055 m/s; 0.18 rad/s clears
+        # that deadband for this chassis without changing the driver policy.
+        minimum_speed = .18 if context.mode == "sim" else .08
+        speed = min(0.25, max(minimum_speed, target_abs / 2.0))
         wz = speed if yaw_delta > 0.0 else -speed
-        target_yaw = self._normalize_angle(float(start_pose["yaw"]) + yaw_delta)
-        deadline = time.monotonic() + max(0.1, float(timeout_sec))
+        target_yaw = self._normalize_angle(float(feedback_start_pose["yaw"]) + yaw_delta)
+        motion_clock = MotionClock(float(timeout_sec), context.mode == "sim",
+                                   self.node.get_clock().now().nanoseconds / 1e9, time.monotonic())
+        progress = MotionProgress(target_abs, motion_clock.start_source, motion_clock.start_wall, .02)
+        accumulated_yaw = 0.0
+        previous_yaw = float(feedback_start_pose["yaw"])
         reached = False
+        canceled = False
         last_pose = start_pose
+        last_wheel_pose = start_wheel_pose
         yaw_error = target_abs
-        while time.monotonic() < deadline:
+        tolerance = (float(yaw_tolerance_rad) if yaw_tolerance_rad is not None
+                     else max(0.02, min(0.05, target_abs * 0.10)))
+        self._direct_motion_cancel = False
+        while not motion_clock.expired(self.node.get_clock().now().nanoseconds / 1e9, time.monotonic()):
+            if self._direct_motion_cancel or getattr(context, "recovery_check", lambda: False)():
+                canceled = True
+                break
+            if skill_name.startswith("goto_pose_"):
+                motion_clock.reason = self._micro_adjust_guard(0, 0, rotating=True)
+                if motion_clock.reason:
+                    break
+            current_wheel = self._current_wheel_odom_pose()
+            if start_wheel_pose is not None and current_wheel is None:
+                motion_clock.reason = "wheel_odom_stale"
+                metrics["wheel_odom_rejection"] = dict(getattr(self, "_last_wheel_odom_evidence", {}))
+                break
             current = self._current_map_pose()
+            feedback_current = current_wheel or current
+            if current_wheel is not None:
+                last_wheel_pose = current_wheel
             if current is not None:
                 last_pose = current
-                yaw_error = abs(self._normalize_angle(target_yaw - float(current["yaw"])))
-                tolerance = (
-                    float(yaw_tolerance_rad)
-                    if yaw_tolerance_rad is not None
-                    else max(0.05, min(0.12, target_abs * 0.15))
-                )
+            if feedback_current is not None:
+                current_yaw = float(feedback_current["yaw"])
+                accumulated_yaw += self._normalize_angle(current_yaw - previous_yaw)
+                previous_yaw = current_yaw
+                remaining = yaw_delta - accumulated_yaw
+                yaw_error = abs(remaining)
                 if yaw_error <= tolerance:
                     reached = True
                     break
+                wz = math.copysign(min(speed, max(minimum_speed, yaw_error * .8)), remaining)
+            if progress.stalled(yaw_error, self.node.get_clock().now().nanoseconds / 1e9, time.monotonic()):
+                motion_clock.reason = "motion_no_progress"
+                break
             twist = Twist()
             twist.angular.z = wz
             self._cmd_vel_pub.publish(twist)
             time.sleep(0.05)
         self._publish_stop()
-        elapsed = time.monotonic() - (deadline - max(0.1, float(timeout_sec)))
+        elapsed = time.monotonic() - motion_clock.start_wall
+        metrics.update(timeout_time_basis="sim" if motion_clock.simulation else "wall",
+                       wall_timeout_sec=motion_clock.wall_limit, timeout_reason=motion_clock.reason)
         final_pose = self._current_map_pose() or last_pose
+        final_wheel_pose = self._current_wheel_odom_pose() or last_wheel_pose
+        feedback_final_pose = final_wheel_pose or final_pose
         final_yaw_delta = None
-        if final_pose is not None:
-            final_yaw_delta = abs(self._normalize_angle(final_pose["yaw"] - start_pose["yaw"]))
-            yaw_error = abs(self._normalize_angle(target_yaw - float(final_pose["yaw"])))
+        if feedback_final_pose is not None:
+            final_yaw_delta = abs(self._normalize_angle(feedback_final_pose["yaw"] - feedback_start_pose["yaw"]))
+            yaw_error = abs(self._normalize_angle(target_yaw - float(feedback_final_pose["yaw"])))
         metrics.update(
             {
                 "control_mode": "direct_cmd_vel_raw",
@@ -3645,36 +4081,105 @@ class NavigationSkills:
                 "duration_sec": elapsed,
                 "start_pose": start_pose,
                 "final_pose": final_pose,
+                "start_wheel_odom_pose": start_wheel_pose,
+                "final_wheel_odom_pose": final_wheel_pose,
                 "turned_rad": final_yaw_delta,
+                "signed_accumulated_yaw_rad": accumulated_yaw,
+                "turned_source": "wheel_odom" if final_wheel_pose is not None and start_wheel_pose is not None else "map_tf",
                 "target_yaw_delta_rad": target_abs,
                 "target_yaw_rad": target_yaw,
                 "final_yaw_error_rad": yaw_error,
+                "canceled": canceled,
             }
         )
-        final_tolerance = (
-            float(yaw_tolerance_rad)
-            if yaw_tolerance_rad is not None
-            else max(0.08, min(0.18, target_abs * 0.25))
+        metrics["yaw_goal_tolerance_rad"] = tolerance
+        success = not canceled and motion_clock.reason is None and reached
+        code = codes.CANCELLED if canceled else (codes.OK if success else motion_failure_code(motion_clock.reason))
+        message = (
+            "Direct relative rotation was canceled."
+            if canceled
+            else (
+                "Direct relative rotation completed."
+                if success
+                else f"Direct relative rotation stopped before completion: {motion_clock.reason}."
+            )
         )
-        metrics["yaw_goal_tolerance_rad"] = final_tolerance
-        success = reached or yaw_error <= final_tolerance
-        code = codes.OK if success else codes.FAILED_TIMEOUT
-        message = "Direct relative rotation completed." if success else "Direct relative rotation timed out before reaching requested angle."
         return make_result(skill_name, success, code, message, started, metrics)
 
     def _publish_stop(self):
         stop = Twist()
-        for _ in range(3):
+        for _ in range(8):
             self._cmd_vel_pub.publish(stop)
             time.sleep(0.02)
 
     def cancel_navigation(self, context: SkillContext | None = None) -> SkillResult:
         started = now()
+        self._direct_motion_cancel = True
+        self._publish_stop()
+        self._clear_navigation_goal_markers()
+        self._clear_navigation_route_markers()
         if self._active_goal_handle is None:
-            return make_result("cancel_motion", True, codes.OK, "No active Nav2 goal.", started)
+            return make_result("cancel_motion", True, codes.OK, "Stop requested for direct motion; no active Nav2 goal.", started)
         self._active_goal_handle.cancel_goal_async()
         self._active_goal_handle = None
         return make_result("cancel_motion", True, codes.CANCELLED, "Cancel requested for active Nav2 goal.", started)
+
+    def _wheel_odom_cb(self, msg: Odometry):
+        if msg.header.frame_id.lstrip("/") != "odom" or msg.child_frame_id.lstrip("/") != "base_footprint":
+            return
+        pose = msg.pose.pose
+        with self._wheel_odom_lock:
+            self._recovery_wheel_twist = (msg.twist.twist.linear.x, msg.twist.twist.linear.y, msg.twist.twist.angular.z)
+            self._latest_wheel_odom_pose = {
+                "x": float(pose.position.x),
+                "y": float(pose.position.y),
+                "yaw": self._yaw_from_quaternion(pose.orientation),
+            }
+            self._latest_wheel_odom_time = time.monotonic()
+            self._latest_wheel_odom_stamp = msg.header.stamp.sec + msg.header.stamp.nanosec / 1e9
+
+    def recovery_motion_stopped(self):
+        # Both the goal result (not merely cancel request acceptance) and fresh
+        # physical motion feedback are needed before Recovery may reseed.
+        if self._pending_nav_goals:
+            return False
+        for future in self._nav_result_futures:
+            if not future.done():
+                return False
+            try:
+                result = future.result()
+                if result is None or result.status not in {4, 5, 6}:
+                    return False
+            except Exception:
+                return False  # A failed result transport is not a terminal goal acknowledgement.
+        with self._wheel_odom_lock:
+            velocity = getattr(self, "_recovery_wheel_twist", None)
+            wall_age = time.monotonic() - self._latest_wheel_odom_time
+            source_age = (self.node.get_clock().now().nanoseconds / 1e9 - self._latest_wheel_odom_stamp
+                          if self._latest_wheel_odom_stamp is not None else None)
+            return (velocity is not None and 0 <= wall_age <= .75
+                    and source_age is not None and 0 <= source_age <= .75
+                    and all(math.isfinite(value) and abs(value) <= .02 for value in velocity))
+
+    def _current_wheel_odom_pose(self) -> dict[str, float] | None:
+        with self._wheel_odom_lock:
+            wall_age = time.monotonic() - self._latest_wheel_odom_time
+            source_age = (self.node.get_clock().now().nanoseconds / 1e9 - self._latest_wheel_odom_stamp
+                          if self._latest_wheel_odom_stamp is not None else None)
+            evidence = {"receive_age_sec": wall_age, "source_age_sec": source_age,
+                        "stamp_sec": self._latest_wheel_odom_stamp, "max_age_sec": .75,
+                        "future_tolerance_sec": .05, "reason": None}
+            self._last_wheel_odom_evidence = evidence
+            if self._latest_wheel_odom_pose is None:
+                evidence["reason"] = "not_received"
+                return None
+            if wall_age > 0.75:
+                evidence["reason"] = "receive_stale"
+                return None
+            if source_age is not None and not -0.05 <= source_age <= 0.75:
+                evidence["reason"] = "stamp_future" if source_age < -.05 else "source_stale"
+                return None
+            return dict(self._latest_wheel_odom_pose)
 
     def _local_costmap_cb(self, msg: OccupancyGrid):
         self._latest_local_costmap = msg
@@ -3830,6 +4335,51 @@ class NavigationSkills:
         translation = tf.transform.translation
         yaw = self._yaw_from_quaternion(tf.transform.rotation)
         return {"x": float(translation.x), "y": float(translation.y), "yaw": yaw}
+
+    def _publish_narrow_motion_profile(
+        self,
+        annotation: dict[str, Any],
+        waypoint: Pose2D,
+        traversal_policy: dict[str, Any],
+    ):
+        # Sim narrow passages still need a cap, but 0.09 m/s made longer
+        # waypoint legs look stalled and could trip mission-level timeouts.
+        max_speed = max(
+            0.03,
+            min(float(traversal_policy.get("max_speed_mps", 0.12)), 0.14),
+        )
+        allow_lateral = bool(traversal_policy.get("allow_lateral_assist", True))
+        profile = {
+            "active": True,
+            "profile": "narrow_passage",
+            "passage_id": annotation.get("passage_id"),
+            "frame_id": waypoint.frame_id,
+            "heading_yaw_rad": waypoint.yaw,
+            # Translation is allowed only within 10 degrees of passage heading.
+            "heading_tolerance_rad": math.radians(10.0),
+            "max_speed_mps": max_speed,
+            "centerline": list(annotation.get("centerline") or []),
+            "centerline_tolerance_m": float(
+                traversal_policy.get("centerline_tolerance_m", 0.08)
+            ),
+            "allow_lateral_assist": allow_lateral,
+            # Lateral correction must remain diagonal with forward motion.
+            "max_lateral_mps": min(0.04, max_speed * 0.35) if allow_lateral else 0.0,
+            "max_lateral_ratio": 0.45 if allow_lateral else 0.0,
+            "timeout_sec": max(
+                30.0,
+                float(annotation.get("waypoint_timeout_sec", 20.0)) + 5.0,
+            ),
+        }
+        self._motion_policy_profile_pub.publish(
+            String(data=json.dumps(profile, ensure_ascii=False))
+        )
+        annotation["active_traversal_profile"] = profile
+
+    def _clear_narrow_motion_profile(self):
+        self._motion_policy_profile_pub.publish(
+            String(data=json.dumps({"active": False, "profile": "normal"}))
+        )
 
     def _target_heading_delta(self, current: dict[str, float], target: Pose2D) -> float | None:
         dx = float(target.x) - float(current["x"])

@@ -19,7 +19,7 @@ providers:
     clarify_threshold: 0.78
   llama_cpp_parser:
     provider: llama_cpp
-    endpoint: http://127.0.0.1:8080/v1/chat/completions
+    endpoint: http://127.0.0.1:8090/v1/chat/completions
     model: qwen2.5-3b-instruct-q4_k_m
     temperature: 0
     # Bumped from 2.0 on 2026-07-13: with the LLM now on the critical path for

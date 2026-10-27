@@ -1,0 +1,53 @@
+id: PB-SAFE-SOFTWARE-STOP
+handling_class: safety_event
+number: 12
+severity: blocking
+title: Software safety gate holding ESTOP
+version: 1
+domain: H3
+layer: safety
+affects_capabilities: [manual_drive, auto_navigation]
+envs:
+  real:
+    status: supported
+    verified: false
+  sim:
+    status: supported
+    verified: false
+    note: cmd_vel_safety_node reports ESTOP (Joy button 3 / Dashboard). Inject by publishing ESTOP.
+
+trigger:
+  any:
+    - {item: safety, status_in: [BLOCKED]}
+
+supporting_evidence:
+  - {probe: health_item, args: {item: delivery_safety}}
+
+diagnosis:
+  - id: safety_node_alive
+    probe: node_alive
+    args: {component: safety_node}
+    on_mismatch: {handoff: PB-NODE-DOWN}
+  - id: reports_estop
+    probe: text_matches
+    args: {item: safety, pattern: "(?i)^\\s*ESTOP\\s*$"}
+    on_mismatch: {escalate: R3}
+
+recovery:
+  - type: operator_request
+    template: release_software_estop
+    done_when:
+      - {probe: health_item, args: {item: safety}}
+
+verify:
+  - {probe: health_item, args: {item: safety}}
+
+policy:
+  retry_budget: 0
+
+fault_injection:
+  sim: {injector: publish, args: {topic: /safety_status, value: ESTOP}}
+
+operator_text:
+  en: "The software safety gate is holding ESTOP. Release it from the controller / Dashboard when it is safe."
+  ja: "ソフトウェア安全ゲートが ESTOP を保持しています。安全を確認してコントローラ/Dashboard から解除してください。"

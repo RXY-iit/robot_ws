@@ -1,0 +1,61 @@
+id: PB-DRIVE-ALARM
+number: 32
+severity: blocking
+title: BLVD drive present alarm
+version: 1
+domain: H1
+layer: driver
+affects_capabilities: [manual_drive, auto_navigation]
+envs:
+  real:
+    status: supported
+    verified: false
+    note: Present alarm (Modbus registers 128/129) != 0. Reset register still to be confirmed (Q-R2).
+  sim:
+    status: injection_only
+    verified: false
+    note: fake_item(drive_alarm_status) injection; reset clears the injected fault.
+
+trigger:
+  any:
+    - {item: drive_alarm_status, class_in: [FAULT, DEGRADED], for_sec: 1}
+
+supporting_evidence:
+  - {probe: fresh_observation, args: {item: drive_alarm_status}}
+
+diagnosis:
+  - id: alarm_present
+    probe: health_item
+    args: {item: drive_alarm_status, class_in: [FAULT, DEGRADED]}
+    on_mismatch: {reject: true}
+
+preconditions:
+  - estop_released
+  - cmd_vel_zero_fresh
+  - base_stationary
+
+recovery:
+  - type: action
+    primitive: cancel_motion
+  # Overload alarms usually mean the robot hit or is stuck on something:
+  # the operator inspects before any reset.
+  - type: operator_request
+    template: inspect_drive_alarm
+  - type: action
+    primitive: drive_alarm_reset
+    risk: A2
+
+verify:
+  - {probe: health_item, args: {item: drive_alarm_status}, within_sec: 10}
+
+policy:
+  retry_budget: 1
+  cooldown_sec: 300
+  chronic: {count: 2, window_sec: 3600, then: human_only}
+
+fault_injection:
+  sim: {injector: fake_item, args: {item: drive_alarm_status, status: ERROR, alarm_code: 0x30}}
+
+operator_text:
+  en: "Drive alarm ${root_item}. Check whether the robot hit or is stuck on something before resetting the alarm."
+  ja: "駆動アラームが発生しています。リセット前に、衝突や引っ掛かりがないか確認してください。"

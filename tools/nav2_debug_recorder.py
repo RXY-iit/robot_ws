@@ -98,7 +98,7 @@ def nonzero(t: Optional[Twist]) -> bool:
 
 
 class Nav2DebugRecorder(Node):
-    def __init__(self, output_dir: FsPath):
+    def __init__(self, output_dir: FsPath, waypoint_route=None):
         super().__init__("nav2_debug_recorder")
         self.output_dir = output_dir
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -106,6 +106,8 @@ class Nav2DebugRecorder(Node):
         self.latest_path = self.output_dir / "latest_state.md"
         self.run_info_path = self.output_dir / "run_info.md"
         self.events_file = self.events_path.open("a", buffering=1)
+        from sim.b1_evidence import B1Evidence
+        self.b1 = B1Evidence(self, self.output_dir, waypoint_route)
 
         self.prev_buttons: list[int] = []
         self.mode: Optional[str] = None
@@ -115,7 +117,6 @@ class Nav2DebugRecorder(Node):
         self.cmd: Optional[Twist] = None
         self.teleop_cmd: Optional[Twist] = None
         self.odom: Optional[dict[str, Any]] = None
-        self.motion_policy: Optional[str] = None
         self.status = "no_status"
         self.feedback: Optional[dict[str, Any]] = None
         self.last_hint = "waiting for goal"
@@ -128,7 +129,6 @@ class Nav2DebugRecorder(Node):
         self.create_subscription(Twist, "/cmd_vel", self._cmd_cb, 10)
         self.create_subscription(Twist, "/teleop/cmd_vel", self._teleop_cmd_cb, 10)
         self.create_subscription(Odometry, "/wheel_odom", self._odom_cb, 10)
-        self.create_subscription(String, "/motion_policy/status", self._motion_policy_cb, 10)
         self.create_subscription(
             GoalStatusArray,
             "/navigate_to_pose/_action/status",
@@ -149,6 +149,7 @@ class Nav2DebugRecorder(Node):
         self.get_logger().info(f"Recording Nav2 debug output to {self.output_dir}")
 
     def destroy_node(self):
+        self.b1.close()
         self._event("recorder_stopped", {})
         try:
             self.events_file.close()
@@ -204,16 +205,12 @@ class Nav2DebugRecorder(Node):
         self._event("goal_pose", self.goal)
 
     def _plan_cb(self, msg: Path):
+        self.b1.receive("/plan", msg)
         n = len(msg.poses)
         data: dict[str, Any] = {"poses": n, "frame_id": msg.header.frame_id}
         if n:
             data["start"] = pose_dict(msg.poses[0])
             data["end"] = pose_dict(msg.poses[-1])
-            if self.goal is None:
-                self.goal = dict(data["end"])
-                self.goal["frame_id"] = msg.header.frame_id
-                self.goal["source"] = "inferred_from_plan_end"
-                self._event("goal_pose_inferred", self.goal)
         self.plan = data
         self._event("plan", data)
 
@@ -237,13 +234,8 @@ class Nav2DebugRecorder(Node):
     def _odom_cb(self, msg: Odometry):
         self.odom = odom_dict(msg)
 
-    def _motion_policy_cb(self, msg: String):
-        if msg.data != self.motion_policy:
-            old = self.motion_policy
-            self.motion_policy = msg.data
-            self._event("motion_policy", {"old": old, "new": self.motion_policy})
-
     def _status_cb(self, msg: GoalStatusArray):
+        self.b1.receive("/navigate_to_pose/_action/status", msg)
         if not msg.status_list:
             return
         latest = msg.status_list[-1]
@@ -254,6 +246,7 @@ class Nav2DebugRecorder(Node):
             self._event("action_status", {"old": old, "new": new_status})
 
     def _feedback_cb(self, msg):
+        self.b1.receive("/navigate_to_pose/_action/feedback", msg)
         fb = msg.feedback
         self.feedback = {
             "distance_remaining": float(fb.distance_remaining),
@@ -262,7 +255,7 @@ class Nav2DebugRecorder(Node):
         }
 
     def _compute_hint(self) -> str:
-        if self.goal is None and self.status == "no_status" and self.plan is None:
+        if self.goal is None:
             return "no goal received after recorder started; set a 2D Goal Pose in RViz"
         if self.status == "SUCCEEDED":
             return "goal succeeded; zero cmd_vel is expected"
@@ -283,7 +276,6 @@ class Nav2DebugRecorder(Node):
         snapshot = {
             "t": now_stamp(self),
             "mode": self.mode,
-            "motion_policy": self.motion_policy,
             "action_status": self.status,
             "feedback": self.feedback,
             "goal": self.goal,
@@ -302,7 +294,6 @@ class Nav2DebugRecorder(Node):
             "# Latest Nav2 Debug State",
             "",
             f"- mode: `{snapshot['mode']}`",
-            f"- motion_policy: `{snapshot['motion_policy']}`",
             f"- action_status: `{snapshot['action_status']}`",
             f"- hint: {snapshot['hint']}",
             f"- feedback: `{snapshot['feedback']}`",
@@ -322,13 +313,14 @@ class Nav2DebugRecorder(Node):
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--waypoint-route", help="Frozen route YAML for full-route RViz display and evidence hash")
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
     rclpy.init()
-    node = Nav2DebugRecorder(FsPath(args.output_dir))
+    node = Nav2DebugRecorder(FsPath(args.output_dir), args.waypoint_route)
     try:
         rclpy.spin(node)
     except (KeyboardInterrupt, ExternalShutdownException):

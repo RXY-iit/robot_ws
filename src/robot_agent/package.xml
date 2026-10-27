@@ -12,9 +12,12 @@
   <exec_depend>rclpy</exec_depend>
   <exec_depend>std_msgs</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>diagnostic_msgs</exec_depend>
   <exec_depend>lifecycle_msgs</exec_depend>
   <exec_depend>nav_msgs</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>my_messages</exec_depend>
+  <exec_depend>om_msgs</exec_depend>
   <exec_depend>robot_skills</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>

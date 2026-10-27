@@ -1,0 +1,40 @@
+# Recovery Agent common config (sim and real).
+# Design: todo-my/recovery-agent/design.md
+
+schema_version: 1
+
+# Dependency layers, most upstream first. Stage 2 walks upstream in this order
+# and treats the first abnormal layer as the root; downstream faults are
+# recorded as consequences of that root.
+layers:
+  - safety        # E-stop, software safety gate, command authority (R0: read only)
+  - platform      # host, Isaac Sim process / clock
+  - power_device  # power, USB / serial / network links, device presence
+  - driver        # hardware drivers and the nodes standing in for them in sim
+  - ros_delivery  # ROS topic / node delivery of a signal
+  - function      # localization, navigation, perception results
+  - agent         # agent / mission runtime
+
+# Debounce before a non-safety abnormality becomes an incident (heartbeat trigger).
+debounce_sec: 3.0
+
+# Approval rule per action risk level. Envs override in envs/<kind>.yaml.
+#   auto      : executed without asking (once execution is enabled)
+#   confirm   : operator confirms on the Dashboard first
+#   operator  : only the operator can perform it (physical action)
+#   forbidden : never
+approval_defaults:
+  A0: auto
+  A1: auto
+  A2: confirm
+  A3: confirm
+  A4: operator
+
+# MissionAgent's capability names (mission_agent._required_capabilities_for_skill)
+# -> health_monitor capability ids.
+capability_aliases:
+  relative_motion: [relative_motion, manual_drive] # direct drive + AUTO, not Nav2/GICP
+  localization: [auto_navigation]      # gicp_score / gicp_pose are auto_navigation dependencies
+  perception: [stationary_perception]
+  arm: [so101_arm]
+  navigation: [auto_navigation]

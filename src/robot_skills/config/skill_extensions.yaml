@@ -1,0 +1,21 @@
+# Aliases inherit existing contracts; add tests and dispatch for new checks.
+aliases:
+  move_as_waypoint:
+    target: goto_pose
+    defaults:
+      apply_navigation_annotations: false
+      recovery_policy: {allow_alternate_goal: false, allow_relaxed_tolerance: false}
+  navigate_to_pose: {target: goto_pose}
+  move_base_relative: {target: move_relative}
+  rotate_base_relative: {target: rotate_relative}
+  resolve_navigation_target: {target: resolve_semantic_target}
+  set_arm_pose: {target: set_pose}
+  detect_object: {target: detect_known_object}
+  move_lift: {target: move_lift_bounded}
+  touch_target: {target: touch, defaults: {mode: touch}}
+  press_target: {target: touch, defaults: {mode: press}}
+checks: [check_navigation_capability, check_perception_capability, check_arm_capability]
+composites:
+  move_camera_and_capture: {contract: capture_observation}
+  capture_view_set: {contract: capture_observation}
+  search_at_place: {contract: detect_known_object}

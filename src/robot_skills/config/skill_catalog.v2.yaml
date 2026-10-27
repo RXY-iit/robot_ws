@@ -1,0 +1,835 @@
+schema_version: robot_skill_catalog.v2
+
+# Semantic catalog for parser/JEV/planning. Keep skill_registry.yaml as the
+# execution whitelist; this file is the richer contract used to generate,
+# validate, explain, and supervise skill plans.
+#
+# Future recovery skills should be added as normal robot_skills with bounded
+# effects and explicit failure semantics, e.g. recover_local_planner,
+# reset_camera_stream, restart_arm_gateway, verify_ros_graph.
+
+# All supervision question text lives here. Missing evidence means null, not OK.
+# Aliases/composites inherit their base contract through skill_extensions.yaml.
+supervision_profiles:
+  capability:
+    questions:
+      prerequisites_present: Are the requested domain's required interfaces and configuration present?
+      evidence_current: Does this capability snapshot contain fresh evidence rather than only configured support?
+    evidence_fields: [operation, available, missing, supported, provider, query, checks]
+
+common_supervision_questions:
+  step_completed_normally: {type: noul, instructions: "Did the current robot skill complete according to its contract?"}
+  step_result_reasonable: {type: noul, instructions: "Is the result consistent with the provided logs and metrics? Missing evidence means null."}
+  failure_category:
+    type: choice
+    instructions: Classify the current failure using evidence, not overall health alone.
+    criteria:
+      none_success: The execution succeeded.
+      target_not_found: Completed perception without finding its target.
+      ambiguous_detection: Target identity is ambiguous.
+      unsupported_query: Requested query exceeds detector capability.
+      camera_or_perception_fault: Camera or inference execution failed.
+      localization_unrelated: Localization warning unrelated to this skill.
+      localization_related: Localization prevents this skill from running safely.
+      control_mode_block: Control mode prevents this skill.
+      safety_block: Safety gate prevents continuation.
+      local_planner_fault: Nav2 or local planner failed.
+      relative_motion_fault: Direct base motion or wheel odometry failed; this is not a Nav2 or global-localization dependency.
+      arm_fault: Arm gateway or motion failed.
+      timeout_or_load: Timeout or resource overload.
+      logic_or_parse_error: Selected skill or parameters do not satisfy the task.
+      unknown: Evidence does not determine the cause.
+  needs_recovery_agent: {type: noul, instructions: "Does a health or system fault require Recovery before retry or continuation?"}
+  recovery_target:
+    type: choice
+    instructions: Select the affected recovery capability, or unknown when evidence is insufficient.
+    criteria:
+      none: No recovery needed.
+      localization: Localization.
+      local_planner: Nav2 or local planner.
+      drive: Direct base drive or wheel odometry feedback, not global localization.
+      camera: Camera or perception stream.
+      camera_control: Camera pan/tilt actuator or its measured position feedback, not the image stream.
+      arm_gateway: Arm gateway or state.
+      control_mode: Operator-approved control mode change.
+      system_load: Resource overload.
+      unknown: Cause unclear.
+  failure_blocks_current_subgoal: {type: noul, instructions: "Does this failure prevent satisfying the current task goal?"}
+  next_subgoal_still_meaningful: {type: noul, instructions: "Can the next task still satisfy an independent goal? Ordered route segments are dependent."}
+  continue_requires_human: {type: noul, instructions: "Does continuing require clarification or operator approval?"}
+  supervision_action:
+    type: choice
+    instructions: Select an action within the deterministic safety and dependency gates.
+    criteria:
+      continue_next_step: Continue only if the next step does not depend on missing results.
+      ask_human_continue_retry_stop: Ask the operator to continue, retry or stop.
+      ask_human_enable_auto: Offer operator-approved AUTO and wait for fresh feedback; never bypass the AUTO prerequisite.
+      retry_same_step: Retry the same skill once.
+      retry_with_alternate_view: Retry perception with another view.
+      skip_failed_subgoal_continue_independent_goal: Skip this failed goal and continue an explicitly independent goal.
+      call_recovery_agent: Ask Recovery to diagnose/repair missing required system feedback before retrying the current goal. Independent later goals remain pending.
+      stop_failed: Stop the mission as failed.
+      record_design_gap: Stop or ask and record a planner design gap.
+
+precondition_atoms:
+  safety_ok_or_watchdog:
+    source: health.components.safety
+    description: Safety status is acceptable for bounded robot action.
+    hard_safety: true
+  robot_mode_auto:
+    source: health.components.mode
+    description: Robot is in AUTO mode. Required for base motion.
+    hard_safety: false
+  robot_stationary:
+    source: system_motion
+    description: Base is not moving. Required for perception and arm/lift actions.
+    hard_safety: false
+  global_localization_healthy:
+    source: health.components.localization
+    description: Map-frame localization is healthy enough for global Nav2 goals.
+    hard_safety: false
+  wheel_odom_fresh:
+    source: health.components.localization.details.latest_wheel_odom_pose
+    description: Wheel odom can support direct/relative motion feedback.
+    hard_safety: false
+  local_planner_active:
+    source: health.components.local_planner
+    description: Nav2 controller/local planner is available when required.
+    hard_safety: false
+  camera_ready:
+    source: perception.camera
+    description: Camera stream is available or can be checked by capture_observation.
+    hard_safety: false
+  camera_image_fresh:
+    source: perception.observation
+    description: A fresh observation image exists for detector input.
+    hard_safety: false
+  arm_gateway_ready:
+    source: arm.dashboard_state
+    description: Guarded SO101 arm gateway is available.
+    hard_safety: true
+  lift_gateway_ready:
+    source: lift.state
+    description: Lift command path is available.
+    hard_safety: true
+
+robot_skills:
+  - name: get_robot_status
+    supervision:
+      questions:
+        snapshot_current: Does the status contain fresh measurements with identifiable sources?
+      evidence_fields: [robot_mode, safety_status, robot_mode_age_sec, safety_status_age_sec, localization_warning, gicp_score]
+    group: health_safety
+    intent_tags: [status, read_only, health]
+    args_schema: {type: object, properties: {}}
+    preconditions:
+      required: []
+      irrelevant: [robot_mode_auto, global_localization_healthy]
+    effects:
+      physical_motion: false
+      contact: false
+      reads: [robot_mode, safety_status, health_summary]
+      writes: []
+    failure_semantics: {}
+    jev:
+      expose_to_command_parse: true
+      expose_to_step_supervision: true
+      candidate_priority: medium
+    dashboard:
+      display_name: Robot status
+      risk_label: read only
+
+  - name: await_robot_auto_mode
+    supervision:
+      questions:
+        auto_confirmed: Does fresh mode feedback confirm AUTO, not merely a sent mode-change request?
+      evidence_fields: [robot_mode, robot_mode_age_sec, timeout_sec]
+    group: health_safety
+    intent_tags: [safety_gate, control_mode]
+    args_schema:
+      type: object
+      properties:
+        timeout_sec: {type: float, default: 0.1, min: 0.0, max: 180.0}
+    preconditions:
+      required: []
+      irrelevant: [global_localization_healthy]
+    effects:
+      physical_motion: false
+      contact: false
+      reads: [robot_mode]
+      writes: []
+    failure_semantics:
+      NEEDS_HUMAN:
+        category: control_mode_block
+        blocks_goal: true
+        default_recovery: ask_human_set_auto
+    jev:
+      expose_to_command_parse: false
+      expose_to_step_supervision: true
+      candidate_priority: low
+    dashboard:
+      display_name: Await AUTO
+      risk_label: safety gate
+
+  - name: await_robot_stationary
+    supervision:
+      questions:
+        stationary_confirmed: Do fresh motion measurements demonstrate that the robot has settled?
+      evidence_fields: [settle_sec, last_cmd_speed, cmd_speed_threshold, last_cmd_vel_age_sec, measured_speed_mps]
+    group: health_safety
+    intent_tags: [safety_gate, stationary_gate]
+    args_schema:
+      type: object
+      properties:
+        settle_sec: {type: float, default: 1.0, min: 0.0, max: 10.0}
+        timeout_sec: {type: float, default: 180.0, min: 0.1, max: 300.0}
+    preconditions:
+      required: []
+      irrelevant: [robot_mode_auto, global_localization_healthy]
+    effects:
+      physical_motion: false
+      contact: false
+      reads: [cmd_vel, nav2_cmd_vel, odom]
+      writes: []
+    failure_semantics:
+      FAILED_TIMEOUT:
+        category: timeout_or_load
+        blocks_goal: true
+        default_recovery: ask_human_or_cancel_motion
+    jev:
+      expose_to_command_parse: false
+      expose_to_step_supervision: true
+      candidate_priority: low
+    dashboard:
+      display_name: Await stationary
+      risk_label: safety gate
+
+  - name: check_localization_health
+    supervision:
+      questions:
+        localization_evidence_valid: Are pose, score, timestamps and odom consistency sufficient for map-frame motion?
+        failure_is_localization: Does the evidence establish loss of localization rather than missing or delayed measurement?
+      evidence_fields: [localization_warning, gicp_score, localization_pose_age_sec, gicp_score_age_sec, latest_odom_pose, latest_wheel_odom_pose, trusted_pose_delta_m, gicp_good_samples_after_initialpose]
+    group: health_safety
+    intent_tags: [localization, safety_gate]
+    args_schema:
+      type: object
+      properties:
+        settle_timeout_sec: {type: float, default: 2.0}
+        allow_warmup_pass: {type: bool, default: false}
+    preconditions:
+      required: []
+      irrelevant: [robot_mode_auto]
+    effects:
+      physical_motion: false
+      contact: false
+      reads: [gicp_score, map_pose, trusted_pose]
+      writes: []
+    failure_semantics:
+      FAILED_LOCALIZATION:
+        category: localization_related
+        blocks_goal: true
+        default_recovery: recover_localization_spin_or_ask_human
+    jev:
+      expose_to_command_parse: false
+      expose_to_step_supervision: true
+      candidate_priority: low
+    dashboard:
+      display_name: Check localization
+      risk_label: safety gate
+
+  - name: recover_localization_spin
+    supervision:
+      questions:
+        recovery_verified: Is recovery supported by fresh accepted localization evidence rather than action completion alone?
+        policy_allowed: Was this legacy recovery explicitly authorized by the current policy? Never recommend unapproved spinning.
+      evidence_fields: [localization_warning, gicp_score, recovery_action, recovery_initialpose, localization_requires_recovery, gicp_good_samples_after_initialpose]
+    group: health_recovery
+    intent_tags: [recovery, localization_recovery]
+    args_schema:
+      type: object
+      properties:
+        timeout_sec: {type: float, default: 24.0, min: 1.0, max: 60.0}
+        angular_z: {type: float, default: 0.25, min: 0.05, max: 0.6}
+    preconditions:
+      required: [safety_ok_or_watchdog, robot_mode_auto]
+      irrelevant: [global_localization_healthy]
+    effects:
+      physical_motion: true
+      contact: false
+      reads: [trusted_pose, wheel_odom, gicp_score]
+      writes: [initialpose, cmd_vel]
+    failure_semantics:
+      FAILED_LOCALIZATION:
+        category: localization_related
+        blocks_goal: true
+        default_recovery: ask_human_set_pose
+      FAILED_TIMEOUT:
+        category: timeout_or_load
+        blocks_goal: true
+        default_recovery: ask_human_inspect_localization
+    jev:
+      expose_to_command_parse: false
+      expose_to_step_supervision: true
+      candidate_priority: low
+    dashboard:
+      display_name: Recover localization
+      risk_label: recovery motion
+
+  - name: resolve_semantic_target
+    supervision:
+      questions:
+        target_unique: Does a unique calibrated target satisfy the requested identity and approach relation?
+        coordinates_grounded: Are coordinates and frame sourced from the configured semantic map?
+      evidence_fields: [target_name, relation, object_id, pose, alternatives, approach_source, approach_candidates, navigation_ready, required_input]
+    group: semantic_map
+    intent_tags: [semantic_target, read_only]
+    natural_language:
+      aliases: [go to, navigate to, shelf, 棚, 近く, near]
+      negative_examples: [look left, turn left, set pose home]
+    args_schema:
+      type: object
+      required: [target_name]
+      properties:
+        target_name: {type: string}
+        relation: {type: enum, values: [near, at, in_front_of], default: near}
+    preconditions:
+      required: []
+      irrelevant: [robot_mode_auto, global_localization_healthy]
+    effects:
+      physical_motion: false
+      contact: false
+      reads: [semantic_map]
+      writes: [resolved_pose]
+    failure_semantics:
+      NEEDS_HUMAN:
+        category: semantic_target_ambiguous
+        blocks_goal: true
+        default_recovery: ask_human_choose_target
+    jev:
+      expose_to_command_parse: true
+      expose_to_step_supervision: true
+      candidate_priority: high
+    dashboard:
+      display_name: Resolve semantic target
+      risk_label: read only
+
+  - name: list_known_targets
+    supervision:
+      questions:
+        map_available: Was the target list read from the active semantic map rather than an unavailable source?
+      evidence_fields: [targets, frame_id, count]
+    group: semantic_map
+    intent_tags: [semantic_target, read_only, list]
+    args_schema: {type: object, properties: {}}
+    preconditions:
+      required: []
+      irrelevant: [robot_mode_auto, global_localization_healthy]
+    effects:
+      physical_motion: false
+      contact: false
+      reads: [semantic_map]
+      writes: []
+    failure_semantics: {}
+    jev:
+      expose_to_command_parse: true
+      expose_to_step_supervision: true
+      candidate_priority: medium
+    dashboard:
+      display_name: List known targets
+      risk_label: read only
+
+  - name: goto_pose
+    supervision:
+      questions:
+        path_authorized: Does the route comply with the selected destination and applicable constraints?
+        arrival_supported: Do Nav2 status and final pose error support the reported arrival grade?
+        safety_evidence_fresh: Did localization and collision evidence remain fresh during motion?
+        retry_exhausted: Have bounded local retries been exhausted without hiding the original failure?
+      evidence_fields: [pose, final_pose, final_xy_error_m, final_yaw_error_rad, nav2_status, completion_class, tolerance_profile, recovery_policy, navigation_annotation, global_plan_error, navigation_review, staged_recovery, stalled_sec]
+    group: base_motion
+    intent_tags: [base_motion, global_navigation]
+    args_schema:
+      type: object
+      required: [pose]
+      properties:
+        pose: {type: pose2d}
+        timeout_sec: {type: float, default: 120.0}
+        tolerance_profile: {type: string, default: default}
+    preconditions:
+      required: [safety_ok_or_watchdog, robot_mode_auto, global_localization_healthy, local_planner_active]
+      irrelevant: []
+    effects:
+      physical_motion: true
+      contact: false
+      reads: [map_pose, local_planner_state, safety_status]
+      writes: [nav2_goal]
+    failure_semantics:
+      FAILED_LOCALIZATION:
+        category: localization_related
+        blocks_goal: true
+        default_recovery: recover_localization_spin_or_ask_human
+      FAILED_NAVIGATION:
+        category: local_planner_fault
+        blocks_goal: true
+        default_recovery: alternate_goal_or_recover_local_planner
+      FAILED_TIMEOUT:
+        category: timeout_or_load
+        blocks_goal: true
+        default_recovery: tolerance_retry_or_ask_human
+      CANCELLED:
+        category: cancel_or_safety_block
+        blocks_goal: true
+        default_recovery: inspect_cancel_source
+    jev:
+      expose_to_command_parse: true
+      expose_to_step_supervision: true
+      candidate_priority: high
+    dashboard:
+      display_name: Go to pose
+      risk_label: global base motion
+
+  - name: move_relative
+    supervision: &translation_supervision
+      questions:
+        progress_measured: Does fresh wheel odometry support measured displacement and remaining error?
+        stop_reason_supported: Is stopping explained by an actual safety, cancellation, stale-data or no-progress signal rather than low RTF alone?
+      evidence_fields: [direction, distance_m, dx_m, dy_m, travelled_m, target_distance_m, position_error_m, along_track_m, cross_track_m, travelled_source, start_wheel_odom_pose, final_wheel_odom_pose, duration_sec, timeout_time_basis, wall_timeout_sec, timeout_reason, wheel_odom_rejection, control_mode, canceled]
+    group: base_motion
+    intent_tags: [base_motion, relative_motion]
+    natural_language:
+      aliases: [go forward, move forward, go back, back up, 前進, 後退, 少し前進]
+      negative_examples: [go to shelf, look back]
+    args_schema:
+      type: object
+      required: [direction]
+      properties:
+        direction: {type: enum, values: [forward, back, left, right]}
+        distance_m: {type: float, default: 0.2, min: 0.05, max_sim: 2.0, max_real: 0.5}
+        timeout_sec: {type: float, default: 30.0}
+    preconditions:
+      required: [safety_ok_or_watchdog, robot_mode_auto, wheel_odom_fresh]
+      irrelevant: [global_localization_healthy]
+      notes:
+        - Do not block relative/direct motion only because map localization is BAD if wheel odom feedback is fresh.
+    effects:
+      physical_motion: true
+      contact: false
+      reads: [wheel_odom, robot_mode, safety_status]
+      writes: [relative_motion_goal]
+    failure_semantics:
+      FAILED_LOCALIZATION:
+        category: localization_unrelated
+        blocks_goal: false_if_only_relative_motion
+        default_recovery: record_design_gap_or_ask_human
+      CANCELLED:
+        category: cancel_or_safety_block
+        blocks_goal: unknown
+        default_recovery: inspect_health_then_retry_or_ask
+      FAILED_TIMEOUT:
+        category: timeout_or_load
+        blocks_goal: true
+        default_recovery: ask_human_or_retry_once
+    jev:
+      expose_to_command_parse: true
+      expose_to_step_supervision: true
+      candidate_priority: high
+    dashboard:
+      display_name: Move relative
+      risk_label: relative base motion
+
+  - name: move_relative_xy
+    supervision: *translation_supervision
+    group: base_motion
+    intent_tags: [base_motion, relative_motion, diagonal_motion]
+    natural_language:
+      aliases: [front left, front right, diagonal, 左前, 右前]
+    args_schema:
+      type: object
+      properties:
+        dx_m: {type: float, default: 0.0, min: -1.0, max: 1.0}
+        dy_m: {type: float, default: 0.0, min: -1.0, max: 1.0}
+        timeout_sec: {type: float, default: 30.0}
+    preconditions:
+      required: [safety_ok_or_watchdog, robot_mode_auto, wheel_odom_fresh]
+      irrelevant: [global_localization_healthy]
+    effects:
+      physical_motion: true
+      contact: false
+      reads: [wheel_odom, robot_mode, safety_status]
+      writes: [relative_motion_goal]
+    failure_semantics:
+      FAILED_LOCALIZATION:
+        category: localization_unrelated
+        blocks_goal: false_if_only_relative_motion
+        default_recovery: record_design_gap_or_ask_human
+      CANCELLED:
+        category: cancel_or_safety_block
+        blocks_goal: unknown
+        default_recovery: inspect_health_then_retry_or_ask
+    jev:
+      expose_to_command_parse: true
+      expose_to_step_supervision: true
+      candidate_priority: high
+    dashboard:
+      display_name: Move relative XY
+      risk_label: relative base motion
+
+  - name: rotate_relative
+    supervision:
+      questions:
+        rotation_measured: Does unwrapped fresh odometry support actual rotation and remaining angle?
+        meaningful_progress: Is rotation reducing target error rather than oscillating or only consuming wall time?
+      evidence_fields: [yaw_deg, signed_accumulated_yaw_rad, target_yaw_delta_rad, final_yaw_error_rad, yaw_goal_tolerance_rad, turned_source, start_wheel_odom_pose, final_wheel_odom_pose, duration_sec, timeout_time_basis, wall_timeout_sec, timeout_reason, wheel_odom_rejection, control_mode, canceled]
+    group: base_motion
+    intent_tags: [base_motion, relative_rotation]
+    natural_language:
+      aliases: [turn left, turn right, rotate left, rotate right, 左に回って, 右に回って]
+      negative_examples: [look left, see left]
+    args_schema:
+      type: object
+      required: [yaw_deg]
+      properties:
+        yaw_deg: {type: float, default: 90.0, min: -180.0, max: 180.0}
+        timeout_sec: {type: float, default: 30.0}
+    preconditions:
+      required: [safety_ok_or_watchdog, robot_mode_auto, wheel_odom_fresh]
+      irrelevant: [global_localization_healthy]
+      notes:
+        - Do not block turn/rotate only because map localization is BAD if wheel odom feedback is fresh.
+    effects:
+      physical_motion: true
+      contact: false
+      reads: [wheel_odom, robot_mode, safety_status]
+      writes: [relative_rotation_goal]
+    failure_semantics:
+      FAILED_LOCALIZATION:
+        category: localization_unrelated
+        blocks_goal: false_if_only_relative_motion
+        default_recovery: record_design_gap_or_ask_human
+      CANCELLED:
+        category: cancel_or_safety_block
+        blocks_goal: unknown
+        default_recovery: inspect_health_then_retry_or_ask
+    jev:
+      expose_to_command_parse: true
+      expose_to_step_supervision: true
+      candidate_priority: high
+    dashboard:
+      display_name: Rotate relative
+      risk_label: relative base motion
+
+  - name: cancel_motion
+    supervision:
+      questions:
+        stopped_confirmed: Is there evidence that motion stopped and active goals were canceled, beyond sending a cancel request?
+      evidence_fields: [cancelled_goals, robot_stationary, stopped, cancel_response]
+    group: base_motion
+    intent_tags: [cancel, safety]
+    natural_language:
+      aliases: [cancel, stop, stop robot, 全停止, キャンセル]
+    args_schema: {type: object, properties: {}}
+    preconditions:
+      required: []
+      irrelevant: [robot_mode_auto, global_localization_healthy]
+    effects:
+      physical_motion: false
+      contact: false
+      reads: []
+      writes: [cancel_navigation]
+    failure_semantics: {}
+    jev:
+      expose_to_command_parse: true
+      expose_to_step_supervision: true
+      candidate_priority: high
+    dashboard:
+      display_name: Cancel motion
+      risk_label: safety
+
+  - name: capture_observation
+    supervision:
+      questions:
+        fresh_image: Was a readable new image captured after the requested camera pose settled?
+        stationary_evidence: Was the robot stationary for this observation?
+        evidence_scope: Does the image belong to this task and observation epoch rather than an earlier attempt?
+      evidence_fields: [required_views, usable_views, image_topic, completed_time_monotonic]
+    group: view_camera
+    intent_tags: [perception, observation, read_sensor]
+    args_schema:
+      type: object
+      properties:
+        min_image_time_monotonic: {type: float, optional: true}
+        scan_band: {type: string, optional: true}
+    preconditions:
+      required: [robot_stationary, camera_ready]
+      irrelevant: [robot_mode_auto, global_localization_healthy]
+    effects:
+      physical_motion: false
+      contact: false
+      creates_observation: true
+      reads: [camera_image]
+      writes: [mission_observations]
+    failure_semantics:
+      FAILED_TIMEOUT:
+        category: camera_or_perception_fault
+        blocks_goal: true
+        default_recovery: retry_or_reset_camera
+    jev:
+      expose_to_command_parse: false
+      expose_to_step_supervision: true
+      candidate_priority: low
+    dashboard:
+      display_name: Capture observation
+      risk_label: perception
+
+  - name: detect_known_object
+    supervision:
+      questions:
+        backend_completed: Did the requested inference backend finish, rather than fail to load or return a stub?
+        capability_gap: Is this a semantic or deployment limitation rather than a camera health fault?
+        partial_goal: Were unresolved attributes preserved instead of claiming the complete target was found?
+        instance_binding: Are color and object matches bound to the same image and instance when required?
+      evidence_fields: [inference_completed, provider_errors, provider_warnings, goal_satisfied, outcome, check_results, unresolved_requirements]
+    group: perception_detection
+    intent_tags: [perception, detection, object_query]
+    natural_language:
+      aliases: [find, search, detect, 探して, 見つけて]
+      negative_examples: [look left without object, go to shelf]
+    args_schema:
+      type: object
+      required: [query]
+      properties:
+        query: {type: string}
+        min_confidence: {type: float, default: 0.5, min: 0.0, max: 1.0}
+        provider: {type: enum, values: [stub, yolo11s, yolo11s_ocr], default: yolo11s}
+    preconditions:
+      required: [robot_stationary, camera_image_fresh]
+      irrelevant: [robot_mode_auto, global_localization_healthy]
+    effects:
+      physical_motion: false
+      contact: false
+      reads: [mission_observations, perception_models]
+      writes: [detection_result]
+    failure_semantics:
+      NEEDS_HUMAN:
+        category: target_not_found
+        blocks_goal: depends_on_intent_role
+        default_recovery: show_images_and_ask_continue_retry_stop
+      PERCEPTION_STUB:
+        category: perception_model_unavailable
+        blocks_goal: unknown
+        default_recovery: ask_human_or_mark_stub
+    jev:
+      expose_to_command_parse: true
+      expose_to_step_supervision: true
+      candidate_priority: high
+    dashboard:
+      display_name: Detect known object
+      risk_label: perception
+
+  - name: set_camera_pose
+    supervision:
+      questions:
+        feedback_reached: Did fresh measured camera feedback reach the target, rather than only accept a command?
+        control_available: Was camera control retained and was the base stationary?
+        feedback_path_fault: Does missing or stale pan/tilt feedback indicate an actuator or delivery fault needing Recovery, rather than a normal object-not-found result?
+        requested_view_valid: Is the requested view actually confirmed? An image after an unconfirmed camera move cannot satisfy the requested direction.
+      evidence_fields: [completed_time_monotonic, pan_deg, tilt_deg, pan_feedback, tilt_feedback, feedback_fresh, feedback_age_sec, failure_category]
+    group: view_camera
+    intent_tags: [perception, camera_motion, view_control]
+    natural_language:
+      aliases: [look left, see left, look right, see right, 左を見る, 左を見て, 右を見る]
+      negative_examples: [turn left, rotate left]
+    args_schema:
+      type: object
+      required: [pan_deg, tilt_deg]
+      properties:
+        pan_deg: {type: float, min: -60.0, max: 60.0}
+        tilt_deg: {type: float, min: -30.0, max: 90.0}
+        scan_band: {type: string, optional: true}
+        wait_timeout_sec: {type: float, default: 1.0}
+        tolerance_deg: {type: float, default: 2.0}
+        require_feedback: {type: bool, default: false}
+    preconditions:
+      required: [robot_stationary]
+      irrelevant: [robot_mode_auto, global_localization_healthy]
+    effects:
+      physical_motion: true
+      contact: false
+      reads: [camera_joint_state]
+      writes: [camera_pan_tilt_command]
+    failure_semantics:
+      FAILED_PRECHECK:
+        category: camera_or_perception_fault
+        blocks_goal: true
+        default_recovery: call_recovery_agent
+      FAILED_TIMEOUT:
+        category: camera_or_perception_fault
+        blocks_goal: true
+        default_recovery: retry_or_ask_human
+    jev:
+      expose_to_command_parse: true
+      expose_to_step_supervision: true
+      candidate_priority: high
+    dashboard:
+      display_name: Set camera pose
+      risk_label: camera motion
+
+  - name: move_lift_bounded
+    supervision:
+      questions:
+        lift_feedback_supported: Does feedback support the reported lift result and bounded limit compliance?
+        base_stationary: Was the base stationary during the lift operation?
+      evidence_fields: [direction, distance_m, duration_sec, lift_speed_m_s, stop_timer_active, position_before_mm, lift_state_before, reason]
+    group: manipulation_lite
+    intent_tags: [lift, bounded_motion]
+    args_schema:
+      type: object
+      required: [direction]
+      properties:
+        direction: {type: enum, values: [UP, DOWN, up, down]}
+        distance_m: {type: float, optional: true, min: 0.0, max: 0.2}
+        duration_sec: {type: float, optional: true, min: 0.0, max: 6.0}
+    preconditions:
+      required: [safety_ok_or_watchdog, robot_stationary, lift_gateway_ready]
+      irrelevant: [robot_mode_auto, global_localization_healthy]
+    effects:
+      physical_motion: true
+      contact: false
+      reads: [lift_state]
+      writes: [lift_command]
+    failure_semantics:
+      FAILED_TIMEOUT:
+        category: timeout_or_load
+        blocks_goal: true
+        default_recovery: ask_human_inspect_lift
+    jev:
+      expose_to_command_parse: true
+      expose_to_step_supervision: true
+      candidate_priority: medium
+    dashboard:
+      display_name: Move lift bounded
+      risk_label: lift motion
+
+  - name: set_pose
+    supervision:
+      questions:
+        joint_feedback_matches: Do fresh arm joint measurements confirm the requested named pose within its limits?
+        arm_gate_satisfied: Were stationary, gateway and safety prerequisites satisfied?
+      evidence_fields: [pose, preset_id, sequence, last_state, joint_errors, reason]
+    group: arm
+    intent_tags: [arm, pose, gesture]
+    natural_language:
+      aliases: [set pose home, arm home, pose home, wave, 左を見る, see left]
+      negative_examples: [go home as navigation, turn left]
+    args_schema:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: enum
+          values: [home, see_front, see_left, see_right, see_ground, wave]
+        repeat: {type: int, default: 1, min: 1, max: 3}
+    preconditions:
+      required: [safety_ok_or_watchdog, robot_stationary, arm_gateway_ready]
+      irrelevant: [robot_mode_auto, global_localization_healthy]
+    effects:
+      physical_motion: true
+      contact: false
+      reads: [arm_dashboard_state]
+      writes: [arm_pose_command]
+    failure_semantics:
+      FAILED_TIMEOUT:
+        category: arm_fault
+        blocks_goal: true
+        default_recovery: ask_human_inspect_arm_gateway
+    jev:
+      expose_to_command_parse: true
+      expose_to_step_supervision: true
+      candidate_priority: high
+    dashboard:
+      display_name: Set arm pose
+      risk_label: arm motion
+
+  - name: touch
+    supervision:
+      questions:
+        target_geometry_supported: Are target identity and reachable geometry supported by fresh perception and calibration?
+        contact_result_supported: Does the gateway report support the requested touch or press outcome?
+      evidence_fields: [target, mode, u, v, commands_sent, detection_result, gateway_status, contact, reason]
+    group: arm
+    intent_tags: [arm, contact, touch_anything]
+    natural_language:
+      aliases: [touch, press, tap, 触って, 押して]
+    args_schema:
+      type: object
+      required: [target]
+      properties:
+        target: {type: string}
+        mode: {type: enum, values: [touch, press], default: touch}
+        detection_result: {type: object, optional: true}
+    preconditions:
+      required: [safety_ok_or_watchdog, robot_stationary, arm_gateway_ready, camera_image_fresh]
+      irrelevant: [robot_mode_auto, global_localization_healthy]
+    effects:
+      physical_motion: true
+      contact: true
+      reads: [detection_result, arm_dashboard_state]
+      writes: [touch_anything_command]
+    failure_semantics:
+      NEEDS_HUMAN:
+        category: target_not_found_or_contact_not_confirmed
+        blocks_goal: true
+        default_recovery: ask_human_confirm_contact_action
+      FAILED_TIMEOUT:
+        category: arm_fault
+        blocks_goal: true
+        default_recovery: ask_human_inspect_arm_gateway
+    jev:
+      expose_to_command_parse: true
+      expose_to_step_supervision: true
+      candidate_priority: medium
+    dashboard:
+      display_name: Touch target
+      risk_label: contact arm motion
+
+  - name: grasp
+    supervision:
+      questions:
+        manipulation_supported: Is the requested manipulation implemented and calibrated rather than assumed available?
+        end_state_verified: Does evidence verify the requested object end state rather than only a gripper command?
+      evidence_fields: [target, destination, gateway_status, object_held, reason]
+    group: arm
+    intent_tags: [arm, contact, grasp, vla]
+    natural_language:
+      aliases: [grasp, pick up, grab, 掴んで, 取って]
+    args_schema:
+      type: object
+      required: [target]
+      properties:
+        target: {type: string}
+        destination: {type: string, optional: true}
+    preconditions:
+      required: [safety_ok_or_watchdog, robot_stationary, arm_gateway_ready, camera_image_fresh]
+      irrelevant: [robot_mode_auto, global_localization_healthy]
+    effects:
+      physical_motion: true
+      contact: true
+      reads: [camera_image, arm_dashboard_state, vla_endpoint]
+      writes: [vla_grasp_command]
+    failure_semantics:
+      NEEDS_HUMAN:
+        category: target_not_found_or_grasp_not_confirmed
+        blocks_goal: true
+        default_recovery: ask_human_confirm_grasp_action
+      FAILED_UNSUPPORTED:
+        category: unsupported_in_real
+        blocks_goal: true
+        default_recovery: ask_human
+    jev:
+      expose_to_command_parse: true
+      expose_to_step_supervision: true
+      candidate_priority: medium
+    dashboard:
+      display_name: Grasp target
+      risk_label: contact arm motion

@@ -1,0 +1,457 @@
+# Recovery Agent env binding: Isaac Sim.
+# Item ids are the ids published by health_monitor._build_sim_domains.
+# Producers group items emitted by the same node so one dead node becomes one
+# incident instead of one per item.
+
+kind: sim
+
+# Launch coverage, not a second launcher. Never run a whole launch group to
+# repair one member. Missing controlled commands stay explicitly manual.
+startup_units:
+  - id: isaac
+    label: Isaac runtime and scene
+    handling: environment
+    source: tools/sim_robot_quick_start.py
+    components: [isaac]
+    verify_items: [sim_clock, sim_rtf]
+    recovery: manual
+  - id: sensors
+    label: Isaac sensor publishers
+    handling: known_recovery
+    source: src/robot_sim/scripts/setup_isaac_real_lab_post_play.py
+    components: [isaac_lidar, isaac_camera, isaac_arm_camera]
+    playbooks: [PB-LIDAR-STALE, PB-CAMERA-STALE]
+    verify_items: [lidar_device_status, camera_color_diagnostics, camera_depth_diagnostics, arm_camera_color_stream]
+    recovery: manual
+  - id: mode_switch
+    label: Mode switch (starts MANUAL)
+    handling: known_recovery
+    source: src/nav_pkg/launch/navigation.launch.py
+    components: [mode_switch]
+    playbooks: [PB-NODE-DOWN]
+    verify_items: [delivery_robot_mode, robot_mode]
+    recovery: authorized_start
+  - id: safety_node
+    label: Software safety output
+    handling: known_recovery
+    source: src/nav_pkg/launch/navigation.launch.py
+    components: [safety_node]
+    depends_on: [mode_switch]
+    playbooks: [PB-NODE-DOWN]
+    verify_items: [delivery_safety, safety, cmd_vel]
+    recovery: authorized_start
+  - id: sim_drive
+    label: Sim drive adapter
+    handling: known_recovery
+    source: tools/sim/open_sim_nav2_windows.sh
+    components: [sim_drive]
+    depends_on: [safety_node]
+    playbooks: [PB-DRIVE-PROC-DOWN, PB-NODE-DOWN]
+    verify_items: [drive_health, drive_feedback, steer_feedback]
+    recovery: authorized_start
+  - id: sim_lift
+    label: Lift and pan/tilt adapter
+    handling: known_recovery
+    source: tools/sim/open_sim_nav2_windows.sh
+    components: [sim_lift]
+    depends_on: [safety_node]
+    playbooks: [PB-NODE-DOWN]
+    verify_items: [sim_lift_joint_targets, camera_pan, camera_tilt, lift_position]
+    recovery: authorized_start
+  - id: localization
+    label: FAST-LIO and GICP (including TF and LiDAR adapter prerequisites)
+    handling: known_recovery
+    source: src/localization_pkg/launch/fast_lio_localization.launch.py
+    components: [fast_lio, gicp]
+    depends_on: [sensors, lidar_adapter]
+    playbooks: [PB-NODE-DOWN, PB-LOC-LOST, PB-FAST-LIO-RESET]
+    verify_items: [fast_lio_odom, gicp_pose, gicp_score, localization_consistency]
+    recovery: manual
+    limitation: FAST-LIO supports authorized restart; GICP/map/TF full group start remains manual.
+  - id: navigation
+    label: Nav2 and costmaps
+    handling: known_recovery
+    source: src/nav_pkg/launch/navigation.launch.py
+    components: [nav2]
+    depends_on: [localization, safety_node]
+    playbooks: [PB-NODE-DOWN, PB-NAV-LIFECYCLE, PB-NAV-BLOCKED]
+    verify_items: [lifecycle_controller_server, lifecycle_planner_server, lifecycle_bt_navigator, lifecycle_local_costmap]
+    recovery: authorized_start
+    limitation: Starts Nav2, Joy arbiter and depth processing only when all owned members are absent; leaves existing Mode/Safety untouched. Partial groups require investigation.
+  - id: lidar_adapter
+    label: Isaac PointCloud2 to Livox adapter
+    handling: known_recovery
+    source: src/robot_sim/config/livox_pc2_adapter.yaml
+    components: [sim_lidar_adapter]
+    depends_on: [sensors]
+    playbooks: [PB-NODE-DOWN]
+    verify_items: [sim_lidar_adapter_cloud]
+    recovery: authorized_start
+  - id: arm_touch
+    label: Arm, visual sync and Touch
+    handling: known_recovery
+    source: src/robot_sim/launch/sim_arm_touch.launch.py
+    components: [arm_gateway, arm_visual]
+    playbooks: [PB-NODE-DOWN, PB-ARM-LINK-LOST]
+    verify_items: [so101_arm_gateway_delivery, so101_arm_visual_joint_states]
+    recovery: manual
+    limitation: Touch availability is not proven by gateway feedback; no controlled group start yet.
+  - id: support_tools
+    label: TF export, physical Joy, RViz and optional LLM
+    handling: unknown_investigation
+    source: tools/sim/open_sim_nav2_windows.sh
+    components: []
+    verify_items: []
+    recovery: manual
+    limitation: LiDAR adapter and Nav2 Joy arbiter are covered above. These remaining tools have no independent recovery/verification contract. RViz and local LLM are optional.
+  - id: agent_stack
+    label: Agent, Dashboard, Health and Recovery
+    handling: external_supervisor
+    source: tools/run_agent_dashboard_sim_clean.sh
+    components: [agent]
+    verify_items: [agent_heartbeat]
+    recovery: manual
+    limitation: Start/Stop in Quick Start; a stopped Recovery cannot restart itself.
+
+approval:
+  A1: confirm
+  A2: confirm
+  A3: confirm
+
+debounce_sec: 3.0
+
+# Stage 1 P0 items.
+safety_items:
+  - physical_estop
+  - delivery_safety
+  - safety
+
+# Items never treated as faults in this env. Fill in from live sim observation.
+ignored_items: []
+
+# Published only while something happens; STALE / UNKNOWN = idle, not a fault.
+# Confirmed on the live sim 2026-10-06: /cmd_vel_raw goes silent with no command.
+event_driven_items:
+  - cmd_vel_raw
+
+# Incident closes only after its root has been healthy this long (anti-flapping).
+resolve_after_sec: 10.0
+
+# Launcher modes (tools/sim_robot_quick_start.py ros_mode). The launcher passes
+# its ros_mode as RECOVERY_PROFILE -> recovery_agent `launch_profile`.
+launch_profiles:
+  nav2:
+    note: 完整导航：Nav2 + FAST-LIO/GICP + Arm/Touch
+    capabilities: [manual_drive, auto_navigation, stationary_perception, lift, so101_arm]
+  arm_test:
+    note: Arm Test：底盘/Lift/Arm/Camera/Touch，不启动定位和 Nav2（负载对策）
+    capabilities: [manual_drive, stationary_perception, lift, so101_arm]
+    absent_components: [isaac_lidar, sim_lidar_adapter, livox_converter, fast_lio, gicp, nav2]
+
+components:
+  isaac:
+    process_pattern: isaac-sim
+    topics: [/clock]
+    note: Isaac Sim process; owns /clock and all sensor streams
+  isaac_lidar:
+    topics: [/livox/lidar_pc2_from_sim]
+    note: Isaac LiDAR OmniGraph publisher (post-play setup script)
+  isaac_camera:
+    topics: [/camera/camera/color/image_raw]
+    note: Isaac D435-like camera OmniGraph publisher
+  isaac_arm_camera:
+    topics: [/arm_camera/color/image_raw]
+  sim_drive:
+    restart_risk: A2
+    ros_node: /sim_omni_drive_command_node
+    process_pattern: sim_omni_drive_command_node
+    topics: [/sim/drive_target]
+    restart:
+      start_if_absent: true
+      kill_pattern: "robot_sim/sim_omni_drive_command_node"
+      command: [ros2, run, robot_sim, sim_omni_drive_command_node, --ros-args,
+                --params-file, "${ws}/src/robot_sim/config/sim_omni_drive.yaml", -p, "use_sim_time:=true"]
+  sim_lift:
+    restart_risk: A2
+    restart_preconditions: [mode_manual, cmd_vel_zero_fresh, base_stationary]
+    ros_node: /sim_lift_command_node
+    process_pattern: sim_lift_command_node
+    topics: [/sim/arm_joint_states]
+    restart:
+      start_if_absent: true
+      # Same parameters as tools/sim/open_sim_nav2_windows.sh.
+      kill_pattern: "robot_sim/sim_lift_command_node"
+      command: [ros2, run, robot_sim, sim_lift_command_node, --ros-args,
+                -p, "publish_rate:=30.0", -p, "lift_speed_m_s:=0.06", -p, "lift_lower_m:=0.0", -p, "lift_upper_m:=0.2",
+                -p, "camera_pan_neutral_deg:=267.1", -p, "camera_pan_lower_rad:=-1.5708", -p, "camera_pan_upper_rad:=1.5708",
+                -p, "camera_neutral_deg:=101.8", -p, "camera_down_offset_deg:=42.0",
+                -p, "camera_lower_rad:=-1.57080", -p, "camera_upper_rad:=2.30383",
+                -p, "robot_cmd_vel_topic:=/cmd_vel", -p, "robot_mode_topic:=/robot_mode",
+                -p, "stop_linear_threshold:=0.01", -p, "stop_angular_threshold:=0.02",
+                -p, "cmd_vel_timeout_sec:=0.5", -p, "use_sim_time:=true"]
+  arm_gateway:
+    restart_risk: A2
+    ros_node: /so101_arm_gateway
+    topics: [/arm/dashboard_state]
+  arm_visual:
+    ros_node: /arm_visual_joint_state_calibrator
+    topics: [/arm/visual_joint_states]
+  safety_node:
+    ros_node: /cmd_vel_safety_node
+    process_pattern: safety_layer/cmd_vel_safety_node
+    topics: [/safety_status]
+    restart_preconditions: [mode_manual, raw_cmd_vel_zero_fresh]
+    restart:
+      # Bootstrap only: never kill a live safety process (which could clear ESTOP).
+      start_if_absent: true
+      command: [ros2, run, safety_layer, cmd_vel_safety_node, --ros-args,
+                -p, "watchdog_timeout:=0.30", -p, "max_vx:=0.30", -p, "max_vy:=0.20", -p, "max_wz:=1.0",
+                -p, "max_accel_vx:=0.50", -p, "max_accel_vy:=0.12", -p, "max_accel_wz:=0.45",
+                -p, "max_jerk_vx:=10.0", -p, "max_jerk_vy:=10.0", -p, "max_jerk_wz:=10.0",
+                -p, "joy_estop_button:=-1", -p, "manual_bypass_slew:=true",
+                -p, "auto_output_frequency:=50.0", -p, "touch_lock_stale_timeout_sec:=2.0"]
+  mode_switch:
+    ros_node: /nav_mode_switch_node
+    process_pattern: nav_pkg/nav_mode_switch_node.py
+    topics: [/robot_mode]
+    restart:
+      # Node initializes in MANUAL. Values mirror navigation.launch.py.
+      start_if_absent: true
+      command: [ros2, run, nav_pkg, nav_mode_switch_node.py, --ros-args,
+                -p, "auto_button:=0", -p, "manual_button:=1", -p, "manual_deadman_button:=4",
+                -p, "manual_teleop_timeout_sec:=0.25", -p, "mode_command_topic:=/nav_mode/command",
+                -p, "enable_motion_policy:=true", -p, "base_frame:=base_footprint", -p, "plan_topic:=/plan",
+                -p, "align_angle_rad:=0.50", -p, "align_distance_m:=0.25", -p, "finish_distance_m:=0.18",
+                -p, "finish_yaw_gate_rad:=0.45", -p, "finish_max_vx:=0.08", -p, "finish_max_wz:=0.25",
+                -p, "reverse_distance_m:=0.55", -p, "reverse_lateral_window_m:=0.25",
+                -p, "near_back_distance_m:=1.50", -p, "near_back_angle_rad:=1.0472",
+                -p, "near_back_lateral_scale:=0.10", -p, "policy_lookahead_m:=1.2",
+                -p, "lateral_scale:=0.10", -p, "lateral_to_yaw_gain:=1.4", -p, "min_align_wz:=0.18",
+                -p, "max_align_wz:=0.55", -p, "max_reverse_vx:=0.12", -p, "reverse_yaw_gain:=1.0",
+                -p, "local_costmap_node:=/local_costmap/local_costmap",
+                -p, "normal_local_inflation_radius:=0.45", -p, "narrow_local_inflation_radius:=0.33",
+                -p, "narrow_speed_hard_limit_mps:=0.14", -p, "narrow_centerline_gain:=0.8"]
+  fast_lio:
+    ros_node: /fast_lio
+    topics: [/fast_lio/odometry]
+    restart_preconditions: [mode_manual, cmd_vel_zero_fresh, lidar_adapter_ready, imu_ready]
+    restart:
+      kill_pattern: fast_lio/fastlio_mapping
+      command: [ros2, run, fast_lio, fastlio_mapping, --ros-args, -r, "__node:=fast_lio",
+                --params-file, "${ws}/src/localization_pkg/config/fast_lio_mid360.yaml",
+                -p, "use_sim_time:=true", -p, "common.max_scan_backlog_sec:=0.5", -p, "common.max_lidar_gap_sec:=2.0",
+                -r, "/Odometry:=/fast_lio/odometry", -r, "/cloud_registered:=/fast_lio/cloud_registered",
+                -r, "/cloud_registered_body:=/fast_lio/cloud_registered_body", -r, "/cloud_effected:=/fast_lio/cloud_effected",
+                -r, "/Laser_map:=/fast_lio/laser_map", -r, "/path:=/fast_lio/path"]
+      verify_items: [fast_lio_timing, fast_lio_odom]
+      verify_timeout_sec: 30
+  sim_lidar_adapter:
+    ros_node: /pointcloud2_to_livox_custom_msg_node
+    process_pattern: robot_sim/pointcloud2_to_livox_custom_msg_node
+    topics: [/livox/lidar_pc2_accumulated, /livox/lidar]
+    restart_preconditions: [sim_clock_running, lidar_input_ready]
+    restart:
+      start_if_absent: true
+      command: [ros2, run, robot_sim, pointcloud2_to_livox_custom_msg_node, --ros-args,
+                --params-file, "${ws}/src/robot_sim/config/livox_pc2_adapter.yaml", -p, "use_sim_time:=true"]
+  livox_converter:
+    ros_node: /livox_custom_to_pc2
+    topics: [/livox/lidar_pc2]
+  gicp:
+    ros_node: /gicp_localizer
+    topics: [/gicp_loc/score]
+  nav2:
+    ros_node: /bt_navigator
+    ros_nodes: [/bt_navigator, /controller_server, /planner_server, /behavior_server,
+                /local_costmap/local_costmap, /global_costmap/global_costmap,
+                /lifecycle_manager_navigation, /joy_source_arbiter_node,
+                /depth_camera_info_stamp_bridge, /depth_proc_container, /point_cloud_xyz_node]
+    restart_risk: A2
+    restart_preconditions: [mode_manual, cmd_vel_zero_fresh, localization_ready, localization_pose_ready]
+    restart:
+      start_if_absent: true
+      exclusive_nodes: [/bt_navigator, /controller_server, /planner_server, /behavior_server,
+                        /local_costmap/local_costmap, /global_costmap/global_costmap,
+                        /lifecycle_manager_navigation, /joy_source_arbiter_node,
+                        /depth_camera_info_stamp_bridge, /depth_proc_container, /point_cloud_xyz_node]
+      exclusive_process_patterns: [nav2_controller/controller_server, nav2_planner/planner_server,
+                                   nav2_behaviors/behavior_server, nav2_bt_navigator/bt_navigator,
+                                   __node:=lifecycle_manager_navigation, __node:=depth_proc_container,
+                                   nav_pkg/joy_source_arbiter_node.py, robot_sim/depth_camera_info_stamp_bridge]
+      command: [ros2, launch, nav_pkg, navigation.launch.py, "use_sim_time:=true",
+                "start_mode_switch:=false", "start_safety_node:=false"]
+      verify_items: [lifecycle_controller_server, lifecycle_planner_server, lifecycle_bt_navigator, lifecycle_local_costmap]
+      verify_timeout_sec: 60
+  agent:
+    ros_node: /agent_node
+    topics: [/agent/health_state]
+  host:
+    note: Host machine resources
+  simulation_performance:
+    note: Read-only simulation clock and RTF evidence
+
+# MissionAgent suspected_components -> components here.
+component_aliases:
+  localization: gicp
+  local_planner: nav2
+  navigation: nav2
+  camera: isaac_camera
+  camera_control: sim_lift
+  lidar: isaac_lidar
+  drive: sim_drive
+  arm: arm_gateway
+
+# Backend settings for action primitives. Components without `restart` above
+# (GICP, arm gateway) fall back to manual operator requests.
+# Commands mirror Quick Start; launch_binding applies its whitelisted snapshot
+# (including motion_policy). Arbitrary custom launch overrides are not replayed.
+actions:
+  restart_in_terminal: true
+  # Keep detecting while ROS is manually closed; do not silently resurrect nodes.
+  restart_requires_approval: true
+  localization_success_timeout_sec: 100
+  last_trusted_pose:
+    require_timestamped_base: true
+    map_frame: map
+    pose_frame: base_footprint
+    base_frame: base_footprint
+    max_report_age_sec: 4
+    max_anchor_age_sec: 120
+    max_odom_age_sec: 3
+    max_odom_delta_m: 3.0
+    max_odom_delta_yaw_rad: 3.142
+  lifecycle_manager: /lifecycle_manager_navigation
+  local_costmap_clear: /local_costmap/clear_entirely_local_costmap
+  global_costmap_clear: /global_costmap/clear_entirely_global_costmap
+  navigate_cancel: /navigate_to_pose/_action/cancel_goal
+  auto_initial_align:
+    script: "${ws}/tools/auto_initial_align.py"
+    topic: /livox/lidar_pc2_from_sim
+    # Full Isaac scenes produce fewer scans per wall-clock second.
+    args: [--duration, "20"]
+    timeout_sec: 90
+
+# sim has no real serial devices; the fault injector removes virtual ones.
+devices:
+  drive_serial: {kind: virtual}
+  arm_serial: {kind: virtual}
+
+# Named preconditions used by playbooks, bound to probes for this env.
+preconditions:
+  estop_released:
+    probe: health_item
+    args: {item: physical_estop}
+  safety_gate_ok:
+    probe: health_item
+    args: {item: safety}
+  mode_manual:
+    probe: mode_is
+    args: {mode: MANUAL}
+  cmd_vel_zero_fresh:
+    probe: twist_zero
+    args: {item: cmd_vel}
+  raw_cmd_vel_zero_fresh:
+    probe: twist_zero
+    args: {item: cmd_vel_raw}
+  base_stationary:
+    # sim: no wheel encoder feedback distinct from targets; use the final command.
+    probe: twist_zero
+    args: {item: cmd_vel}
+  sim_clock_running:
+    probe: health_item
+    args: {item: sim_clock}
+  lidar_input_ready:
+    probe: health_item
+    args: {item: lidar_device_status}
+  localization_ready:
+    probe: health_item
+    args: {item: gicp_score}
+  localization_pose_ready:
+    probe: health_item
+    args: {item: gicp_pose}
+  lidar_adapter_ready:
+    probe: health_item
+    args: {item: sim_lidar_adapter_cloud}
+  imu_ready:
+    probe: health_item
+    args: {item: sim_lidar_imu}
+
+items:
+  # --- safety
+  physical_estop: {layer: safety}          # fixed SIMULATION_ASSUMPTION in sim
+  delivery_safety: {layer: safety, producer: safety_node}
+  safety: {layer: safety, depends_on: [delivery_safety]}
+  # /cmd_vel is published by cmd_vel_safety_node; /cmd_vel_raw by nav_mode_switch_node
+  # (agent_node only while executing). TODO: verify against a live graph.
+  "publisher:/cmd_vel_raw": {layer: safety, depends_on: [delivery_robot_mode]}
+  "publisher:/cmd_vel": {layer: safety, depends_on: [delivery_safety]}
+  "publisher:/joy": {layer: safety}
+
+  # --- platform
+  sim_clock: {layer: platform, producer: isaac}
+  sim_rtf: {layer: platform, producer: simulation_performance, depends_on: [sim_clock]}
+  host_resources: {layer: platform, producer: host}
+  host_clock_sync: {layer: platform, producer: host}
+
+  # --- drivers (sim stand-ins)
+  drive_health: {layer: driver, producer: sim_drive, depends_on: [sim_clock]}
+  drive_feedback: {layer: driver, producer: sim_drive, depends_on: [sim_clock]}
+  steer_feedback: {layer: driver, producer: sim_drive, depends_on: [sim_clock]}
+  dynamixel_health: {layer: driver, producer: sim_drive, depends_on: [sim_clock]}
+  # Real electrical diagnostics can only appear as explicit injected evidence.
+  so101_arm_hardware_status: {layer: driver, producer: arm_gateway}
+  sim_lift_joint_targets: {layer: driver, producer: sim_lift, depends_on: [sim_clock]}
+  lift_position: {layer: driver, producer: sim_lift, depends_on: [sim_clock]}
+  camera_pan: {layer: driver, producer: sim_lift, depends_on: [sim_clock]}
+  camera_tilt: {layer: driver, producer: sim_lift, depends_on: [sim_clock]}
+  # real-only hardware items; in sim they appear only when the fault injector
+  # publishes them (evidence SIM_INJECTED). See sim-guideline.md §5.2.
+  drive_alarm_status: {layer: driver}
+  dynamixel_hardware_status: {layer: driver}
+  so101_arm_gateway_delivery: {layer: driver, producer: arm_gateway}
+  so101_arm_visual_joint_states: {layer: driver, producer: arm_visual, depends_on: [so101_arm_gateway_delivery]}
+
+  # --- sensors (Isaac streams)
+  lidar_device_status: {layer: ros_delivery, producer: isaac_lidar, depends_on: [sim_clock]}
+  sim_lidar_imu: {layer: ros_delivery, producer: isaac_lidar, depends_on: [sim_clock]}
+  sim_lidar_adapter_cloud: {layer: ros_delivery, producer: sim_lidar_adapter, depends_on: [lidar_device_status, sim_clock]}
+  localization_input_cloud: {layer: ros_delivery, producer: livox_converter, depends_on: [sim_lidar_adapter_cloud]}
+  camera_color_diagnostics: {layer: ros_delivery, producer: isaac_camera, depends_on: [sim_clock]}
+  camera_depth_diagnostics: {layer: ros_delivery, producer: isaac_camera, depends_on: [sim_clock]}
+  sim_camera_model: {layer: ros_delivery, producer: isaac_camera, depends_on: [sim_clock]}
+  arm_camera_color_stream: {layer: ros_delivery, producer: isaac_arm_camera, depends_on: [sim_clock]}
+  arm_camera_model: {layer: ros_delivery, producer: isaac_arm_camera, depends_on: [sim_clock]}
+  "timing:sim_camera_color": {layer: ros_delivery, depends_on: [camera_color_diagnostics, sim_clock]}
+  "timing:sim_camera_depth": {layer: ros_delivery, depends_on: [camera_depth_diagnostics, sim_clock]}
+  "timing:sim_arm_camera_color": {layer: ros_delivery, depends_on: [arm_camera_color_stream, sim_clock]}
+  "timing:sim_lidar_imu": {layer: ros_delivery, depends_on: [sim_lidar_imu, sim_clock]}
+  "timing:sim_lidar_pc2": {layer: ros_delivery, depends_on: [lidar_device_status, sim_clock]}
+  "sim_sync:rgb_depth": {layer: function, depends_on: [camera_color_diagnostics, camera_depth_diagnostics, sim_clock]}
+
+  # --- command / mode delivery
+  delivery_robot_mode: {layer: ros_delivery, producer: mode_switch}
+  robot_mode: {layer: ros_delivery, depends_on: [delivery_robot_mode]}
+  cmd_vel_raw: {layer: ros_delivery, depends_on: [delivery_robot_mode]}
+  cmd_vel: {layer: ros_delivery, depends_on: [delivery_safety]}
+  motion_policy: {layer: ros_delivery, producer: mode_switch}
+
+  # --- function
+  gicp_score: {layer: function, producer: gicp, depends_on: [localization_input_cloud, sim_clock]}
+  gicp_pose: {layer: function, producer: gicp, depends_on: [localization_input_cloud, sim_clock]}
+  gicp_recovery_status: {layer: function, producer: gicp, depends_on: [localization_input_cloud, sim_clock]}
+  localization_consistency: {layer: function, producer: gicp, depends_on: [localization_input_cloud, sim_clock]}
+  fast_lio_odom: {layer: function, producer: fast_lio, depends_on: [sim_lidar_adapter_cloud, sim_lidar_imu]}
+  fast_lio_timing: {layer: function, producer: fast_lio, depends_on: [sim_lidar_adapter_cloud, sim_lidar_imu]}
+  lifecycle_controller_server: {layer: function, producer: nav2}
+  lifecycle_planner_server: {layer: function, producer: nav2}
+  lifecycle_bt_navigator: {layer: function, producer: nav2}
+  lifecycle_local_costmap: {layer: function, producer: nav2}
+  global_plan: {layer: function}
+  navigation_progress: {layer: function}
+  navigation_route: {layer: function}
+  perception_runtime: {layer: function, depends_on: [camera_color_diagnostics]}
+
+  # --- agent
+  agent_heartbeat: {layer: agent, producer: agent}
+  agent_status: {layer: agent, producer: agent}
+  mission_state: {layer: agent, producer: agent}

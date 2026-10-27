@@ -1,0 +1,49 @@
+id: PB-SAFE-ESTOP-INCONSISTENT
+handling_class: safety_event
+number: 11
+severity: blocking
+title: Physical E-stop inputs inconsistent
+version: 1
+domain: H1
+layer: safety
+affects_capabilities: [manual_drive, auto_navigation, lift]
+envs:
+  real:
+    status: supported
+    verified: false
+    note: The three BLVD DIN3 inputs disagree -> physical_estop ERROR. Never auto-recovered.
+  sim:
+    status: injection_only
+    verified: false
+
+trigger:
+  any:
+    - {item: physical_estop, status_in: [ERROR]}
+
+diagnosis:
+  - id: estop_error
+    probe: health_item
+    args: {item: physical_estop, status_in: [ERROR]}
+    on_mismatch: {reject: true}
+
+recovery:
+  - type: action
+    primitive: cancel_motion
+  - type: operator_request
+    template: inspect_estop_wiring
+    done_when:
+      - {probe: health_item, args: {item: physical_estop}}
+
+verify:
+  - {probe: health_item, args: {item: physical_estop}}
+
+policy:
+  retry_budget: 0
+  on_fail: needs_human
+
+fault_injection:
+  sim: {injector: fake_item, args: {item: physical_estop, status: ERROR}}
+
+operator_text:
+  en: "E-stop inputs disagree between the three drives. Stop operation and inspect the E-stop wiring."
+  ja: "3台のドライバで非常停止入力が一致しません。運転を中止し、非常停止の配線を点検してください。"

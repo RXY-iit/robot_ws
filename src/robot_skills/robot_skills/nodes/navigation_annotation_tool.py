@@ -13,9 +13,9 @@ from urllib.parse import urlparse
 import yaml
 
 
-WORKSPACE_ROOT = Path("/home/ruan-x/robot_ws")
-DEFAULT_MAP_YAML = WORKSPACE_ROOT / "maps" / "sim_real_lab_001" / "nav2.yaml"
-DEFAULT_ANNOTATION_YAML = WORKSPACE_ROOT / "maps" / "sim_real_lab_001" / "navigation_annotations.yaml"
+WORKSPACE_ROOT = Path(os.environ.get("ROBOT_WS", "/home/matsunaga-h/robot_ws"))
+DEFAULT_MAP_YAML = WORKSPACE_ROOT / "maps" / "l402_2d_map_clean_0509.yaml"
+DEFAULT_ANNOTATION_YAML = WORKSPACE_ROOT / "maps" / "l402_2d_map_clean_0509" / "navigation_annotations.yaml"
 
 
 def _bundle_dir_from_env() -> Path | None:
@@ -23,7 +23,7 @@ def _bundle_dir_from_env() -> Path | None:
     if not map_id:
         return None
     if map_id == "real_lab":
-        map_id = "sim_real_lab_001"
+        map_id = "l402_2d_map_clean_0509"
     bundle_dir = WORKSPACE_ROOT / "maps" / map_id
     return bundle_dir if bundle_dir.exists() else None
 
@@ -112,7 +112,7 @@ class NavigationAnnotationToolServer:
             raise ValueError("alignment zone id is required")
 
         annotations = _load_yaml(self.annotation_yaml)
-        annotations.setdefault("map_id", os.environ.get("ROBOT_MAP_ID", "sim_real_lab_001") or "sim_real_lab_001")
+        annotations.setdefault("map_id", os.environ.get("ROBOT_MAP_ID", "l402_2d_map_clean_0509") or "l402_2d_map_clean_0509")
         annotations.setdefault("frame_id", "map")
         passages = annotations.setdefault("narrow_passages", [])
         passage = next((item for item in passages if item.get("id") == passage_id), None)

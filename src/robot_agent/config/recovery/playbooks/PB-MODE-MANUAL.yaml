@@ -1,0 +1,47 @@
+id: PB-MODE-MANUAL
+number: 13
+severity: blocking
+title: Robot in MANUAL while the task needs AUTO
+version: 1
+domain: H3
+layer: safety
+affects_capabilities: [auto_navigation, relative_motion]
+envs:
+  real:
+    status: supported
+    verified: false
+  sim:
+    status: supported
+    verified: false
+
+# MANUAL is a normal state, not a health fault; it is a fault only relative to
+# a task, so it is checked when the mission agent calls recovery.
+mission_trigger:
+  capabilities: [auto_navigation, relative_motion]
+  items: [robot_mode]
+  when: {probe: mode_is, args: {mode: MANUAL}}
+
+diagnosis:
+  - id: mode_delivery_fresh
+    probe: health_item
+    args: {item: delivery_robot_mode}
+    on_mismatch: {handoff: PB-NODE-DOWN}
+
+recovery:
+  - type: operator_request
+    template: switch_to_auto
+    done_when:
+      - {probe: mode_is, args: {mode: AUTO}}
+
+verify:
+  - {probe: mode_is, args: {mode: AUTO}}
+
+policy:
+  retry_budget: 0
+
+fault_injection:
+  sim: {injector: joy_button, args: {button: B}}
+
+operator_text:
+  en: "The robot is in MANUAL mode. Press A on the controller to switch to AUTO."
+  ja: "ロボットは MANUAL モードです。コントローラの A を押して AUTO に切り替えてください。"

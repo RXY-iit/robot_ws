@@ -13,10 +13,10 @@ from urllib.parse import urlparse
 import yaml
 
 
-WORKSPACE_ROOT = Path("/home/ruan-x/robot_ws")
-DEFAULT_MAP_YAML = WORKSPACE_ROOT / "maps" / "sim_factory_mid360_like_gpu_trueimu_011" / "nav2.yaml"
-DEFAULT_SEGMENTS_YAML = WORKSPACE_ROOT / "src" / "robot_skills" / "config" / "semantic_segments.yaml"
-DEFAULT_SEMANTIC_MAP_YAML = WORKSPACE_ROOT / "src" / "robot_skills" / "config" / "semantic_map.yaml"
+WORKSPACE_ROOT = Path(os.environ.get("ROBOT_WS", "/home/matsunaga-h/robot_ws"))
+DEFAULT_MAP_YAML = WORKSPACE_ROOT / "maps" / "l402_2d_map_clean_0509.yaml"
+DEFAULT_SEGMENTS_YAML = WORKSPACE_ROOT / "maps" / "l402_2d_map_clean_0509" / "semantic_segments.yaml"
+DEFAULT_SEMANTIC_MAP_YAML = WORKSPACE_ROOT / "maps" / "l402_2d_map_clean_0509" / "semantic_map.yaml"
 
 
 def _bundle_dir_from_env() -> Path | None:
@@ -24,7 +24,7 @@ def _bundle_dir_from_env() -> Path | None:
     if not map_id:
         return None
     if map_id == "real_lab":
-        map_id = "sim_real_lab_001"
+        map_id = "l402_2d_map_clean_0509"
     bundle_dir = WORKSPACE_ROOT / "maps" / map_id
     return bundle_dir if bundle_dir.exists() else None
 

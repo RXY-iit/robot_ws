@@ -21,6 +21,18 @@ def make_result(
     observations: list[dict[str, Any]] | None = None,
     artifacts: list[str] | None = None,
 ) -> SkillResult:
+    if skill_name == "goto_pose":
+        metrics = dict(metrics or {})
+        status = metrics.get("nav2_status")
+        degraded = any(v.get("attempted") for v in metrics.get("staged_recovery", {}).values() if isinstance(v, dict))
+        degraded = degraded or any(word in str(status) for word in ("relaxed", "micro_adjust", "alternate"))
+        degraded = degraded or any(metrics.get(k) for k in ("alternate_goal_result", "obstacle_escape_final_retry_result", "near_goal_recovery"))
+        grade = "not_successful"
+        if success:
+            grade = "degraded" if degraded else ("nav2_strict" if status == 4 else "task_tolerance")
+        if code == codes.DRY_RUN_OK:
+            grade = "dry_run"
+        metrics["completion_class"] = grade
     return SkillResult(
         skill_name=skill_name,
         success=success,

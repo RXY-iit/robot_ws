@@ -1,0 +1,56 @@
+id: PB-ARM-LINK-LOST
+handling_class: hardware_intervention
+number: 34
+severity: blocking
+title: SO101 arm communication / power lost
+version: 1
+domain: H1
+layer: power_device
+affects_capabilities: [so101_arm]
+envs:
+  real:
+    status: supported
+    verified: false
+    note: Includes power loss while torque was ON. Failure signatures to be confirmed (Q-R5).
+  sim:
+    status: injection_only
+    verified: false
+    note: Real electrical faults require explicit injected evidence; lift/pan-tilt is a different component.
+    supporting_evidence:
+      - {probe: evidence_source, args: {item: so101_arm_hardware_status, evidence: SIM_INJECTED}}
+
+trigger:
+  any:
+    - {item: so101_arm_hardware_status, class_in: [FAULT], for_sec: 3}
+
+diagnosis:
+  - id: gateway_alive
+    probe: node_alive
+    args: {component: arm_gateway}
+    on_mismatch: {handoff: PB-NODE-DOWN}
+  - id: arm_device
+    probe: device_present
+    args: {device: arm_serial}
+    expect: fail
+    on_unknown: mismatch
+    on_mismatch: {escalate: R3}
+
+recovery:
+  - type: operator_request
+    template: replug_arm
+    done_when:
+      - {probe: health_item, args: {item: so101_arm_hardware_status}}
+
+verify:
+  - {probe: health_item, args: {item: so101_arm_hardware_status}, within_sec: 15}
+  - {probe: health_item, args: {item: so101_arm_gateway_delivery}, within_sec: 15}
+
+policy:
+  retry_budget: 0
+
+fault_injection:
+  sim: {injector: fake_item, args: {item: so101_arm_hardware_status, status: STALE}}
+
+operator_text:
+  en: "SO101 arm lost communication. FIRST support the arm by hand, then re-plug the arm power / USB."
+  ja: "SO101 アームの通信が途絶えました。まずアームを手で支えてから、電源/USB を挿し直してください。"

@@ -1,0 +1,198 @@
+# Recovery Agent env binding: real robot.
+# STATUS: initial draft written from health_monitor._build_domains and the
+# real workspace hardware docs; NOT verified on the robot. See
+# todo-my/recovery-agent/real-guideline.md (Q-R* open questions).
+# Operator is physically next to the robot during real tests.
+
+kind: real
+
+# Only playbooks marked envs.real.verified may execute; others are shown as
+# suggestions with their dry-run plan.
+require_verified_for_execution: true
+
+approval:
+  A1: auto
+  A2: confirm
+  A3: confirm
+  A4: operator
+
+debounce_sec: 3.0
+
+safety_items:
+  - physical_estop
+  - delivery_safety
+  - safety
+  - joy_source_authority
+
+ignored_items: []
+
+event_driven_items:
+  - cmd_vel_raw
+
+resolve_after_sec: 10.0
+
+# Launcher modes (tools/real_robot_quick_start.py robot_mode). Draft, unverified.
+launch_profiles:
+  full:
+    note: Full robot
+    capabilities: [manual_drive, auto_navigation, stationary_perception, lift, so101_arm]
+  safe:
+    note: Phase 1 safe (no motors)
+    capabilities: [stationary_perception]
+    absent_components: [drive, dynamixel]
+  no_oriental:
+    note: No Oriental Motor (virtual drive) -- drive items come from fake_drive_motor
+    capabilities: [manual_drive, auto_navigation, stationary_perception, lift, so101_arm]
+    absent_components: [drive]
+  arm_only:
+    note: SO101 arm only; no Nav2 or mobile hardware
+    capabilities: [so101_arm]
+    absent_components: [drive, dynamixel, lift_serial, livox, realsense, gicp, nav2]
+
+components:
+  drive:
+    process_pattern: om_modbusRTU_node
+    topics: [/drive/health_summary]
+    note: BLVD Modbus master + /BLV_R/drive_motor.py (restart via tools/restart_drive_motor.sh)
+    restart:
+      # The script performs its own stationary / device / duplicate-process guards.
+      oneshot: true
+      timeout_sec: 90
+      command: ["${ws}/tools/restart_drive_motor.sh", --confirmed-stationary]
+  dynamixel:
+    topics: [/steer/health_summary]
+    note: DYNAMIXEL read_write_node (topic name to be verified)
+  lift_serial:
+    note: serial_transciever lift / pan / tilt feedback
+  livox:
+    topics: [/livox/device_health]
+  realsense:
+    topics: [/camera/camera/color/image_raw]
+  arm_gateway:
+    ros_node: /so101_arm_gateway
+    topics: [/arm/dashboard_state]
+  safety_node:
+    ros_node: /cmd_vel_safety_node
+    topics: [/safety_status]
+  mode_switch:
+    ros_node: /nav_mode_switch_node
+    topics: [/robot_mode]
+  joy_arbiter:
+    topics: [/joy/source_status]
+  gicp:
+    ros_node: /gicp_localizer
+    topics: [/gicp_loc/score]
+  nav2:
+    ros_node: /bt_navigator
+  agent:
+    ros_node: /agent_node
+    topics: [/agent/health_state]
+  host: {}
+
+component_aliases:
+  localization: gicp
+  local_planner: nav2
+  navigation: nav2
+  camera: realsense
+  lidar: livox
+  arm: arm_gateway
+
+actions:
+  lifecycle_manager: /lifecycle_manager_navigation
+  local_costmap_clear: /local_costmap/clear_entirely_local_costmap
+  global_costmap_clear: /global_costmap/clear_entirely_global_costmap
+  navigate_cancel: /navigate_to_pose/_action/cancel_goal
+  auto_initial_align:
+    script: "${ws}/tools/auto_initial_align.py"
+    topic: /livox/lidar
+    timeout_sec: 60
+
+devices:
+  drive_serial:
+    kind: path
+    path: /dev/serial/by-id/usb-FTDI_USB-RS485_Cable_FT7E9M3C-if00-port0
+  # arm_serial: path to be confirmed (Q-R5)
+
+preconditions:
+  estop_released:
+    probe: health_item
+    args: {item: physical_estop}
+  safety_gate_ok:
+    probe: health_item
+    args: {item: safety}
+  mode_manual:
+    probe: mode_is
+    args: {mode: MANUAL}
+  cmd_vel_zero_fresh:
+    probe: twist_zero
+    args: {item: cmd_vel}
+  base_stationary:
+    # TODO(real): use measured wheel speed from drive_feedback like real_robot_monitor's guard.
+    probe: twist_zero
+    args: {item: cmd_vel}
+
+items:
+  # --- safety
+  physical_estop: {layer: safety, depends_on: [drive_health]}
+  delivery_safety: {layer: safety, producer: safety_node}
+  safety: {layer: safety, depends_on: [delivery_safety]}
+  joy_source_authority: {layer: safety, producer: joy_arbiter}
+  # /cmd_vel is published by cmd_vel_safety_node; /cmd_vel_raw by nav_mode_switch_node
+  # (agent_node only while executing). TODO: verify against a live graph.
+  "publisher:/cmd_vel_raw": {layer: safety, depends_on: [delivery_robot_mode]}
+  "publisher:/cmd_vel": {layer: safety, depends_on: [delivery_safety]}
+
+  # --- platform
+  host_resources: {layer: platform, producer: host}
+  host_clock_sync: {layer: platform, producer: host}
+  sensor_clock_sync: {layer: platform}
+
+  # --- drivers
+  drive_health: {layer: driver, producer: drive}
+  drive_bus_voltage: {layer: driver, producer: drive, depends_on: [drive_health]}
+  drive_alarm_status: {layer: driver, depends_on: [drive_health]}
+  drive_din3_raw: {layer: driver, producer: drive, depends_on: [drive_health]}
+  drive_recovery_event: {layer: driver, producer: drive}
+  drive_feedback: {layer: driver, depends_on: [drive_health, physical_estop]}
+  delivery_drive_feedback: {layer: ros_delivery, depends_on: [drive_health]}
+  dynamixel_identity: {layer: driver, producer: dynamixel}
+  dynamixel_hardware_status: {layer: driver, depends_on: [dynamixel_identity]}
+  steer_feedback: {layer: driver, depends_on: [dynamixel_identity]}
+  camera_pan: {layer: driver, producer: lift_serial}
+  lift_position: {layer: driver, producer: lift_serial}
+  so101_arm_hardware_status: {layer: driver}
+  so101_arm_gateway_delivery: {layer: driver, producer: arm_gateway}
+  so101_arm_visual_joint_states: {layer: driver, depends_on: [so101_arm_gateway_delivery]}
+
+  # --- sensors
+  lidar_device_status: {layer: power_device, producer: livox}
+  camera_color_diagnostics: {layer: power_device, producer: realsense}
+  camera_depth_diagnostics: {layer: power_device, producer: realsense}
+  delivery_camera_color_diagnostics: {layer: ros_delivery, depends_on: [camera_color_diagnostics]}
+
+  # --- command / mode delivery
+  delivery_robot_mode: {layer: ros_delivery, producer: mode_switch}
+  robot_mode: {layer: ros_delivery, depends_on: [delivery_robot_mode]}
+  cmd_vel_raw: {layer: ros_delivery, depends_on: [delivery_robot_mode]}
+  cmd_vel: {layer: ros_delivery, depends_on: [delivery_safety]}
+  motion_policy: {layer: ros_delivery, producer: mode_switch}
+
+  # --- function
+  gicp_score: {layer: function, producer: gicp, depends_on: [lidar_device_status]}
+  gicp_pose: {layer: function, producer: gicp, depends_on: [lidar_device_status]}
+  localization_consistency: {layer: function, producer: gicp, depends_on: [lidar_device_status]}
+  fast_lio_odom: {layer: function, depends_on: [lidar_device_status]}
+  localization_independent_validation: {layer: function}
+  lifecycle_controller_server: {layer: function, producer: nav2}
+  lifecycle_planner_server: {layer: function, producer: nav2}
+  lifecycle_bt_navigator: {layer: function, producer: nav2}
+  lifecycle_local_costmap: {layer: function, producer: nav2}
+  local_costmap_output_freshness: {layer: function, depends_on: [camera_depth_diagnostics]}
+  global_plan: {layer: function}
+  navigation_progress: {layer: function}
+  navigation_route: {layer: function}
+
+  # --- agent
+  agent_heartbeat: {layer: agent, producer: agent}
+  agent_status: {layer: agent, producer: agent}
+  mission_state: {layer: agent, producer: agent}

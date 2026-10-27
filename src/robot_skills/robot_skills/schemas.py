@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 
 
 def utc_now() -> str:
@@ -36,6 +36,8 @@ class SkillContext:
     robot_mode: str = "UNKNOWN"
     require_human_confirm: bool = False
     max_duration_sec: float = 120.0
+    evidence_id: str | None = None
+    navigation_review: Callable | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass

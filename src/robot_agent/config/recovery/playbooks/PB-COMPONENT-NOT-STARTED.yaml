@@ -1,0 +1,55 @@
+id: PB-COMPONENT-NOT-STARTED
+number: 52
+severity: advisory
+title: Component never started (launch mode unknown)
+version: 1
+domain: H2
+layer: ros_delivery
+affects_capabilities: []
+# Before PB-NODE-DOWN (90): without a launch profile, "never seen since start"
+# more likely means "this mode does not start it" than "it crashed".
+match_priority: 85
+envs:
+  real:
+    status: supported
+    verified: false
+  sim:
+    status: supported
+    verified: false
+    note: >-
+      Fallback when the dashboard was started without RECOVERY_PROFILE. With a
+      profile, items of components the mode does not start are ignored instead,
+      and an expected component that never appears is handled as PB-NODE-DOWN.
+
+trigger:
+  any:
+    - {item: "*", class_in: [UNCERTAIN], for_sec: 30}
+
+diagnosis:
+  - id: no_launch_profile
+    probe: launch_profile_set
+    expect: fail
+    on_mismatch: {reject: true}
+  - id: never_seen
+    probe: never_observed
+    args: {item: "${root_item}"}
+    on_mismatch: {reject: true}
+
+recovery:
+  - type: operator_request
+    template: confirm_launch_mode
+    done_when:
+      - {probe: health_item, args: {item: "${root_item}"}}
+
+verify:
+  - {probe: health_item, args: {item: "${root_item}"}}
+
+policy:
+  retry_budget: 0
+
+fault_injection:
+  sim: {injector: start_without_profile, args: {}}
+
+operator_text:
+  en: "${producer} (${root_item}) has never published since start and no launcher mode was given. If this mode does not start it, restart the dashboard from the quick-start launcher (it passes the mode) or Acknowledge; otherwise start ${producer}."
+  ja: "${producer}（${root_item}）は起動以来一度も配信されていません。起動モードが未指定です。このモードで起動しないものなら quick-start から Dashboard を再起動（モードが渡されます）するか Acknowledge、そうでなければ ${producer} を起動してください。"

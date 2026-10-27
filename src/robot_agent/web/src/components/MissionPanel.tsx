@@ -1,14 +1,6 @@
-import type { MissionEvent, MissionState, NavigationProgress, NavigationRouteState, HealthState } from "../types";
-import {
-  AGENT_ORDER,
-  agentForSkill,
-  alignPlanResults,
-  artifactUrl,
-  computeAgentStatus,
-  skillExtraLines,
-  statusClass,
-  statusLabel,
-} from "../lib/missionLogic";
+import type { HumanReportState, MissionEvent, MissionState, NavigationProgress, NavigationRouteState, HealthState } from "../types";
+import { artifactUrl, statusLabel } from "../lib/missionLogic";
+import { IntentRouting, MissionTaskFlow, DecisionDetails } from "./MissionProgress";
 
 interface Props {
   mission: MissionState | null;
@@ -16,183 +8,47 @@ interface Props {
   navigationProgress: NavigationProgress | null;
   navigationRouteState: NavigationRouteState | null;
   missionEvents: MissionEvent[];
+  humanReport: HumanReportState | null;
   receivedPending: boolean;
   pendingCommandText: string;
 }
 
-export function MissionPanel({
-  mission,
-  health,
-  navigationProgress,
-  navigationRouteState,
-  missionEvents,
-  receivedPending,
-  pendingCommandText,
-}: Props) {
-  if (!mission) {
-    return (
-      <>
-        <h2>ミッション</h2>
-        <div className="summary">
-          <SummaryCard label="状態" value={receivedPending ? "受信" : "UNKNOWN"} />
-          <SummaryCard label="コマンド" value={receivedPending ? pendingCommandText : "なし"} />
-          <SummaryCard label="意図" value="解析待ち" />
-          <SummaryCard label="結果" value="実行中" />
-        </div>
-        <div className="section-head">
-          <h2>Intent Routing</h2>
-          <span className="small">解析待ち</span>
-        </div>
-        <div className="block-grid">
-          <div className="block active">
-            <div className="block-title">
-              <span>Intent Routing</span>
-              <span>active</span>
-            </div>
-            <div className="block-meta">Deterministic -&gt; Embedding -&gt; LLM Fallback の順に解析しています。</div>
-          </div>
-        </div>
-      </>
-    );
-  }
-
-  const intent = mission.intent || {};
-  const plan = mission.plan || [];
-  const current = Number.isInteger(mission.current_step_index) ? (mission.current_step_index as number) : 0;
-  const statusText = String(mission.status || "");
-  const isDone = statusText.includes("DONE");
-  const agentStatus = computeAgentStatus(mission, navigationProgress, navigationRouteState, missionEvents, health);
-  const alignedResults = alignPlanResults(plan, mission.skill_results);
-  const trace = mission.parser_trace || {};
-  const routeSteps = trace.route_steps || [];
-  const routingSource = intent.task_type ? `${trace.accepted_layer || trace.source || "未確定"} -> ${intent.task_type}` : "解析待ち";
-
-  return (
-    <>
-      <h2>ミッション</h2>
-      <div className="summary">
-        <SummaryCard label="状態" value={statusLabel(mission.status)} />
-        <SummaryCard label="コマンド" value={mission.user_text || "なし"} />
-        <SummaryCard label="意図" value={intent.task_type ? `${intent.task_type}${intent.target ? " -> " + intent.target : ""}` : "なし"} />
-        <SummaryCard label="結果" value={mission.final_message || mission.question_for_human || "実行中"} />
-      </div>
-
-      <div className="section-head">
-        <h2>Intent Routing</h2>
-        <span className="small">{routingSource}</span>
-      </div>
-      <div className="block-grid">
-        {routeSteps.length ? (
-          routeSteps.map((step, index) => {
-            const cls = step.status === "accepted" ? "done" : step.status === "rejected" ? "waiting" : "active";
-            const score = Number.isFinite(step.score) ? ` score=${(step.score as number).toFixed(3)}` : "";
-            const meta = [
-              step.task_type ? ` task=${step.task_type}` : "",
-              score,
-              step.engine ? ` engine=${step.engine}` : "",
-              step.model ? ` model=${step.model}` : "",
-              step.template_id ? ` template=${step.template_id}` : "",
-              step.reason ? ` reason=${step.reason}` : "",
-            ]
-              .join("")
-              .trim();
-            return (
-              <div key={index} className={`block ${cls}`}>
-                <div className="block-title">
-                  <span>{step.layer || "Parser"}</span>
-                  <span>{step.status || "checked"}</span>
-                </div>
-                <div className="block-meta">{meta || "checked"}</div>
-                {step.error && <div className="block-detail">{step.error}</div>}
-              </div>
-            );
-          })
-        ) : (
-          <div className="block waiting">
-            <div className="block-title">
-              <span>解析待ち</span>
-              <span>waiting</span>
-            </div>
-            <div className="block-meta">Intent parser の結果がここに表示されます。</div>
-          </div>
-        )}
-      </div>
-
-      <div className="section-head">
-        <h2>エージェント</h2>
-        <span className="small">実行中の block を強調表示</span>
-      </div>
-      <div className="block-grid">
-        {AGENT_ORDER.map((name) => (
-          <div key={name} className={`block ${agentStatus[name].state}`}>
-            <div className="block-title">
-              <span>{name}</span>
-              <span>{agentStatus[name].state || "idle"}</span>
-            </div>
-            <div className="block-meta">{agentStatus[name].detail}</div>
-          </div>
-        ))}
-      </div>
-
-      <div className="section-head">
-        <h2>スキル実行計画</h2>
-        <span className="small">
-          {plan.length ? `ステップ ${Math.min(current + 1, plan.length)} / ${plan.length}` : "ステップ 0 / 0"}
-        </span>
-      </div>
-      <div className="block-grid">
-        {plan.length ? (
-          plan.map((call, index) => {
-            const result = alignedResults[index];
-            let cls = "";
-            if (index < current) cls = "done";
-            if (index === current && !isDone) cls = "active";
-            if (result) cls = statusClass(result.code, result.success) || cls;
-            const agent = agentForSkill(call.name);
-            const detail = result ? `${result.code}: ${result.message || ""}` : call.reason || "pending";
-            const payload = call.payload ? JSON.stringify(call.payload) : "{}";
-            const extraLines = skillExtraLines(call, result, missionEvents, mission.current_step_index);
-            return (
-              <div key={index} className={`block ${cls}`}>
-                <div className="block-title">
-                  <span>
-                    {index + 1}. {call.name}
-                  </span>
-                  <span>{agent}</span>
-                </div>
-                <div className="block-meta">{payload}</div>
-                <div className="block-detail">{detail}</div>
-                {extraLines.map((line, lineIndex) => (
-                  <div key={lineIndex} className="block-detail">
-                    {line}
-                  </div>
-                ))}
-              </div>
-            );
-          })
-        ) : (
-          <div className="block waiting">
-            <div className="block-title">
-              <span>計画なし</span>
-              <span>待機</span>
-            </div>
-            <div className="block-meta">コマンド待ち。</div>
-          </div>
-        )}
-      </div>
-
-      <div className="section-head">
-        <h2>検出結果画像</h2>
-        <span className="small">検出に使われた画像</span>
-      </div>
-      <ResultImages mission={mission} />
-
-      <details>
-        <summary>Raw mission state</summary>
-        <pre>{JSON.stringify(mission, null, 2)}</pre>
-      </details>
-    </>
-  );
+export function MissionPanel({ mission, missionEvents, humanReport, receivedPending, pendingCommandText }: Props) {
+  if (!mission) return <>
+    <h2>ミッション</h2>
+    <div className="mission-overview">
+      <SummaryCard label="状態" value={receivedPending ? "受信 / 解析中" : "待機"} />
+      <SummaryCard label="コマンド" value={receivedPending ? pendingCommandText : "なし"} />
+    </div>
+    <h2>Decision Model Routing</h2><div className="small">{receivedPending ? "解析中" : "待機"}</div>
+    <h2>ミッションイベント</h2><div className="small">計画なし</div>
+    <HumanReportCard report={humanReport} />
+  </>;
+  const current = mission.plan?.[mission.current_step_index ?? -1];
+  const failed = Boolean(mission.status?.startsWith("FAILED"));
+  const blocked = mission.status === "NEEDS_HUMAN" || failed;
+  return <>
+    <div className="section-head"><h2>ミッション</h2><span className="small">{mission.mission_id}</span></div>
+    <div className="mission-overview">
+      <SummaryCard label="状態" value={statusLabel(mission.status)} />
+      <SummaryCard label="コマンド" value={mission.user_text || "なし"} />
+      <SummaryCard label="現在の処理" value={mission.status === "EXECUTE_STEP" && current ? `${current.owner || "mission"} · ${current.name}` : mission.status || "待機"} />
+      <SummaryCard label="結果" value={mission.final_message || mission.outcome || "未確定"} />
+    </div>
+    {blocked && <div className={`mission-blocker ${failed ? "failed" : "waiting"}`} role="status">
+      <strong>{mission.status === "NEEDS_HUMAN" ? "確認待ち" : "実行エラー"}</strong>
+      <div>{mission.question_for_human || mission.final_message}</div>
+    </div>}
+    <HumanReportCard report={humanReport} missionId={mission.mission_id} />
+    <IntentRouting mission={mission} events={missionEvents} />
+    <MissionTaskFlow mission={mission} events={missionEvents} />
+    <h2>検出結果画像</h2><ResultImages mission={mission} />
+    {!!mission.jev_trace?.calls?.length && <details className="raw-evidence">
+      <summary>JEV Decision Trace · {mission.jev_trace.calls.length} calls</summary>
+      {mission.jev_trace.calls.map((call, i) => <DecisionDetails key={call.call_id || i} call={call} />)}
+    </details>}
+    <details className="raw-evidence"><summary>Raw mission state</summary><pre>{JSON.stringify(mission, null, 2)}</pre></details>
+  </>;
 }
 
 function SummaryCard({ label, value }: { label: string; value: string }) {
@@ -204,26 +60,78 @@ function SummaryCard({ label, value }: { label: string; value: string }) {
   );
 }
 
+function HumanReportCard({ report, missionId }: { report: HumanReportState | null; missionId?: string }) {
+  if (!report?.report_url) return null;
+  if (missionId && report.mission_id && report.mission_id !== missionId) return null;
+  const api = report.api_summary || {};
+  const apiText = api.enabled
+    ? `api=${api.status || "pending"}${Number.isFinite(api.latency_ms) ? ` ${api.latency_ms}ms` : ""}`
+    : "api=off";
+  return (
+    <div className="human-report-card">
+      <div>
+        <strong>Human report</strong>
+        <span>{report.summary_line || "Report ready"}</span>
+        <small>
+          why={report.why_count || 0} actions={report.operator_action_count || 0} {apiText}
+        </small>
+      </div>
+      <a className="button-link secondary" href={report.report_url} target="_blank" rel="noreferrer">
+        More
+      </a>
+    </div>
+  );
+}
+
 function ResultImages({ mission }: { mission: MissionState }) {
-  const seen = new Set<string>();
+  const seenObservations = new Set<string>();
+  const seenDetections = new Set<string>();
+  const observations: { path: string; label: string; text: string; matched: boolean }[] = [];
   const matches: { path: string; label: string; text: string; confidence?: number; matched: boolean }[] = [];
+  const candidates: { path: string; label: string; text: string; confidence?: number; matched: boolean }[] = [];
   for (const result of mission.skill_results || []) {
-    if (result.skill_name !== "detect_known_object") continue;
+    if (result.skill_name === "capture_observation") {
+      const metricPath = typeof result.metrics?.image_path === "string" ? result.metrics.image_path : "";
+      const artifactImage = (result.artifacts || []).find((path) => /\.(png|jpe?g|webp)$/i.test(path));
+      const path = metricPath || artifactImage || "";
+      if (path && !seenObservations.has(path)) {
+        seenObservations.add(path);
+        observations.push({
+          path,
+          label: `OBS ${observations.length + 1}`,
+          text: String(result.metrics?.scan_band || result.metrics?.color_topic || path),
+          matched: false,
+        });
+      }
+    }
+    for (const observation of result.observations || []) {
+      const obsPath = typeof observation.image_path === "string" ? observation.image_path : "";
+      if (!obsPath || seenObservations.has(obsPath)) continue;
+      seenObservations.add(obsPath);
+      observations.push({
+        path: obsPath,
+        label: `OBS ${observations.length + 1}`,
+        text: String(observation.scan_band || observation.color_topic || obsPath),
+        matched: false,
+      });
+    }
     for (const item of result.metrics?.annotated_images || []) {
       const path = item.annotated_image_path || item.image_path;
-      if (!path || seen.has(path) || !item.matched) continue;
-      seen.add(path);
-      matches.push({
+      if (!path || seenDetections.has(path)) continue;
+      seenDetections.add(path);
+      const entry = {
         path,
         label: item.matched ? `MATCH ${item.top_label || "detection"}` : item.top_label || "candidate",
         text: `${item.query || ""} detections:${item.detection_count || 0} matched:${item.matched_count || 0}`,
         confidence: item.top_confidence,
         matched: Boolean(item.matched),
-      });
+      };
+      if (entry.matched) matches.push(entry);
+      else candidates.push(entry);
     }
   }
 
-  if (!matches.length) {
+  if (!observations.length && !matches.length && !candidates.length) {
     return (
       <div className="result-images">
         <div className="block waiting">
@@ -231,7 +139,7 @@ function ResultImages({ mission }: { mission: MissionState }) {
             <span>画像なし</span>
             <span>待機</span>
           </div>
-          <div className="block-meta">検出に成功すると、該当 observation がここに表示されます。</div>
+          <div className="block-meta">画像を取得すると、検出成否に関係なくここに表示されます。</div>
         </div>
       </div>
     );
@@ -239,16 +147,39 @@ function ResultImages({ mission }: { mission: MissionState }) {
 
   return (
     <div className="result-images">
-      {matches.map((item) => (
-        <div key={item.path} className={`result-image ${item.matched ? "matched" : ""}`}>
-          <img src={artifactUrl(item.path)} alt={item.label} loading="lazy" />
-          <div>
-            {item.label} {Number.isFinite(item.confidence) ? (item.confidence as number).toFixed(2) : ""}
-            <br />
-            {item.text || item.path}
+      <ImageAlbum title="Captured observations" items={observations} />
+      <ImageAlbum title="Matched detections" items={matches} />
+      <ImageAlbum title="Candidates / no target" items={candidates} />
+    </div>
+  );
+}
+
+function ImageAlbum({
+  title,
+  items,
+}: {
+  title: string;
+  items: { path: string; label: string; text: string; confidence?: number; matched: boolean }[];
+}) {
+  if (!items.length) return null;
+  return (
+    <div className="image-album">
+      <div className="album-title">
+        <span>{title}</span>
+        <span>{items.length}</span>
+      </div>
+      <div className="album-strip">
+        {items.map((item) => (
+          <div key={item.path} className={`result-image ${item.matched ? "matched" : ""}`}>
+            <img src={artifactUrl(item.path)} alt={item.label} loading="lazy" />
+            <div>
+              {item.label} {Number.isFinite(item.confidence) ? (item.confidence as number).toFixed(2) : ""}
+              <br />
+              {item.text || item.path}
+            </div>
           </div>
-        </div>
-      ))}
+        ))}
+      </div>
     </div>
   );
 }

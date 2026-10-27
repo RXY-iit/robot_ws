@@ -47,7 +47,7 @@ class SemanticMap:
             return None
         bundle_ids = [safe_id]
         bundle_aliases = {
-            "real_lab": "sim_real_lab_001",
+            "real_lab": "l402_2d_map_clean_0509",
             "warehouse": "sim_factory_mid360_like_gpu_trueimu_011",
         }
         alias_bundle_id = bundle_aliases.get(safe_id)
@@ -187,6 +187,8 @@ class SemanticMap:
         if not matches:
             return []
         item = matches[0]
+        if item.get("navigation_ready") is False:
+            return []
         region_candidates = self._generate_pose_candidates_from_region(item, relation)
         if region_candidates:
             return region_candidates
@@ -205,11 +207,11 @@ class SemanticMap:
         return []
 
     def _select_pose(self, item: dict[str, Any], relation: str) -> tuple[dict[str, Any] | None, str | None, str]:
+        if item.get("navigation_ready") is False:
+            return None, None, "not_navigation_ready"
         region_pose = self._generate_pose_from_region(item, relation)
         if region_pose is not None:
             return region_pose, f"generated_{relation}", "generated_from_region"
-        if item.get("navigation_ready") is False:
-            return None, None, "not_navigation_ready"
         approaches = item.get("approach_poses", [])
         if approaches:
             for approach in approaches:

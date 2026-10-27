@@ -28,6 +28,9 @@ install(PROGRAMS scripts/gicp_localizer_node.py
   DESTINATION lib/${PROJECT_NAME}
   RENAME gicp_localizer_node
 )
+install(FILES scripts/initialpose_scan_window.py scripts/localization_evidence.py
+  DESTINATION lib/${PROJECT_NAME}
+)
 
 install(TARGETS livox_custom_to_pc2_node
   DESTINATION lib/${PROJECT_NAME}

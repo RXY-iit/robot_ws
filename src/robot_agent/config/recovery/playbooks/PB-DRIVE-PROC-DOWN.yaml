@@ -1,0 +1,85 @@
+id: PB-DRIVE-PROC-DOWN
+number: 31
+severity: blocking
+title: Drive driver process down
+version: 1
+domain: H1
+layer: driver
+affects_capabilities: [manual_drive, auto_navigation]
+match_priority: 40
+envs:
+  real:
+    status: supported
+    verified: false
+    note: om_modbusRTU_node / drive_motor.py exited; restart via tools/restart_drive_motor.sh guard.
+    diagnosis:
+      - id: estop_ok
+        probe: health_item
+        args: {item: physical_estop}
+        on_mismatch: {handoff: PB-SAFE-ESTOP-PRESSED}
+      - id: link_present
+        probe: device_present
+        args: {device: drive_serial}
+        on_mismatch: {handoff: PB-DRIVE-LINK-LOST}
+      - id: driver_process
+        probe: process_alive
+        args: {component: "${producer}"}
+        expect: fail
+        on_mismatch: {escalate: R3}
+  sim:
+    status: supported
+    verified: false
+    note: sim_omni_drive_command_node stands in for the BLVD driver.
+
+trigger:
+  any:
+    - {item: drive_health, class_in: [FAULT, UNCERTAIN], for_sec: 3}
+    - {item: drive_feedback, class_in: [FAULT, UNCERTAIN], for_sec: 3}
+
+diagnosis:
+  - id: link_present
+    probe: device_present
+    args: {device: drive_serial}
+    on_mismatch: {handoff: PB-DRIVE-LINK-LOST}
+  # Process evidence first: after a crash the ROS graph keeps the dead node for
+  # ~10 s (DDS lease), which would wrongly look like "alive but stale".
+  - id: driver_process
+    probe: process_alive
+    args: {component: "${producer}"}
+    expect: fail
+    confirm: true                 # process gone -> confirmed
+    on_unknown: continue          # no process pattern bound -> use the graph
+    on_mismatch: {escalate: R3}   # process alive but output stale -> unknown cause
+  - id: driver_node
+    probe: node_alive
+    args: {component: "${producer}"}
+    expect: fail
+    on_mismatch: {escalate: R3}
+
+preconditions:
+  - mode_manual
+  - cmd_vel_zero_fresh
+  - base_stationary
+
+recovery:
+  - type: action
+    primitive: restart_component
+    args: {component: "${producer}"}
+    risk: A2
+
+verify:
+  - {probe: health_item, args: {item: drive_feedback}, within_sec: 20}
+  - {probe: health_item, args: {item: drive_health}, within_sec: 20}
+
+policy:
+  retry_budget: 1
+  cooldown_sec: 120
+  chronic: {count: 3, window_sec: 3600, then: human_only}
+  on_fail: escalate_R3
+
+fault_injection:
+  sim: {injector: kill_process, args: {component: sim_drive}}
+
+operator_text:
+  en: "The drive driver stopped. It will be restarted while the robot is stationary in MANUAL."
+  ja: "駆動ドライバが停止しました。MANUAL・停止状態で再起動します。"
