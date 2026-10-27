@@ -2,7 +2,7 @@
 """One-off B1 baseline: sequential NavigateToPose tasks, no Mission/Recovery Agent.
 
 Default only validates/prints the route. --execute sends real simulation goals.
-Health is read before dispatch; in-task recovery belongs to the configured Nav2 BT.
+Health gating scope is explicit (--health-gate route/waypoint); in-task recovery belongs to the configured Nav2 BT.
 """
 import argparse
 import json
@@ -23,12 +23,12 @@ def load_route(path):
     return read_route(path)["poses"]
 
 
-def dispatch_blockers(nodes, latest, now):
+def dispatch_blockers(nodes, latest, now, *, check_navigation=True):
     blockers = []
     for name in ("agent_node", "agent_dry_run", "recovery_agent"):
         if any(node.rsplit("/", 1)[-1] == name for node in nodes):
             blockers.append(f"Agent-layer node still running: {name}")
-    for topic in ("clock", "robot_mode", "safety_status", "health"):
+    for topic in (("clock", "robot_mode", "safety_status", "health") if check_navigation else ("clock", "robot_mode", "safety_status")):
         if topic not in latest or not 0 <= now - latest[topic][0] <= 3:
             blockers.append(f"Missing/stale {topic}")
     if latest.get("robot_mode", (None, None))[1] != "AUTO":
@@ -42,7 +42,7 @@ def dispatch_blockers(nodes, latest, now):
     health = latest.get("health", (None, {}))[1]
     capabilities = health.get("capabilities", []) if isinstance(health, dict) else []
     navigation = next((cap for cap in capabilities if cap.get("id") == "auto_navigation"), {})
-    if navigation.get("status") != "AVAILABLE":
+    if check_navigation and navigation.get("status") != "AVAILABLE":
         blockers.append(f"Navigation precondition is {navigation.get('status', 'UNKNOWN')}: {navigation.get('summary', '')}")
     return blockers
 
@@ -125,7 +125,7 @@ def execute(args, route):
     try:
         record("run_start", condition="TOR_waypoint_nav2", route=route,
                route_path=str(Path(args.route).resolve()), route_sha256=args.route_sha256, bt=args.bt or "server_default",
-               task_timeout_wall_sec=args.timeout)
+               task_timeout_wall_sec=args.timeout, health_gate=args.health_gate)
         if not client.wait_for_server(timeout_sec=10):
             raise RuntimeError("NavigateToPose action server is unavailable")
         for index, point in enumerate(route):
@@ -135,7 +135,8 @@ def execute(args, route):
             blockers = ["Waiting for pre-dispatch evidence"]
             while time.monotonic() < deadline:
                 rclpy.spin_once(node, timeout_sec=.1)
-                blockers = dispatch_blockers(node.get_node_names(), latest, time.monotonic())
+                blockers = dispatch_blockers(node.get_node_names(), latest, time.monotonic(),
+                                             check_navigation=(index == 0 or args.health_gate == "waypoint"))
                 if not blockers:
                     break
             record("task_preflight", index=index, blockers=blockers,
@@ -191,6 +192,8 @@ def execute(args, route):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--route", required=True, help="YAML with frame_id: map and waypoints: [{x, y, yaw}]")
+    parser.add_argument("--health-gate", choices=["route", "waypoint"], default="waypoint",
+                        help="route: health only before the entire list; waypoint: legacy per-goal health gate")
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--output", help="New JSONL evidence file, required with --execute")
     parser.add_argument("--bt", default="", help="Explicit Nav2 BT path; default uses the server's configured BT")

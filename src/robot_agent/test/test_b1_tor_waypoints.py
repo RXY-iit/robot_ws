@@ -58,3 +58,15 @@ def test_idle_watchdog_matches_cor_gate_but_stop_states_block():
     for status in ['ESTOP','MANUAL_STOP','TOUCH_LOCK','UNKNOWN']:
         evidence['safety_status']=(10,status)
         assert runner.dispatch_blockers([],evidence,10)
+
+
+def test_route_task_does_not_reintroduce_health_gates_between_waypoints():
+    evidence=latest('BLOCKED')
+    assert not runner.dispatch_blockers([],evidence,10,check_navigation=False)
+    del evidence['health']
+    assert not runner.dispatch_blockers([],evidence,10,check_navigation=False)
+    assert runner.dispatch_blockers([],evidence,10,check_navigation=True)
+    evidence['safety_status']=(10,'ESTOP')
+    assert runner.dispatch_blockers([],evidence,10,check_navigation=False)
+    evidence['safety_status']=(10,'OK')
+    assert runner.dispatch_blockers(['recovery_agent'],evidence,10,check_navigation=False)
