@@ -9,7 +9,7 @@ from pathlib import Path
 import sys
 import time
 
-from geometry_msgs.msg import Point, PoseStamped
+from geometry_msgs.msg import Point, PoseStamped, PoseWithCovarianceStamped
 from nav_msgs.msg import Odometry
 from rosgraph_msgs.msg import Clock
 from std_msgs.msg import Float32, String
@@ -37,6 +37,7 @@ class B1Evidence:
             "score_timestamp": "Float32 has no header; use receipt sim/wall time, not an invented source stamp"})
         self.subscriptions = [node.create_subscription(Clock, "/clock", self.on_clock, qos_profile_sensor_data)]
         for topic, kind in [("/wheel_odom", Odometry), ("/gicp_loc/pose", PoseStamped),
+                            ("/initialpose", PoseWithCovarianceStamped), ("/operator/initialpose", PoseWithCovarianceStamped),
                             ("/gicp_loc/score", Float32), ("/agent/health_state", String),
                             ("/agent/health_dashboard_state", String), ("/agent/recovery_state", String),
                             ("/agent/mission_events", String), ("/agent/mission_state", String),

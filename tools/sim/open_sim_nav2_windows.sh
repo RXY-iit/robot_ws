@@ -339,7 +339,7 @@ sleep 1
 open_window "sim nav2 6 rviz" '
 sleep 8
 python3 tools/publish_ply_pointcloud.py "'"$PLY_MAP"'" --topic /sim_glim_points --frame-id map &
-rviz2 -d "'"$RVIZ_CONFIG"'" --ros-args -p use_sim_time:=true'
+rviz2 -d "'"$RVIZ_CONFIG"'" --ros-args -p use_sim_time:=true -r /initialpose:=/operator/initialpose'
 
 echo "[sim-nav2] All windows requested."
 echo "[sim-nav2] Debug session: $DEBUG_SESSION_DIR"

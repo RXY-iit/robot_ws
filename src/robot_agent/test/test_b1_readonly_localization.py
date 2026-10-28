@@ -34,3 +34,20 @@ def test_invalid_evidence_does_not_seed_health(change):
     o=observer();module.Observer.accepted(o,message(**change))
     assert o.system._evidence_stamp is None
     assert o.system._gicp_score is None
+
+@pytest.mark.parametrize('statuses,velocity,stamp,allowed', [
+    ([4], (0., 0., 0.), 100., True),
+    ([2], (0., 0., 0.), 100., False),
+    (None, (0., 0., 0.), 100., False),
+    ([4], (.2, 0., 0.), 100., False),
+    ([4], (0., 0., 0.), 98., False),
+])
+def test_tor_operator_alignment_requires_stopped_terminal_navigation(statuses, velocity, stamp, allowed):
+    from geometry_msgs.msg import PoseWithCovarianceStamped
+    o=observer();o.system.invalidate_localization_anchor()
+    o.system.update_wheel_odom_pose(0.,0.,0.,stamp=stamp)
+    o.goal_status=statuses;o.wheel_velocity=velocity
+    msg=PoseWithCovarianceStamped();msg.header.frame_id='map';msg.pose.pose.orientation.w=1.
+    module.Observer.operator_initialpose(o,msg)
+    assert o.system._manual_alignment_pending is allowed
+    assert o.system._reference.reset_required is not allowed

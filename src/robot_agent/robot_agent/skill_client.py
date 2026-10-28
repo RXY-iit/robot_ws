@@ -65,8 +65,8 @@ class SkillClient:
     def update_odom_pose(self, x: float, y: float, yaw: float):
         self.system.update_odom_pose(x, y, yaw)
 
-    def update_initialpose(self):
-        self.system.update_initialpose()
+    def update_initialpose(self, *, operator_alignment=False, source="unknown"):
+        self.system.update_initialpose(operator_alignment=operator_alignment, source=source)
 
     def context(self, run_id: str, max_duration_sec: float = 120.0) -> SkillContext:
         context = SkillContext(

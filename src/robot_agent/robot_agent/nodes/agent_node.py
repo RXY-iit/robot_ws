@@ -80,6 +80,8 @@ class AgentNode(Node):
         self.create_subscription(Twist, "/nav2/cmd_vel", self._nav2_cmd_vel_cb, 10)
         self.create_subscription(Odometry, "/wheel_odom", self._wheel_odom_cb, 10)
         self.create_subscription(PoseWithCovarianceStamped, "/initialpose", self._initialpose_cb, 10)
+        if self.mode == "sim":
+            self.create_subscription(PoseWithCovarianceStamped, "/operator/initialpose", self._operator_initialpose_cb, 10)
         self.local_planner_state_client = self.create_client(GetState, "/controller_server/get_state")
         self._shutdown = ShutdownParticipant(self, "agent_node", self._prepare_shutdown, self._shutdown_ready)
 
@@ -204,14 +206,32 @@ class AgentNode(Node):
         self.skill_client.update_odom_pose(p.x, p.y, yaw)
 
     def _initialpose_cb(self, msg: PoseWithCovarianceStamped):
-        self.skill_client.update_initialpose()
+        self._handle_initialpose(msg, operator_requested=False)
+
+    def _operator_initialpose_cb(self, msg: PoseWithCovarianceStamped):
+        self._handle_initialpose(msg, operator_requested=True)
+
+    def _handle_initialpose(self, msg, *, operator_requested):
+        # Humble's Python subscription callback does not expose publisher GIDs.
+        # Sim RViz uses an explicit operator topic, also consumed directly by
+        # GICP (including TOR without Agent). PB/injectors retain /initialpose.
+        source = "/operator/initialpose" if operator_requested else "/initialpose"
+        stopped = self.skill_client.navigation.recovery_motion_stopped() if operator_requested else False
         p = msg.pose.pose.position
         q = msg.pose.pose.orientation
+        valid = (msg.header.frame_id.lstrip("/") == "map"
+                 and all(math.isfinite(v) for v in (p.x, p.y, p.z, q.x, q.y, q.z, q.w))
+                 and .99 <= sum(v*v for v in (q.x, q.y, q.z, q.w)) <= 1.01)
+        operator_alignment = operator_requested and stopped and valid
+        self.skill_client.update_initialpose(operator_alignment=operator_alignment, source=source)
         yaw = self._yaw_from_quaternion(q.x, q.y, q.z, q.w)
         self._publish_event(
             {
-                "type": "manual_initialpose_received",
+                "type": "manual_initialpose_received" if operator_requested else "initialpose_received",
                 "payload": {
+                    "source_topic": source,
+                    "operator_alignment_authorized": operator_alignment,
+                    "motion_stopped": stopped,
                     "frame_id": msg.header.frame_id,
                     "x": p.x,
                     "y": p.y,
@@ -221,6 +241,11 @@ class AgentNode(Node):
                 },
             }
         )
+        if operator_requested and not operator_alignment:
+            self.get_logger().warning(
+                "RViz initialpose received, but a new recovery reference was not authorized: "
+                "stop navigation, wait for fresh stopped wheel odometry, and align in frame map."
+            )
 
     def _command_cb(self, msg: String):
         text = msg.data.strip()

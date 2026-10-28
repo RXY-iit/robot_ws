@@ -418,6 +418,13 @@ class GicpLocalizer(Node):
             PoseWithCovarianceStamped, "/initialpose", self._initialpose_cb, 10,
             callback_group=self._gicp_group,
         )
+        # Keep manual RViz alignment available with or without the Agent layer.
+        # Sim Agent uses this separate intent channel to requalify reset anchors.
+        if bool(self.get_parameter("use_sim_time").value):
+            self._operator_init_sub = self.create_subscription(
+                PoseWithCovarianceStamped, "/operator/initialpose", self._initialpose_cb, 10,
+                callback_group=self._gicp_group,
+            )
 
         # FAST-LIO2 hint state (all under self._lock)
         self._fast_lio_T: np.ndarray | None = None               # current FAST-LIO pose

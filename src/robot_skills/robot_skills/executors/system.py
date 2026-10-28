@@ -16,6 +16,8 @@ class SystemSkills:
         self.mode = mode
         self._reference = LocalizationReference()
         self._reference_observation_verified = False
+        self._manual_alignment_pending = False
+        self._initialpose_source = "none"
         self.robot_mode = "UNKNOWN"
         self.safety_status = "UNKNOWN"
         self._last_robot_mode_time = 0.0
@@ -98,15 +100,24 @@ class SystemSkills:
         else:
             self._gicp_good_samples_after_initialpose += 1
 
-    def update_initialpose(self):
+    def update_initialpose(self, *, operator_alignment=False, source="unknown"):
+        self._initialpose_source = source
         if self.mode == "sim":
+            if self._manual_alignment_pending and not operator_alignment:
+                self._reference.invalidate("operator_alignment_superseded")
             self._reference.disturb("initialpose_pending_verification")
-            if self.robot_mode == "MANUAL":
-                # Explicit operator alignment may establish a new reference;
-                # it still requires clean, stable post-alignment observations.
+            self._reference_observation_verified = False
+            self._manual_alignment_pending = bool(operator_alignment)
+            if operator_alignment:
+                # Authorization comes from the explicit operator channel with
+                # stopped-motion evidence, not the AUTO/MANUAL drive mode.
                 self._reference.anchor = None
                 self._reference.frozen = False
                 self._reference.reset_required = False
+                self._last_trusted_pose = None
+                self._wheel_odom_pose_at_trust = None
+                self._trusted_pose_stamp = None
+                self._last_trusted_pose_time = 0.0
         self._last_initialpose_time = time.monotonic()
         self._stationary_pose = None
         self._stationary_drift_m = 0.0
@@ -200,6 +211,12 @@ class SystemSkills:
                 # reference: only now rebuild the stationary comparison origin.
                 self._stationary_pose = None
                 self._localization_warning = "OK"
+            if self._reference_observation_verified:
+                self._manual_alignment_pending = False
+            if self._manual_alignment_pending or self._reference.reset_required:
+                # A human seed permits requalification, never immediate health.
+                self._localization_warning = self._score_warning() or "RECOVERY_REFERENCE_UNVERIFIED"
+                return
             if self._reference.frozen:
                 severe = self._reference.reason in {
                     "reference_disagreement", "inconsistent_map_odom",
@@ -304,6 +321,8 @@ class SystemSkills:
             effective_warning = "GICP_TRUSTED_POSE_DIVERGENCE"
         return {
             **self._reference.metrics(time.monotonic()),
+            "initialpose_source": self._initialpose_source,
+            "manual_alignment_pending": self._manual_alignment_pending,
             "latest_odom_pose": self._latest_odom_pose,
             "latest_wheel_odom_pose": self._latest_wheel_odom_pose,
             "stationary_drift_m": self._stationary_drift_m,
