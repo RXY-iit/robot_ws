@@ -292,25 +292,26 @@ echo "Waiting for Nav2 graph..."
 sleep 10
 echo "Requesting Nav2 lifecycle startup..."
 timeout 8 ros2 service call /lifecycle_manager_navigation/manage_nodes nav2_msgs/srv/ManageLifecycleNodes "{command: 0}" || true
-for node in /controller_server /planner_server /behavior_server /bt_navigator; do
-  state="$(timeout 5 ros2 lifecycle get "$node" 2>/dev/null || true)"
-  if echo "$state" | grep -q "active"; then
+for node in /map_server /controller_server /planner_server /behavior_server /bt_navigator; do
+  state="$(timeout 10 ros2 lifecycle get "$node" --no-daemon --spin-time 3 2>/dev/null || true)"
+  if echo "$state" | grep -Eq "^[[:space:]]*active([[:space:]]|$)"; then
     continue
   fi
   if echo "$state" | grep -q "unconfigured"; then
     echo "Fallback configure: $node"
-    timeout 10 ros2 lifecycle set "$node" configure || true
+    timeout 15 ros2 lifecycle set "$node" configure --no-daemon --spin-time 3 || true
     sleep 0.5
   fi
-  state="$(timeout 5 ros2 lifecycle get "$node" 2>/dev/null || true)"
+  state="$(timeout 10 ros2 lifecycle get "$node" --no-daemon --spin-time 3 2>/dev/null || true)"
   if echo "$state" | grep -q "inactive"; then
     echo "Fallback activate: $node"
-    timeout 10 ros2 lifecycle set "$node" activate || true
+    timeout 15 ros2 lifecycle set "$node" activate --no-daemon --spin-time 3 || true
     sleep 0.5
   fi
 done
 sleep 3
-echo "Nav2 lifecycle states:"
+echo "Map and Nav2 lifecycle states:"
+timeout 10 ros2 lifecycle get /map_server --no-daemon --spin-time 3 || true
 timeout 5 ros2 lifecycle get /controller_server || true
 timeout 5 ros2 lifecycle get /planner_server || true
 timeout 5 ros2 lifecycle get /bt_navigator || true
