@@ -50,7 +50,8 @@ class SystemSkills:
         self._last_localization_pose_time = 0.0
         self._gicp_good_samples_after_initialpose = 0
         self._gicp_min_good_samples = 3
-        self._localization_data_stale_sec = 3.0
+        self._localization_data_stale_sec = 6.0 if mode == "sim" else 3.0
+        self._localization_source_stale_sec = 2.0
         if mode == "real":
             self._gicp_warn_threshold = 0.25
             self._gicp_bad_threshold = 0.5
@@ -214,9 +215,9 @@ class SystemSkills:
             return False
         if self._gicp_score is None:
             return False
-        if now_time - self._last_gicp_score_time > self._localization_data_stale_sec:
+        if self._localization_receipt_stale(self._last_gicp_score_time, now_time):
             return False
-        if now_time - self._last_localization_pose_time > self._localization_data_stale_sec:
+        if self._localization_receipt_stale(self._last_localization_pose_time, now_time):
             return False
         if self._gicp_good_samples_after_initialpose < self._gicp_min_good_samples:
             return False
@@ -273,6 +274,7 @@ class SystemSkills:
             "gicp_good_samples_after_initialpose": self._gicp_good_samples_after_initialpose,
             "gicp_min_good_samples": self._gicp_min_good_samples,
             "localization_data_stale_sec": self._localization_data_stale_sec,
+            "localization_source_stale_sec": self._localization_source_stale_sec if self.mode == "sim" else None,
             "last_trusted_pose": self._last_trusted_pose,
             "trusted_pose_frame": "base_footprint" if self._trusted_pose_stamp is not None else None,
             "trusted_pose_stamp_sec": self._trusted_pose_stamp,
@@ -397,6 +399,19 @@ class SystemSkills:
         return bool((self._recovery_accumulating and time.monotonic() - self._recovery_status_received < 3)
                     or (self._last_initialpose_time and time.monotonic() - self._last_initialpose_time < self._initialpose_settle_sec))
 
+    def _localization_receipt_stale(self, received: float, now_time: float) -> bool:
+        # A slow simulation can deliver a fresh accepted match after >3 wall-s.
+        # Keep a bounded wall watchdog AND a ROS-stamp budget; a paused clock
+        # must never make evidence fresh indefinitely. Real robot keeps 3s.
+        limit = self._localization_data_stale_sec
+        if self.mode == "sim":
+            age = self._source_age(self._evidence_stamp)
+            if age is None:
+                limit = min(limit, 3.0)
+            elif not 0 <= age <= self._localization_source_stale_sec:
+                return True
+        return now_time - received > limit
+
     def _source_age(self, stamp):
         if stamp is None or self.node is None:
             return None
@@ -448,9 +463,9 @@ class SystemSkills:
         now_time = time.monotonic()
         if self._latest_odom_pose is None or self._gicp_score is None:
             return False
-        if now_time - self._last_gicp_score_time > self._localization_data_stale_sec:
+        if self._localization_receipt_stale(self._last_gicp_score_time, now_time):
             return False
-        if now_time - self._last_localization_pose_time > self._localization_data_stale_sec:
+        if self._localization_receipt_stale(self._last_localization_pose_time, now_time):
             return False
         if self._gicp_score >= self._gicp_warn_threshold:
             return False
@@ -504,7 +519,7 @@ class SystemSkills:
         now_time = time.monotonic()
         if self._gicp_score is None:
             return "MANUAL_INITIALPOSE_SETTLING" if self.initialpose_is_settling() else "GICP_SCORE_MISSING"
-        if now_time - self._last_gicp_score_time > self._localization_data_stale_sec:
+        if self._localization_receipt_stale(self._last_gicp_score_time, now_time):
             return "GICP_SCORE_STALE"
         # A fresh rejected/bad match explains why the last accepted GICP pose
         # became stale. Report the root cause instead of the downstream symptom.
@@ -514,7 +529,7 @@ class SystemSkills:
             return "GICP_SCORE_WARN"
         if (
             self._last_localization_pose_time
-            and now_time - self._last_localization_pose_time > self._localization_data_stale_sec
+            and self._localization_receipt_stale(self._last_localization_pose_time, now_time)
         ):
             return "GICP_POSE_STALE"
         if self.initialpose_is_settling():

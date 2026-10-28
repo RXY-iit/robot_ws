@@ -44,3 +44,20 @@ def test_initialpose_keeps_previous_anchor_but_not_healthy_evidence():
     assert after["odom_propagated_trusted_pose"][0] == 1.02
     system.update_wheel_odom_pose(0, 0, 0, stamp=1.)
     assert not system.localization_metrics()["trusted_pose_has_odom_anchor"]
+
+
+def test_slow_simulation_uses_both_source_age_and_wall_watchdog():
+    from types import SimpleNamespace
+    clock = SimpleNamespace(now=lambda: SimpleNamespace(nanoseconds=100_000_000_000))
+    system = SystemSkills(SimpleNamespace(get_clock=lambda: clock), "sim")
+    system._evidence_stamp = 99.0
+    assert not system._localization_receipt_stale(10., 13.3)
+    assert system._localization_receipt_stale(10., 16.1)  # paused clock still bounded
+    system._evidence_stamp = 97.9
+    assert system._localization_receipt_stale(10., 10.1)  # old source, fresh receipt
+    system._evidence_stamp = 101.
+    assert system._localization_receipt_stale(10., 10.1)  # clock rollback
+    system._evidence_stamp = None
+    assert system._localization_receipt_stale(10., 13.3)
+    real = SystemSkills(None, "real")
+    assert real._localization_receipt_stale(10., 13.3)

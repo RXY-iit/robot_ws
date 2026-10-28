@@ -88,6 +88,9 @@ def main():
                 if v[0]-still>=2:stop=still;break
             else:still=None
         stats['first_two_second_stop_after_BAD_offset_wall_sec']=stop-t0 if stop is not None else None
+        moving_window=[v for v in after_bad if stop is not None and v[0]<=stop]
+        stats['wheel_path_BAD_to_first_stop_m']=sum(math.dist(u[1:3],v[1:3]) for u,v in zip(moving_window,moving_window[1:])) if moving_window else None
+        stats['BAD_to_first_stop_wall_sec']=stop-bad if stop is not None and bad is not None else None
         pause=next((e['wall'] for e in data['events'] if e['topic']=='/agent/mission_events' and e['data'].get('payload',{}).get('metrics',{}).get('recovery_pause')),None)
         pb=next((e['wall'] for e in data['events'] if e['topic']=='/agent/recovery_events' and e['data'].get('type')=='execution_started'),None)
         bt=next((e['wall'] for e in data['events'] if e['topic']=='/behavior_tree_log' and e['wall']>=t0),None)
