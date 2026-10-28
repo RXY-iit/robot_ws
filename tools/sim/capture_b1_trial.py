@@ -4,7 +4,7 @@ import argparse,json,time,hashlib,math
 from pathlib import Path
 
 def main():
-    p=argparse.ArgumentParser(description=__doc__);p.add_argument('--output',required=True);p.add_argument('--duration',type=float,default=1800);a=p.parse_args()
+    p=argparse.ArgumentParser(description=__doc__);p.add_argument('--output',required=True);p.add_argument('--duration',type=float,default=1800);p.add_argument('--map-manifest',type=Path);p.add_argument('--truth-calibration',type=Path);a=p.parse_args()
     import rclpy
     from rclpy.qos import qos_profile_sensor_data
     from rosidl_runtime_py.convert import message_to_ordereddict
@@ -21,7 +21,7 @@ def main():
         f.write(json.dumps(dict(event=event,wall_unix_sec=time.time(),wall_monotonic_sec=time.monotonic(),sim_sec=sim[0],source_stamp_sec=source,data=data),ensure_ascii=False)+'\n');counts[event]=counts.get(event,0)+1
     def receive(topic,m):
         now=time.monotonic()
-        period = .1 if topic in ['/wheel_odom','/fast_lio/odometry','/cmd_vel','/cmd_vel_raw','/nav2/cmd_vel'] else (.5 if topic=='/navigate_to_pose/_action/feedback' else (1. if topic=='/plan' else 0.))
+        period = .1 if topic in ['/b1/ground_truth_odom','/b1/physics_odom','/wheel_odom','/fast_lio/odometry','/cmd_vel','/cmd_vel_raw','/nav2/cmd_vel'] else (.5 if topic=='/navigate_to_pose/_action/feedback' else (1. if topic=='/plan' else 0.))
         if period and now-last.get(topic,0)<period:return
         last[topic]=now
         if topic=='/wheel_odom':
@@ -34,9 +34,9 @@ def main():
         record(topic,data,stamp)
     def clock(m):sim[0]=m.clock.sec+m.clock.nanosec/1e9;last['/clock']=time.monotonic()
     n.create_subscription(Clock,'/clock',clock,qos_profile_sensor_data)
-    for topic in ['/robot_mode','/motion_policy/status','/safety_status','/agent/health_state','/b1/readonly_health_state','/agent/health_dashboard_state','/agent/recovery_state','/agent/mission_state','/agent/mission_events','/agent/recovery_events','/agent/recovery_response','/gicp_loc/accepted_state','/gicp_loc/recovery_status','/b1/lidar_injection_status','/b1/lidar_injection_command']:
+    for topic in ['/b1/waypoint_events','/b1/odom_injection_status','/b1/odom_injection_command','/gicp_loc/match_evidence','/robot_mode','/motion_policy/status','/safety_status','/agent/health_state','/b1/readonly_health_state','/agent/health_dashboard_state','/agent/recovery_state','/agent/mission_state','/agent/mission_events','/agent/recovery_events','/agent/recovery_response','/gicp_loc/accepted_state','/gicp_loc/recovery_status','/b1/lidar_injection_status','/b1/lidar_injection_command']:
         n.create_subscription(String,topic,lambda m,t=topic:receive(t,m),100)
-    for topic,cls in [('/wheel_odom',Odometry),('/fast_lio/odometry',Odometry),('/cmd_vel',Twist),('/cmd_vel_raw',Twist),('/nav2/cmd_vel',Twist),('/gicp_loc/score',Float32),('/initialpose',PoseWithCovarianceStamped),('/navigate_to_pose/_action/status',GoalStatusArray),('/navigate_to_pose/_action/feedback',NavigateToPose_FeedbackMessage),('/behavior_tree_log',BehaviorTreeLog),('/plan',NavPath)]:
+    for topic,cls in [('/b1/ground_truth_odom',Odometry),('/b1/physics_odom',Odometry),('/wheel_odom',Odometry),('/fast_lio/odometry',Odometry),('/cmd_vel',Twist),('/cmd_vel_raw',Twist),('/nav2/cmd_vel',Twist),('/gicp_loc/score',Float32),('/initialpose',PoseWithCovarianceStamped),('/navigate_to_pose/_action/status',GoalStatusArray),('/navigate_to_pose/_action/feedback',NavigateToPose_FeedbackMessage),('/behavior_tree_log',BehaviorTreeLog),('/plan',NavPath)]:
         n.create_subscription(cls,topic,lambda m,t=topic:receive(t,m),qos_profile_sensor_data)
     def costmap(m):
         now=time.monotonic()
@@ -59,6 +59,8 @@ def main():
         record('/b1/local_costmap_proximity',d,m.header.stamp.sec+m.header.stamp.nanosec/1e9)
     n.create_subscription(OccupancyGrid,'/local_costmap/costmap',costmap,qos_profile_sensor_data)
     record('capture_started',{'recorder_sha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),'duration_wall_sec':a.duration,'fast_lio_max_hz':10,'wheel_odom_max_hz':10,'nav_feedback_max_hz':2,'plan_max_hz':1,'bt_and_health_unthrottled':True,'truth_note':'wheel_odom is not independently calibrated map truth'})
+    for kind,path in [('map_manifest',a.map_manifest),('truth_calibration',a.truth_calibration)]:
+        if path:record(kind,{'path':str(path),'sha256':hashlib.sha256(path.read_bytes()).hexdigest(),'value':json.loads(path.read_text())})
     started=time.monotonic();tick=started
     try:
         while rclpy.ok() and time.monotonic()-started<a.duration:

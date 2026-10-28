@@ -103,7 +103,7 @@ class FakeSystem:
 
 def make_state(overrides=None, values=None, sequence=1):
     statuses = {**HEALTHY_SIM_ITEMS, **(overrides or {})}
-    values = {"sim_rtf": {"rtf": .8, "clock_receive_age_sec": .01, "not_advancing_sec": .01}, **(values or {})}
+    values = {"localization_consistency": {"components": {"localization": {"details": {"reference_verified": True}}}}, "sim_rtf": {"rtf": .8, "clock_receive_age_sec": .01, "not_advancing_sec": .01}, **(values or {})}
     items = [
         {
             "id": item_id,

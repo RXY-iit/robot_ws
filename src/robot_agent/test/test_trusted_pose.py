@@ -25,7 +25,7 @@ def test_trusted_seed_uses_propagated_pose():
 
 def test_deferred_recovery_uses_motion_since_trusted_pose():
     from robot_skills.executors.system import SystemSkills
-    system = object.__new__(SystemSkills)
+    system = SystemSkills(None, "real")
     system._last_trusted_pose = (10., 20., math.pi / 2)
     system._wheel_odom_pose_at_trust = (0., 0., 0.)
     system._latest_wheel_odom_pose = (-.2, 0., 0.)
@@ -79,3 +79,23 @@ def test_publish_propagates_timestamped_base_and_is_immediate(monkeypatch):
     backend._health_received = 0
     assert backend.start("publish_initialpose", {"source": "last_trusted_pose"}).poll()[0] == ERROR
     assert len(published) == 1
+
+
+def test_qualified_seed_rejects_unknown_epoch_and_cumulative_error_budget():
+    state={**metrics(),"reference_policy_version":1,"reference_qualified":True,
+           "reference_epoch":2,"trusted_reference_epoch":2,"reference_path_m":.3,"reference_turn_rad":.2}
+    config={"require_qualified_reference":True}
+    assert trusted_seed(state,config,.1)==(1.,2.,0.)
+    for key,value in [("reference_epoch",3),("reference_path_m",3.1),("reference_turn_rad",1.1),("reference_qualified",False)]:
+        with pytest.raises(ValueError):trusted_seed({**state,key:value},config,.1)
+
+
+@pytest.mark.parametrize('item,age',[({},0),({'status':'STALE'},0),({'status':'OK'},5)])
+def test_seed_publish_rechecks_current_input_availability(monkeypatch,item,age):
+    import robot_agent.recovery.backends as module
+    monkeypatch.setattr(module.time,'monotonic',lambda:100)
+    backend=object.__new__(RosActionBackend)
+    backend.config={'last_trusted_pose':{'require_qualified_reference':True}}
+    backend._input_health=item;backend._input_health_received=100-age
+    with pytest.raises(ValueError,match='Sensor input'):
+        backend._publish_trusted_pose()

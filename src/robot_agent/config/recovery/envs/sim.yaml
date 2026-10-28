@@ -312,6 +312,9 @@ actions:
   localization_success_timeout_sec: 100
   last_trusted_pose:
     require_timestamped_base: true
+    require_qualified_reference: true
+    max_odom_path_m: 3.0
+    max_odom_turn_rad: 1.0
     map_frame: map
     pose_frame: base_footprint
     base_frame: base_footprint

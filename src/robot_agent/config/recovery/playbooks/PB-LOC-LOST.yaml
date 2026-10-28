@@ -2,7 +2,7 @@ id: PB-LOC-LOST
 number: 60
 severity: blocking
 title: Localization lost
-version: 3
+version: 4
 domain: H5
 layer: function
 affects_capabilities: [auto_navigation]
@@ -43,6 +43,14 @@ recovery:
   - type: action
     primitive: cancel_motion
     on_fail: next
+  # Do not reseed repeatedly into a persistently degraded input stream.
+  # A timeout proceeds to the guarded action, whose backend refuses unqualified
+  # input/reference and then escalates to the operator; no blind publish.
+  - type: wait_evidence
+    until:
+      - {probe: localization_input_settled}
+    timeout_sec: 60
+    on_fail: next
   - type: action
     primitive: publish_initialpose
     args: {source: last_trusted_pose}
@@ -50,6 +58,7 @@ recovery:
       - {probe: health_item, args: {item: gicp_score}}
       - {probe: health_item, args: {item: gicp_pose}}
       - {probe: health_item, args: {item: localization_consistency}}
+      - {probe: localization_reference_verified}
     success_timeout_sec: 20
     on_success: verify
     on_fail: next
@@ -59,11 +68,13 @@ recovery:
       - {probe: health_item, args: {item: gicp_score}}
       - {probe: health_item, args: {item: gicp_pose}}
       - {probe: health_item, args: {item: localization_consistency}}
+      - {probe: localization_reference_verified}
 
 verify:
   - {probe: health_item, args: {item: gicp_score}, within_sec: 15}
   - {probe: health_item, args: {item: gicp_pose}, within_sec: 15}
   - {probe: health_item, args: {item: localization_consistency}, within_sec: 15}
+  - {probe: localization_reference_verified, within_sec: 15}
 
 policy:
   retry_budget: 0
@@ -73,5 +84,5 @@ fault_injection:
   sim: {injector: kidnap, args: {dx: 1.5, dy: 0.0, dyaw_deg: 30}}
 
 operator_text:
-  en: "Global localization is not verified. Recovery independently pauses dependent navigation and waits for its goal to terminate and fresh stopped feedback. Unrelated tasks may continue. Once stationary, try the last trusted pose once, then request an RViz pose if verification fails."
-  ja: "自己位置推定が未検証です。Recovery が依存するナビゲーションを一時停止し、ゴール終了と新しい停止情報を確認します。無関係なタスクは継続できます。停止後に最後の信頼できる位置を一度試み、検証できなければ RViz の位置指定を依頼します。"
+  en: "Global localization is not verified. Recovery independently pauses dependent navigation and waits for its goal to terminate and fresh stopped feedback. Unrelated tasks may continue. Once stationary, wait for stable input evidence. Inspect sensor quality, odometry continuity and map consistency when degradation persists. Use a qualified bounded reference once; otherwise request operator diagnosis/alignment."
+  ja: "自己位置推定が未検証です。Recovery が依存するナビゲーションを一時停止し、ゴール終了と新しい停止情報を確認します。無関係なタスクは継続できます。センサ入力の安定を確認し、連続したオドメトリと検証済み位置から一度だけ復旧を試みます。失敗時はセンサ・オドメトリ・地図を点検し、人による位置合わせを依頼します。"

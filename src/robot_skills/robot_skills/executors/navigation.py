@@ -141,6 +141,7 @@ class NavigationSkills:
             "/robot_skills/navigation_route_markers",
             marker_qos,
         )
+        self._b1_waypoint_pub = node.create_publisher(String, "/b1/waypoint_events", 10)
         self._navigation_progress_pub = node.create_publisher(String, "/agent/navigation_progress", 10)
         self._navigation_route_state_pub = node.create_publisher(String, "/agent/navigation_route_state", 10)
         self._motion_policy_profile_pub = node.create_publisher(
@@ -822,9 +823,22 @@ class NavigationSkills:
         result_done = threading.Event()
         holder: dict[str, Any] = {"accepted": False, "result": None, "error": None}
 
+        def route_event(event, goal_id=None):
+            try:
+                pub = getattr(self, "_b1_waypoint_pub", None)
+                if pub is not None:
+                    p = goal.pose.pose.position
+                    pub.publish(String(data=json.dumps(dict(event=event, goal_xy=[p.x,p.y],
+                        goal_id=goal_id, frame_id=goal.pose.header.frame_id, source="COR",
+                        wall_unix_sec=time.time(), wall_monotonic_sec=time.monotonic(),
+                        sim_sec=self.node.get_clock().now().nanoseconds/1e9))))
+            except Exception as exc:
+                self.node.get_logger().warn(f"Waypoint observation publish failed: {exc}")
+
         def on_result(future):
             try:
                 holder["result"] = future.result()
+                route_event("succeeded" if holder["result"].status == 4 else "terminated", holder.get("goal_id"))
             except Exception as exc:
                 holder["error"] = repr(exc)
             result_done.set()
@@ -835,6 +849,8 @@ class NavigationSkills:
                 self._active_goal_handle = goal_handle
                 holder["accepted"] = bool(goal_handle.accepted)
                 if goal_handle.accepted:
+                    holder["goal_id"] = bytes(goal_handle.goal_id.uuid).hex()
+                    route_event("accepted", holder["goal_id"])
                     result_future = goal_handle.get_result_async()
                     self._nav_result_futures.append(result_future)
                     result_future.add_done_callback(on_result)

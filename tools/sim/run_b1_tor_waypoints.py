@@ -59,6 +59,7 @@ def execute(args, route):
 
     rclpy.init(args=[], signal_handler_options=SignalHandlerOptions.NO)
     node = Node("b1_tor_waypoint_runner", parameter_overrides=[Parameter("use_sim_time", value=True)])
+    event_pub = node.create_publisher(String,"/b1/waypoint_events",10)
     latest, active, pending, stopping = {}, None, None, False
     client = ActionClient(node, NavigateToPose, "/navigate_to_pose")
     output = Path(args.output)
@@ -75,6 +76,11 @@ def execute(args, route):
                "wall_unix_sec": time.time(), "sim_sec": latest.get("clock", (None, None))[1], **data}
         log.write(json.dumps(row, ensure_ascii=False, allow_nan=False) + "\n")
         log.flush()
+
+    def route_event(event, point, handle):
+        event_pub.publish(String(data=json.dumps(dict(event=event,goal_xy=[point['x'],point['y']],
+            goal_id=bytes(handle.goal_id.uuid).hex(),frame_id='map',source='TOR',
+            wall_unix_sec=time.time(),wall_monotonic_sec=time.monotonic(),sim_sec=latest.get('clock',(None,None))[1]))))
 
     def clock_cb(msg):
         stamp = msg.clock.sec + msg.clock.nanosec / 1e9
@@ -156,7 +162,9 @@ def execute(args, route):
             active = pump_until(pending, 10)
             if not active.accepted:
                 raise RuntimeError(f"Nav2 rejected task {index}")
+            route_event("accepted",point,active)
             result = pump_until(active.get_result_async(), args.timeout)
+            route_event("succeeded" if result.status == 4 else "terminated",point,active)
             record("task_result", index=index, status=int(result.status))
             active = None
             if result.status != 4:

@@ -31,6 +31,24 @@ def strength(elapsed, ramp, hold, release, maximum):
     return 0.0
 
 
+def cloud_quality(xyz):
+    """Observable geometry only, NOT known injected noise or an absolute noise estimate."""
+    flat=xyz.reshape(-1,3);valid=np.isfinite(flat).all(axis=1)
+    pts=flat[valid];pts=pts[::max(1,len(pts)//4096)][:4096]
+    residuals=[]
+    if len(pts):
+        _,cells=np.unique(np.floor(pts).astype(np.int64),axis=0,return_inverse=True)
+        for cell in np.unique(cells):
+            q=pts[cells==cell]
+            if len(q)<6:continue
+            eig=np.linalg.eigvalsh(np.cov(q.T));residuals.append(math.sqrt(max(0,float(eig[0]))))
+            if len(residuals)>=64:break
+    return dict(finite_fraction=float(valid.mean()) if len(valid) else None,
+        sampled_points=len(pts),local_plane_voxels=len(residuals),
+        local_plane_rms_median_m=float(np.median(residuals)) if residuals else None,
+        note='1m voxel planar residual; also depends on geometry, density and motion')
+
+
 def corrupt_cloud(msg, sigma, seed, bias=0., yaw_deg=0., sector_deg=0., metrics=None, translation=None):
     """Alter only float32 XYZ bytes; preserve layout, padding, fields and header."""
     translation = np.asarray(translation if translation is not None else [0., 0., 0.], dtype=float)
@@ -62,7 +80,13 @@ def corrupt_cloud(msg, sigma, seed, bias=0., yaw_deg=0., sector_deg=0., metrics=
         n, kept = int(valid.sum()), int(retained.sum())
         radial = (np.maximum(.01, radius + noise) - radius)[retained]
         delta = (changed - xyz)[retained]
-        metrics.update(input_valid_points=n, occluded_valid_points=int(occluded.sum()),
+        observable=xyz.copy();observable[valid]=changed[valid];observable[occluded]=np.nan
+        metrics.update(input_quality=cloud_quality(xyz), output_quality=cloud_quality(observable), input_valid_fraction=n/max(1,msg.width*msg.height),
+            radial_noise_abs_p50_m=float(np.quantile(np.abs(radial),.5)) if kept else None,
+            radial_noise_abs_p95_m=float(np.quantile(np.abs(radial),.95)) if kept else None,
+            radial_noise_abs_p99_m=float(np.quantile(np.abs(radial),.99)) if kept else None,
+            radial_error_over_0p1m_fraction=float(np.mean(np.abs(radial)>.1)) if kept else None,
+            input_valid_points=n, occluded_valid_points=int(occluded.sum()),
             output_valid_points=kept, occluded_fraction_valid=(float(occluded.sum()) / n if n else None),
             noise_sample_points=kept, radial_noise_sum_m=float(radial.sum()),
             radial_noise_sumsq_m2=float(np.sum(radial ** 2)),
@@ -82,13 +106,18 @@ def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--input',default='/livox/lidar_pc2')
     p.add_argument('--output',default='/b1/gicp_input')
+    p.add_argument('--scope',choices=['gicp','upstream'],default='gicp')
     p.add_argument('--ramp-sec',type=float,default=30)
     p.add_argument('--hold-sec',type=float,default=15)
     p.add_argument('--release-sec',type=float,default=10)
     p.add_argument('--max-noise-m',type=float,default=.30)
     p.add_argument('--seed',type=int,default=20261027)
     p.add_argument('--log-dir',type=Path,default=None)
+    p.add_argument('--map-manifest',type=Path)
     a=p.parse_args()
+    expected = ('/livox/lidar_pc2','/b1/gicp_input') if a.scope=='gicp' else ('/point_cloud','/b1/lidar_input')
+    if (a.input,a.output)!=expected:p.error('Scope requires input/output '+str(expected))
+    manifest=json.loads(a.map_manifest.read_text()) if a.map_manifest else None
     if a.input==a.output:p.error('Input and output must differ')
     if any(not math.isfinite(v) or v<=0 for v in (a.ramp_sec,a.hold_sec,a.release_sec,a.max_noise_m)) or a.seed<0:p.error('Positive finite durations/noise and nonnegative seed required')
     if os.environ.get('ROS_DOMAIN_ID')!='20' or os.environ.get('RMW_IMPLEMENTATION')!='rmw_fastrtps_cpp':p.error('Requires sim Domain 20 / rmw_fastrtps_cpp')
@@ -106,7 +135,7 @@ def main():
         def __init__(self):
             super().__init__('b1_gicp_cloud_injector')
             self.tf_buffer=Buffer();self.tf_listener=TransformListener(self.tf_buffer,self)
-            self.sim=None;self.clock_at=0.;self.advance_at=0.;self.start=None;self.start_stamp=None;self.run=0;self.count=0;self.last_input=0.;self.last_sigma=0.;self.last_metrics={};self.profile="legacy";self.fault=dict(noise=a.max_noise_m,bias=0.,yaw=0.,sector=0.,dropout=0.)
+            self.sim=None;self.clock_at=0.;self.advance_at=0.;self.start=None;self.start_stamp=None;self.run=0;self.count=0;self.last_input=0.;self.last_sigma=0.;self.last_metrics={};self.profile="noise";self.fault=dict(noise=a.max_noise_m,bias=0.,yaw=0.,sector=0.,dropout=0.)
             folder=a.log_dir or Path('debug-output')/('b1-cloud-inject-'+time.strftime('%Y%m%dT%H%M%S'))
             folder.mkdir(parents=True,exist_ok=True);self.log=(folder/'injection.jsonl').open('x',buffering=1)
             self.pub=self.create_publisher(PointCloud2,a.output,qos_profile_sensor_data)
@@ -128,13 +157,13 @@ def main():
             if self.start is not None and t-self.start>=a.ramp_sec+a.hold_sec+a.release_sec:
                 self.start=None;self.record('schedule_completed')
         def command(self,m):
-            cmd=m.data.strip();profile="legacy"
+            cmd=m.data.strip();profile="noise"
             if cmd.startswith("{"):
                 try:
-                    value=json.loads(cmd);cmd=value["command"];profile=value.get("profile","legacy")
+                    value=json.loads(cmd);cmd=value["command"];profile=value.get("profile","noise")
                 except (ValueError,KeyError,TypeError):
                     self.record('command_rejected',reason='Invalid command JSON');return
-            if profile not in {"legacy",*PROFILES}:
+            if profile not in {"legacy","noise",*PROFILES}:
                 self.record('command_rejected',reason='Unknown profile');return
             if cmd=='stop':self.start=None;self.record('manual_stop');return
             if cmd!='start':self.record('command_rejected',reason='Use start or stop');return
@@ -146,7 +175,7 @@ def main():
             if self.count_publishers(a.output)!=1 or self.count_subscribers(a.output)<1:
                 self.record('command_rejected',reason='Require sole output publisher and at least one subscriber');return
             self.profile=profile
-            self.fault=dict(PROFILES[profile]) if profile!='legacy' else dict(noise=a.max_noise_m,bias=0.,yaw=0.,sector=0.,dropout=0.)
+            self.fault=dict(PROFILES[profile]) if profile not in {'legacy','noise'} else dict(noise=a.max_noise_m,bias=0.,yaw=0.,sector=0.,dropout=0.)
             self.run+=1;self.start=self.sim;self.start_stamp=None
             self.record('injection_started',profile=self.profile,fault=self.fault,ramp_sec=a.ramp_sec,hold_sec=a.hold_sec,release_sec=a.release_sec)
         def cloud(self,m):
@@ -175,9 +204,23 @@ def main():
                     self.start=None;level=0.;sigma=0.;drop=False
                     self.record('transform_unavailable_injection_stopped',error=str(e))
             try:out=m if drop else corrupt_cloud(m,sigma,frame_seed,
-                bias=level*self.fault['bias'],yaw_deg=level*self.fault['yaw'],sector_deg=level*self.fault['sector'],metrics=metrics if self.start is not None else None,translation=translation)
+                bias=level*self.fault['bias'],yaw_deg=level*self.fault['yaw'],sector_deg=level*self.fault['sector'],metrics=metrics,translation=translation)
             except (ValueError,TypeError) as e:
                 self.start=None;self.record('invalid_cloud_injection_stopped',error=str(e));out=m;sigma=0.;drop=False;level=0.;metrics={"invalid_cloud": True}
+            if manifest:
+                try:
+                    tf=self.tf_buffer.lookup_transform('map',m.header.frame_id,rclpy.time.Time.from_msg(m.header.stamp))
+                    offsets={f.name:f.offset for f in m.fields if f.datatype==7 and f.count==1}
+                    xyz=np.stack([np.ndarray((m.height,m.width),dtype=('>' if m.is_bigendian else '<')+'f4',buffer=bytes(m.data),offset=offsets[k],strides=(m.row_step,m.point_step)).ravel() for k in ('x','y','z')],axis=1)
+                    xyz=xyz[::max(1,len(xyz)//4096)][:4096];xyz=xyz[np.isfinite(xyz).all(axis=1)]
+                    q=tf.transform.rotation;qv=np.array([q.x,q.y,q.z]);cross=np.cross(qv,xyz)
+                    t=tf.transform.translation;xyz=xyz+2*(q.w*cross+np.cross(qv,cross))+[t.x,t.y,t.z]
+                    roi=np.array(manifest['roi']);inside=np.all((xyz>=roi[:3])&(xyz<=roi[3:]),axis=1)
+                    metrics['map_roi_exposure']=dict(sample_points=len(xyz),points_in_roi=int(inside.sum()),
+                        fraction=float(inside.mean()) if len(xyz) else None,
+                        basis='source-stamped estimated map TF; visibility proxy, not independent truth')
+                except Exception as e:
+                    metrics['map_roi_exposure']=dict(unknown=True,reason=str(e))
             if not drop:self.pub.publish(out)
             # Whole-frame drops have no measured output perturbation: do not invent point statistics.
             if drop:metrics = dict(output_valid_points=0, whole_frame_dropped=True)
@@ -187,7 +230,7 @@ def main():
         def heartbeat(self):
             self.status.publish(String(data=json.dumps(dict(active=self.start is not None,sim_sec=self.sim,
                 input=a.input,output=a.output,count=self.count,input_age_wall_sec=time.monotonic()-self.last_input,
-                metrics_version=2,log_path=str(self.log.name),last_cloud_metrics=self.last_metrics,sigma_m_last_cloud=self.last_sigma,profile=self.profile,fault=self.fault,seed=a.seed,run=self.run))))
+                metrics_version=3,scope=a.scope,log_path=str(self.log.name),last_cloud_metrics=self.last_metrics,sigma_m_last_cloud=self.last_sigma,profile=self.profile,fault=self.fault,seed=a.seed,run=self.run))))
     rclpy.init();n=Injector()
     try:rclpy.spin(n)
     except KeyboardInterrupt:pass

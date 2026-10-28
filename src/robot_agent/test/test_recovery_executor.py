@@ -67,7 +67,7 @@ def make(graph=None, backend=None, profile=None, ack_store=None, approval=None, 
 
 
 def feed(engine, t, overrides=None, values=None):
-    vals = {**IDLE_VALUES, **(values or {})}
+    vals = {**IDLE_VALUES, "localization_consistency": {"components": {"localization": {"details": {"reference_verified": True}}}}, **(values or {})}
     engine.on_snapshot(HealthSnapshot.from_state(make_state(overrides, vals), received_at=t))
 
 
@@ -590,3 +590,12 @@ def test_bad_recovery_improving_to_warning_keeps_single_bounded_verification():
     feed(engine, 12)
     assert engine.executor.finished[-1].state == 'SUCCEEDED'
     assert len([c for c in backend.calls if c[0] == 'publish_initialpose']) == 1
+
+
+def test_localization_low_score_without_reference_verification_cannot_resume():
+    engine,backend=make(profile="nav2")
+    feed(engine,0,{"gicp_score":"ERROR"});feed(engine,6,{"gicp_score":"ERROR"})
+    unverified={"localization_consistency":{"components":{"localization":{"details":{"reference_verified":False}}}}}
+    for t in (8,20,35):feed(engine,t,values=unverified)
+    assert "auto_navigation" not in engine.state()["task_supervision"]["verified_capabilities"]
+    assert not any(ex.state=="SUCCEEDED" for ex in engine.executor.finished)

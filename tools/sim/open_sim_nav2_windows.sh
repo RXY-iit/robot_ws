@@ -240,6 +240,7 @@ echo "Starting /point_cloud -> /livox/lidar Livox CustomMsg adapter..."
 ros2 run robot_sim pointcloud2_to_livox_custom_msg_node \
   --ros-args \
   --params-file "'"$WS"'/src/robot_sim/config/livox_pc2_adapter.yaml" \
+  -p input_topic:="'"${B1_LIDAR_INPUT_TOPIC:-/point_cloud}"'" \
   -p use_sim_time:=true &
 echo "Starting /cmd_vel -> /sim/target_joint_states bridge..."
 ros2 run robot_sim sim_omni_drive_command_node'

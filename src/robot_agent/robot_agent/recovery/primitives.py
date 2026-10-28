@@ -315,6 +315,29 @@ def build_default_registry() -> PrimitiveRegistry:
         # UNCERTAIN / NEUTRAL: no evidence either way (unknown_is_not_ok).
         return ProbeResult(UNKNOWN, detail, status)
 
+    @registry.probe("localization_reference_verified", "Stable match agrees with bounded pre-fault odometry reference")
+    def localization_reference_verified(ctx: ProbeContext) -> ProbeResult:
+        if ctx.env.kind != "sim":return ProbeResult(PASS, "Existing real verification policy")
+        item = ctx.snapshot.item("localization_consistency") or {}
+        value = item.get("value") or {}
+        metrics = value.get("components", {}).get("localization", {}).get("details", {})
+        valid = metrics.get("reference_verified") is True and health_item(ctx, "localization_consistency").outcome == PASS
+        return ProbeResult(PASS if valid else FAIL, "Qualified localization reference" if valid else "Reference not verified")
+
+    @registry.probe("localization_input_settled", "Conservative sim gate before another localization seed")
+    def localization_input_settled(ctx: ProbeContext) -> ProbeResult:
+        if ctx.env.kind != "sim":
+            return ProbeResult(PASS, "Existing real recovery policy unchanged")
+        # Sensor availability is necessary, not proof of noise-free input.
+        # A bad match alone cannot distinguish bad seed, noise or wrong map.
+        # Do NOT require localization already healthy before attempting recovery.
+        for item in ("lidar_device_status",):
+            result = health_item(ctx, item)
+            if result.outcome != PASS:return result
+            if ctx.history.status_age(item, ctx.snapshot.received_at) < 5:
+                return ProbeResult(FAIL, f"{item}: waiting for 5s stable evidence")
+        return ProbeResult(PASS, "Stable available sensor input; quality/seed cause unresolved, one bounded attempt only")
+
     @registry.probe("node_alive", "Component's ROS node is present in the ROS graph")
     def node_alive(ctx: ProbeContext, component: str) -> ProbeResult:
         comp = ctx.env.components.get(component)

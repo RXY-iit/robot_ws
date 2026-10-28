@@ -1,0 +1,33 @@
+# Calibration candidates only. Freeze strengths before formal paired experiments.
+version: 1
+conditions: [none, L, O, M, LO, LM, OM, LOM]
+segment:
+  from_xy: [1.4, 6.0]
+  to_xy: [-3.3, 6.0]
+  stable_sec: 2.0
+  straight_distance_m: 0.3
+lidar:
+  scope: gicp   # upstream is a separate series, never pool them
+  sigma_m: 0.10
+  ramp_sim_sec: 10.0
+  hold_sim_sec: 10.0
+  release_sim_sec: 5.0
+  seed: 20261028
+odometry:
+  distance_scale: 0.0
+  turn_scale: 0.10
+  turn_bias_rad_per_m: 0.0
+  growth_sim_sec: 20.0
+  stop_retains_error: true
+map:
+  # Supply an inspected wall ROI/normal in make_b1_fault_map.py.
+  duplicate_fraction: 0.5
+  spacing_m: 0.15
+  voxel_m: 0.0
+  seed: 20261028
+comparison:
+  start: home
+  same_route: true
+  same_nav2_and_bridge_parameters: true
+  no_agents_in_TOR: true
+  per_segment_screening_is_not_independent_replication: true

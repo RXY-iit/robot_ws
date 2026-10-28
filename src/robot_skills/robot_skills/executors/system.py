@@ -4,6 +4,7 @@ import time
 import math
 
 from robot_skills import result_codes as codes
+from robot_skills.localization_reference import LocalizationReference
 from robot_skills.executors.base import make_result, now
 from robot_skills.schemas import SkillContext, SkillResult
 
@@ -13,6 +14,8 @@ class SystemSkills:
     def __init__(self, node, mode: str = "sim"):
         self.node = node
         self.mode = mode
+        self._reference = LocalizationReference()
+        self._reference_observation_verified = False
         self.robot_mode = "UNKNOWN"
         self.safety_status = "UNKNOWN"
         self._last_robot_mode_time = 0.0
@@ -60,6 +63,8 @@ class SystemSkills:
             self._trusted_pose_delta_warn_m = 0.12
             self._trusted_pose_delta_warn_yaw_rad = 0.20
         else:
+            # Preserve the legacy task emergency gate. HealthMonitor owns the
+            # debounced .16/.20 policy; recovery reference qualification is <.15.
             self._gicp_warn_threshold = 0.5
             self._gicp_bad_threshold = 0.65
             self._stationary_drift_warn_m = 0.15
@@ -82,7 +87,9 @@ class SystemSkills:
     def update_gicp_score(self, score: float):
         self._gicp_score = float(score)
         self._last_gicp_score_time = time.monotonic()
-        if self._gicp_score >= self._gicp_bad_threshold:
+        if self.mode == "sim" and (not math.isfinite(score) or score >= self._reference.score_limit):
+            self._reference.disturb("score_not_qualified")
+        if not math.isfinite(self._gicp_score) or self._gicp_score >= self._gicp_bad_threshold:
             self._gicp_good_samples_after_initialpose = 0
             self._localization_warning = "GICP_SCORE_BAD"
         elif self._gicp_score >= self._gicp_warn_threshold:
@@ -92,6 +99,14 @@ class SystemSkills:
             self._gicp_good_samples_after_initialpose += 1
 
     def update_initialpose(self):
+        if self.mode == "sim":
+            self._reference.disturb("initialpose_pending_verification")
+            if self.robot_mode == "MANUAL":
+                # Explicit operator alignment may establish a new reference;
+                # it still requires clean, stable post-alignment observations.
+                self._reference.anchor = None
+                self._reference.frozen = False
+                self._reference.reset_required = False
         self._last_initialpose_time = time.monotonic()
         self._stationary_pose = None
         self._stationary_drift_m = 0.0
@@ -124,6 +139,8 @@ class SystemSkills:
         self._last_nav2_cmd_vel_time = time.monotonic()
 
     def update_wheel_odom_pose(self, x: float, y: float, yaw: float, stamp=None):
+        if self.mode == "sim" and stamp is not None:
+            self._reference.odom((x, y, yaw), stamp)
         if stamp is not None and self._wheel_odom_stamp is not None:
             dt = stamp - self._wheel_odom_stamp
             previous = self._latest_wheel_odom_pose
@@ -145,6 +162,7 @@ class SystemSkills:
         self._local_planner_required_reason = reason or ("navigation_active" if required else "idle")
 
     def invalidate_localization_anchor(self):
+        self._reference.invalidate("odom_or_clock_reset")
         self._last_trusted_pose = None
         self._wheel_odom_pose_at_trust = None
         self._trusted_pose_stamp = None
@@ -154,11 +172,41 @@ class SystemSkills:
         self._localization_warning = "GICP_POSE_STALE"
 
     def update_odom_pose(self, x: float, y: float, yaw: float, stamp=None, odom_anchor=None):
+        old_reference = self._reference.anchor
+        self._update_odom_pose_checks(x, y, yaw, stamp, odom_anchor)
+        candidate = self._reference.anchor
+        if (self.mode == "sim" and stamp is not None and candidate is not old_reference
+                and candidate is not None and self._trusted_pose_stamp != candidate['stamp']):
+            # Qualification is not a shortcut around the existing consistency
+            # checks. Commit both references together or retain the old one.
+            self._reference.anchor = old_reference
+            self._reference.disturb("consistency_not_qualified")
+
+    def _update_odom_pose_checks(self, x, y, yaw, stamp, odom_anchor):
         self._evidence_stamp = stamp
         self._evidence_odom_anchor = odom_anchor
         now_time = time.monotonic()
         self._latest_odom_pose = (x, y, yaw)
         self._last_localization_pose_time = now_time
+        strict_reference = self.mode == "sim" and stamp is not None
+        if strict_reference:
+            was_frozen = self._reference.frozen
+            self._reference_observation_verified = self._reference.observe(
+                (x, y, yaw), odom_anchor, stamp, now_time,
+                self._gicp_score if self._gicp_score is not None else float('inf'),
+                self.initialpose_is_settling())
+            if was_frozen and self._reference_observation_verified:
+                # Stable clean evidence agrees with the pre-fault propagated
+                # reference: only now rebuild the stationary comparison origin.
+                self._stationary_pose = None
+                self._localization_warning = "OK"
+            if self._reference.frozen:
+                severe = self._reference.reason in {
+                    "reference_disagreement", "inconsistent_map_odom",
+                    "reference_unavailable_manual_alignment_required", "odom_discontinuity", "nonfinite_odom"}
+                if severe or self.initialpose_is_settling():
+                    self._localization_warning = self._score_warning() or "RECOVERY_REFERENCE_UNVERIFIED"
+                    return
         nav2_motion_requested = (
             self._last_nav2_cmd_speed > 0.02
             and self._last_nav2_cmd_vel_time > 0.0
@@ -255,6 +303,7 @@ class SystemSkills:
         }:
             effective_warning = "GICP_TRUSTED_POSE_DIVERGENCE"
         return {
+            **self._reference.metrics(time.monotonic()),
             "latest_odom_pose": self._latest_odom_pose,
             "latest_wheel_odom_pose": self._latest_wheel_odom_pose,
             "stationary_drift_m": self._stationary_drift_m,
@@ -378,6 +427,9 @@ class SystemSkills:
         if self._latest_wheel_odom_pose is None or self._wheel_odom_pose_at_trust is None:
             return self._last_trusted_pose
 
+        if self.mode == "sim" and self._trusted_pose_stamp is not None:
+            if self._reference.prediction(self._latest_wheel_odom_pose, time.monotonic()) is None:
+                return None
         mx, my, myaw = self._last_trusted_pose
         ox0, oy0, oyaw0 = self._wheel_odom_pose_at_trust
         ox1, oy1, oyaw1 = self._latest_wheel_odom_pose
@@ -452,6 +504,7 @@ class SystemSkills:
             "GICP_POSE_STALE",
             "GICP_TRUSTED_POSE_DIVERGENCE",
             "POSSIBLE_STATIONARY_DRIFT",
+            "RECOVERY_REFERENCE_UNVERIFIED",
             "UNKNOWN_ODOM",
         }:
             return "BAD"
@@ -478,6 +531,7 @@ class SystemSkills:
             "GICP_SCORE_BAD",
             "GICP_TRUSTED_POSE_DIVERGENCE",
             "POSSIBLE_STATIONARY_DRIFT",
+            "RECOVERY_REFERENCE_UNVERIFIED",
         }
 
     def _level_from_local_planner(self, metrics: dict) -> str:
@@ -501,6 +555,8 @@ class SystemSkills:
         return max(levels or ["UNKNOWN"], key=lambda item: rank.get(item, 2))
 
     def _record_trusted_pose(self, x: float, y: float, yaw: float, timestamp: float):
+        if self.mode == "sim" and self._evidence_stamp is not None and not self._reference_observation_verified:
+            return
         if self._evidence_stamp is not None and self._evidence_odom_anchor is None:
             return
         self._last_trusted_pose = (float(x), float(y), float(yaw))

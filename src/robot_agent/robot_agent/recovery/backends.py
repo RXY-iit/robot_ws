@@ -103,6 +103,8 @@ class RosActionBackend:
         self._clients: dict[tuple[str, str], Any] = {}
         self._localization_metrics: dict = {}
         self._health_received = 0.0
+        self._input_health = {}
+        self._input_health_received = 0.0
         if self.config.get("last_trusted_pose"):
             from geometry_msgs.msg import PoseWithCovarianceStamped
             from std_msgs.msg import String
@@ -111,6 +113,16 @@ class RosActionBackend:
             self._tf_buffer = Buffer()
             self._tf_listener = TransformListener(self._tf_buffer, node)
             self._health_sub = node.create_subscription(String, "/agent/health_state", self._on_agent_health, 10)
+            self._input_health_sub = node.create_subscription(String, "/agent/health_dashboard_state", self._on_input_health, 10)
+
+    def _on_input_health(self, msg: Any) -> None:
+        try:
+            data = json.loads(msg.data)
+            self._input_health = next((i for d in data.get("domains", []) for i in d.get("items", [])
+                                       if i.get("id") == "lidar_device_status"), {})
+            self._input_health_received = time.monotonic()
+        except (ValueError, TypeError, AttributeError):
+            self._input_health = {}
 
     def _on_agent_health(self, msg: Any) -> None:
         try:
@@ -185,6 +197,12 @@ class RosActionBackend:
         from rclpy.time import Time
 
         spec = self.config["last_trusted_pose"]
+        if spec.get("require_qualified_reference", False):
+            item = self._input_health
+            available = item.get("status") in {"OK", "AVAILABLE", "OBSERVED", "ESTIMATED", "REPORTED", "RECOVERED"}
+            available = available or (item.get("status") == "WARN" and item.get("warning_kind") == "low_rate")
+            if not available or not 0 <= time.monotonic()-self._input_health_received <= 4:
+                raise ValueError("Sensor input unavailable/stale; diagnose input before localization seed")
         x, y, yaw = trusted_seed(self._localization_metrics, spec, time.monotonic() - self._health_received)
         if spec.get("require_timestamped_base", False):
             stamped = self._tf_buffer.lookup_transform("odom", spec.get("base_frame", "base_footprint"), Time())
@@ -197,6 +215,19 @@ class RosActionBackend:
                 raise ValueError("Odometry clock reset since trusted anchor")
             t, q = stamped.transform.translation, stamped.transform.rotation
             odom_now = (t.x, t.y, math.atan2(2*(q.w*q.z+q.x*q.y), 1-2*(q.y*q.y+q.z*q.z)))
+            if spec.get("require_qualified_reference", False):
+                m = self._localization_metrics
+                previous = m.get("latest_wheel_odom_pose")
+                dt = source_stamp - m["wheel_odom_stamp_sec"]
+                if previous is None or not 0 <= dt <= 2:
+                    raise ValueError("TF/health odometry timeline mismatch")
+                extra_path = math.dist(odom_now[:2], previous[:2])
+                extra_turn = abs(math.atan2(math.sin(odom_now[2]-previous[2]), math.cos(odom_now[2]-previous[2])))
+                if extra_path > 2*dt+.15 or extra_turn > 3*dt+.15:
+                    raise ValueError("Odometry jumped after health report")
+                if (m["reference_path_m"] + extra_path > spec.get("max_odom_path_m", 3)
+                        or m["reference_turn_rad"] + extra_turn > spec.get("max_odom_turn_rad", 1)):
+                    raise ValueError("Current TF exceeds cumulative propagation budget")
             anchor = self._localization_metrics["trusted_odom_anchor"]
             if math.hypot(t.x-anchor[0], t.y-anchor[1]) > float(spec.get("max_odom_delta_m", 1)):
                 raise ValueError("Current odometry exceeds recovery travel bound")

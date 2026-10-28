@@ -9,6 +9,7 @@ Publishes:
   /tf          odom -> base_footprint
 """
 
+import os
 import omni
 import omni.graph.core as og
 import omni.timeline
@@ -35,6 +36,7 @@ def main():
         stage.RemovePrim(GRAPH_PATH)
         print(f"Removed old wheel odom graph: {GRAPH_PATH}")
 
+    relay = os.environ.get("B1_ODOM_RELAY", "0") == "1"
     keys = og.Controller.Keys
     og.Controller.edit(
         {"graph_path": GRAPH_PATH, "evaluator_name": "execution"},
@@ -45,19 +47,32 @@ def main():
                 ("ReadSimTime", "isaacsim.core.nodes.IsaacReadSimulationTime"),
                 ("ComputeOdometry", "isaacsim.core.nodes.IsaacComputeOdometry"),
                 ("PublishWheelOdom", "isaacsim.ros2.bridge.ROS2PublishOdometry"),
+                ("PublishPhysicsTruth", "isaacsim.ros2.bridge.ROS2PublishOdometry"),
                 ("PublishOdomTF", "isaacsim.ros2.bridge.ROS2PublishRawTransformTree"),
             ],
             keys.SET_VALUES: [
                 ("ComputeOdometry.inputs:chassisPrim", [Sdf.Path(ROBOT_CHASSIS)]),
-                ("PublishWheelOdom.inputs:topicName", "wheel_odom"),
+                ("PublishWheelOdom.inputs:topicName", "b1/physics_odom" if relay else "wheel_odom"),
                 ("PublishWheelOdom.inputs:odomFrameId", "odom"),
                 ("PublishWheelOdom.inputs:chassisFrameId", "base_footprint"),
                 ("PublishWheelOdom.inputs:publishRawVelocities", False),
-                ("PublishOdomTF.inputs:topicName", "tf"),
+                ("PublishPhysicsTruth.inputs:topicName", "b1/ground_truth_odom"),
+                ("PublishPhysicsTruth.inputs:odomFrameId", "isaac_physics_odom"),
+                ("PublishPhysicsTruth.inputs:chassisFrameId", "base_footprint"),
+                ("PublishPhysicsTruth.inputs:publishRawVelocities", False),
+                ("PublishOdomTF.inputs:topicName", "b1/physics_tf" if relay else "tf"),
                 ("PublishOdomTF.inputs:parentFrameId", "odom"),
                 ("PublishOdomTF.inputs:childFrameId", "base_footprint"),
             ],
             keys.CONNECT: [
+                ('ComputeOdometry.outputs:execOut', 'PublishPhysicsTruth.inputs:execIn'),
+                ('ComputeOdometry.outputs:position', 'PublishPhysicsTruth.inputs:position'),
+                ('ComputeOdometry.outputs:orientation', 'PublishPhysicsTruth.inputs:orientation'),
+                ('ComputeOdometry.outputs:linearVelocity', 'PublishPhysicsTruth.inputs:linearVelocity'),
+                ('ComputeOdometry.outputs:angularVelocity', 'PublishPhysicsTruth.inputs:angularVelocity'),
+                ('ReadSimTime.outputs:simulationTime', 'PublishPhysicsTruth.inputs:timeStamp'),
+                ('ROS2Context.outputs:context', 'PublishPhysicsTruth.inputs:context'),
+
                 ("OnPlaybackTick.outputs:tick", "ComputeOdometry.inputs:execIn"),
                 ("ComputeOdometry.outputs:execOut", "PublishWheelOdom.inputs:execIn"),
                 ("ComputeOdometry.outputs:position", "PublishWheelOdom.inputs:position"),
@@ -75,7 +90,7 @@ def main():
         },
     )
 
-    print("Created /wheel_odom and /tf odom->base_footprint publishers.")
+    print("Created isolated physics odometry; start B1 odom relay while MANUAL." if relay else "Created /wheel_odom and /tf odom->base_footprint publishers.")
 
 
 main()

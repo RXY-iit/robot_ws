@@ -396,6 +396,7 @@ class GicpLocalizer(Node):
         self._pose_pub  = self.create_publisher(PoseStamped, "/gicp_loc/pose",  10)
         self._raw_pose_pub = self.create_publisher(PoseStamped, "/gicp_loc/raw_pose", 10)
         self._accepted_state_pub = self.create_publisher(String, "/gicp_loc/accepted_state", 10)
+        self._match_evidence_pub = self.create_publisher(String, "/gicp_loc/match_evidence", 100)
         self._score_pub = self.create_publisher(Float32,      "/gicp_loc/score", 10)
         self._recovery_status_pub = self.create_publisher(String, "/gicp_loc/recovery_status", 10)
         self._last_match_result = "not_attempted"
@@ -556,6 +557,15 @@ class GicpLocalizer(Node):
             self._clock_reset_needs_seed = True
             self._last_match_result = "clock_reset_requires_initialpose"
         self._last_clock_sec = stamp
+
+    def _publish_match_evidence(self):
+        value = dict(self._match_details, result=self._last_match_result,
+                     generation=self._match_details.get("generation"), wall_unix_sec=time.time(),
+                     wall_monotonic_sec=time.monotonic(),
+                     sim_sec=self.get_clock().now().nanoseconds/1e9)
+        # JSON null for non-finite RMSE; result explains invalid evidence.
+        value = {k: (None if isinstance(v, float) and not math.isfinite(v) else v) for k,v in value.items()}
+        self._match_evidence_pub.publish(String(data=json.dumps(value, allow_nan=False)))
 
     def _publish_recovery_status(self):
         with self._scan_lock:
@@ -797,9 +807,10 @@ class GicpLocalizer(Node):
         started = time.monotonic()
         score, T_map_lidar = self._run_gicp(scan_pts, T_init)
         self._match_details.update(duration_wall_sec=time.monotonic() - started, scan_stamp_sec=scan_time,
-                                   scan_source_age_sec=source_age, backend=_BACKEND)
+                                   scan_source_age_sec=source_age, backend=_BACKEND, generation=generation)
         if not math.isfinite(score) or not np.isfinite(T_map_lidar).all():
             self._last_match_result = "non_finite_match_rejected"
+            self._publish_match_evidence()
             self.get_logger().warning("[gicp_localizer] Non-finite registration result rejected", throttle_duration_sec=5)
             return
 
@@ -817,10 +828,12 @@ class GicpLocalizer(Node):
 
         if not valid:
             self._last_match_result = "insufficient_match_overlap"
+            self._publish_match_evidence()
             return
 
         if score > self._fit_thr:
             self._last_match_result = "score_rejected"
+            self._publish_match_evidence()
             with self._lock:
                 self._consecutive_correction_rejects += 1
             self.get_logger().warn(
@@ -840,6 +853,7 @@ class GicpLocalizer(Node):
         correction_yaw = abs(
             _normalize_angle(_matrix_yaw(T_map_odom_candidate) - _matrix_yaw(T_map_odom))
         )
+        self._match_details.update(correction_xy_m=correction_xy, correction_yaw_rad=correction_yaw)
         with self._lock:
             relaxed_remaining = self._relaxed_correction_remaining
             relaxed_source = self._relaxed_correction_source
@@ -880,6 +894,7 @@ class GicpLocalizer(Node):
             and correction_yaw > max_yaw
         ):
             self._last_match_result = "correction_jump_rejected"
+            self._publish_match_evidence()
             with self._lock:
                 self._consecutive_correction_rejects += 1
             self.get_logger().warn(
@@ -894,6 +909,7 @@ class GicpLocalizer(Node):
 
         correction_alpha = 1.0 if relaxed_remaining > 0 else self._correction_alpha
         self._last_match_result = "correction_accepted"
+        self._publish_match_evidence()
         T_map_odom_new = _blend_planar_transform(
             T_map_odom,
             T_map_odom_candidate,

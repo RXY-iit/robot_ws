@@ -84,3 +84,20 @@ def test_vector_translation_preserves_layout_and_measures_displacement():
     assert struct.unpack_from('<ffff',bytes(out.data),0)==pytest.approx((3,5.5,0,42))
     assert stats['xyz_perturbation_rmse_m']==pytest.approx(1.5)
     with pytest.raises(ValueError):m.corrupt_cloud(c,0,1,translation=[0,float('nan'),0])
+
+
+def test_noise_metrics_do_not_claim_observable_quality_is_injected_truth():
+    c=cloud();stats={}
+    m.corrupt_cloud(c,.1,42,metrics=stats)
+    assert stats['radial_noise_abs_p95_m']>=stats['radial_noise_abs_p50_m']
+    assert stats['input_quality']['finite_fraction']==1
+    assert 'local_plane_rms_median_m' in stats['output_quality']
+    zero={};assert m.corrupt_cloud(c,0,42,metrics=zero) is c
+    assert zero['radial_noise_rmse_m']==0
+    assert zero['radial_noise_abs_p95_m']==0
+
+
+def test_output_observable_quality_includes_occluded_points():
+    stats={};m.corrupt_cloud(cloud(),0,1,sector_deg=180,metrics=stats)
+    assert stats['input_quality']['finite_fraction']==1
+    assert stats['output_quality']['finite_fraction']==0

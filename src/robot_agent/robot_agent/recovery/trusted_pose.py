@@ -22,6 +22,16 @@ def trusted_seed(metrics: dict, config: dict, report_age: float) -> tuple[float,
 
     if not math.isfinite(report_age) or report_age < 0 or report_age > float(config.get("max_report_age_sec", 4)):
         raise ValueError("Localization health report is stale")
+    if config.get("require_qualified_reference", False):
+        if metrics.get("reference_policy_version") != 1 or metrics.get("reference_qualified") is not True:
+            raise ValueError("No quality-qualified pre-fault reference; manual alignment required")
+        if metrics.get("reference_epoch") != metrics.get("trusted_reference_epoch"):
+            raise ValueError("Odometry epoch changed since trusted reference")
+        for key, limit in [("reference_path_m", float(config.get("max_odom_path_m", 3))),
+                           ("reference_turn_rad", float(config.get("max_odom_turn_rad", 1)))]:
+            value = metrics.get(key)
+            if not isinstance(value, (int, float)) or not math.isfinite(value) or not 0 <= value <= limit:
+                raise ValueError("Cumulative odometry propagation budget exhausted")
     bounded_age("last_trusted_pose_age_sec", float(config.get("max_anchor_age_sec", 120)))
     bounded_age("wheel_odom_age_sec", float(config.get("max_odom_age_sec", 3)))
     if metrics.get("trusted_pose_has_odom_anchor") is not True:

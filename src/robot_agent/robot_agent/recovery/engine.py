@@ -509,6 +509,9 @@ class RecoveryEngine:
             if cap.get("status") == "AVAILABLE" and cap.get("dependencies")
             and all(self.last_snapshot.health_class(item) == "HEALTHY" for item in cap["dependencies"])
         ]
+        if (self.env.kind == "sim" and "auto_navigation" in verified
+                and self.registry.run_probe("localization_reference_verified", self._ctx(self.last_snapshot), {}).outcome != PASS):
+            verified.remove("auto_navigation")
         return {"ready": bool(fresh and self.lifecycle == "RUNNING" and self.environment_state["recovery_allowed"]),
                 "constraints": constraints, "verified_capabilities": verified}
 
@@ -1058,6 +1061,11 @@ class RecoveryEngine:
                     for item in incident.diagnosis.candidate.root_items
                 ):
                     # An upstream fault can hide this candidate without fixing it.
+                    incident.healthy_since = None
+                    continue
+                pb = self.library.get(incident.diagnosis.playbook_id or "")
+                if (pb is not None and pb.id == "PB-LOC-LOST" and self.env.kind == "sim"
+                        and self.registry.run_probe("localization_reference_verified", self._ctx(self.last_snapshot), {}).outcome != PASS):
                     incident.healthy_since = None
                     continue
                 # Hysteresis: the root must stay healthy for resolve_after_sec.
