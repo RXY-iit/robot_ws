@@ -21,7 +21,7 @@ def main():
         f.write(json.dumps(dict(event=event,wall_unix_sec=time.time(),wall_monotonic_sec=time.monotonic(),sim_sec=sim[0],source_stamp_sec=source,data=data),ensure_ascii=False)+'\n');counts[event]=counts.get(event,0)+1
     def receive(topic,m):
         now=time.monotonic()
-        period = .1 if topic in ['/wheel_odom','/fast_lio/odometry','/cmd_vel','/nav2/cmd_vel'] else (.5 if topic=='/navigate_to_pose/_action/feedback' else (1. if topic=='/plan' else 0.))
+        period = .1 if topic in ['/wheel_odom','/fast_lio/odometry','/cmd_vel','/cmd_vel_raw','/nav2/cmd_vel'] else (.5 if topic=='/navigate_to_pose/_action/feedback' else (1. if topic=='/plan' else 0.))
         if period and now-last.get(topic,0)<period:return
         last[topic]=now
         if topic=='/wheel_odom':
@@ -34,9 +34,9 @@ def main():
         record(topic,data,stamp)
     def clock(m):sim[0]=m.clock.sec+m.clock.nanosec/1e9;last['/clock']=time.monotonic()
     n.create_subscription(Clock,'/clock',clock,qos_profile_sensor_data)
-    for topic in ['/robot_mode','/safety_status','/agent/health_state','/b1/readonly_health_state','/agent/health_dashboard_state','/agent/recovery_state','/agent/mission_state','/agent/mission_events','/agent/recovery_events','/agent/recovery_response','/gicp_loc/accepted_state','/gicp_loc/recovery_status','/b1/lidar_injection_status','/b1/lidar_injection_command']:
+    for topic in ['/robot_mode','/motion_policy/status','/safety_status','/agent/health_state','/b1/readonly_health_state','/agent/health_dashboard_state','/agent/recovery_state','/agent/mission_state','/agent/mission_events','/agent/recovery_events','/agent/recovery_response','/gicp_loc/accepted_state','/gicp_loc/recovery_status','/b1/lidar_injection_status','/b1/lidar_injection_command']:
         n.create_subscription(String,topic,lambda m,t=topic:receive(t,m),100)
-    for topic,cls in [('/wheel_odom',Odometry),('/fast_lio/odometry',Odometry),('/cmd_vel',Twist),('/nav2/cmd_vel',Twist),('/gicp_loc/score',Float32),('/initialpose',PoseWithCovarianceStamped),('/navigate_to_pose/_action/status',GoalStatusArray),('/navigate_to_pose/_action/feedback',NavigateToPose_FeedbackMessage),('/behavior_tree_log',BehaviorTreeLog),('/plan',NavPath)]:
+    for topic,cls in [('/wheel_odom',Odometry),('/fast_lio/odometry',Odometry),('/cmd_vel',Twist),('/cmd_vel_raw',Twist),('/nav2/cmd_vel',Twist),('/gicp_loc/score',Float32),('/initialpose',PoseWithCovarianceStamped),('/navigate_to_pose/_action/status',GoalStatusArray),('/navigate_to_pose/_action/feedback',NavigateToPose_FeedbackMessage),('/behavior_tree_log',BehaviorTreeLog),('/plan',NavPath)]:
         n.create_subscription(cls,topic,lambda m,t=topic:receive(t,m),qos_profile_sensor_data)
     def costmap(m):
         now=time.monotonic()

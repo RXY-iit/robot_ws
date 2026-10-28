@@ -16,7 +16,7 @@ def summarize(path,start,end):
             samples.setdefault('accepted',[]).append([t,*m,*o,*correction])
         elif k=='/wheel_odom':
             p=d['pose']['pose']['position'];v=d['twist']['twist'];speed=math.hypot(v['linear']['x'],v['linear']['y'])
-            samples.setdefault('wheel',[]).append([t,p['x'],p['y'],speed])
+            samples.setdefault('wheel',[]).append([t,p['x'],p['y'],speed,abs(v['angular']['z'])])
         elif k=='/gicp_loc/score':samples.setdefault('score',[]).append([t,d['data']])
         elif k=='/b1/local_costmap_proximity':
             if d.get('nearest_lethal_cell_m') is not None:samples.setdefault('clearance',[]).append([t,d['nearest_lethal_cell_m']])
@@ -76,6 +76,25 @@ def main():
         for row,label in enumerate(['GICP score (m); score-item state','Map/odom translation change (m)','Nearest lethal cell to base centre (m)','Wheel-odom path length (m)']):
             axs[row,col].set_ylabel(label);axs[row,col].axvline(0,color='black',ls='--');axs[row,col].grid(alpha=.2)
         axs[0,col].set_title(spec['label']);axs[3,col].set_xlabel('Wall seconds relative to injection')
+        bad=next((v['wall'] for v in data['transitions'] if v['item']=='gicp_score' and v['status']=='ERROR' and v['wall']>=t0),None)
+        stats['first_score_BAD_offset_wall_sec']=bad-t0 if bad is not None else None
+        after_bad=[v for v in wheel if bad is not None and v[0]>=bad]
+        stats['wheel_path_after_first_score_BAD_m']=sum(math.dist(u[1:3],v[1:3]) for u,v in zip(after_bad,after_bad[1:])) if after_bad else None
+        stats['additional_wheel_y_after_BAD_m']=max(v[2] for v in after_bad)-after_bad[0][2] if after_bad else None
+        still=None;stop=None
+        for v in after_bad:
+            if v[3]<.01 and v[4]<.01:
+                if still is None:still=v[0]
+                if v[0]-still>=2:stop=still;break
+            else:still=None
+        stats['first_two_second_stop_after_BAD_offset_wall_sec']=stop-t0 if stop is not None else None
+        pause=next((e['wall'] for e in data['events'] if e['topic']=='/agent/mission_events' and e['data'].get('payload',{}).get('metrics',{}).get('recovery_pause')),None)
+        pb=next((e['wall'] for e in data['events'] if e['topic']=='/agent/recovery_events' and e['data'].get('type')=='execution_started'),None)
+        bt=next((e['wall'] for e in data['events'] if e['topic']=='/behavior_tree_log' and e['wall']>=t0),None)
+        for key,value in [('recovery_pause',pause),('PB_start',pb),('BT_start',bt)]:
+            stats[key+'_offset_wall_sec']=value-t0 if value is not None else None
+            if value is not None:
+                for ax in axs[:,col]:ax.axvline(value-t0,color='purple',ls=':',alpha=.6)
         stats['score_item_states']=sorted({v['status'] for v in data['transitions'] if v['item']=='gicp_score'})
         stats['duration_wall_sec']=spec['end_wall']-spec['start_wall']
         results[spec['label']]=dict(spec=spec,metrics=stats,transitions=data['transitions'],events=data['events'])
