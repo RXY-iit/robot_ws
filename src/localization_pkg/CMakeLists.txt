@@ -24,9 +24,10 @@ install(DIRECTORY launch config
   DESTINATION share/${PROJECT_NAME}
 )
 
-install(PROGRAMS scripts/gicp_localizer_node.py
+# RENAME makes ament's symlink installer fall back to a stale-prone copy.
+# Keep the extensionless ROS entrypoint as a wrapper and link both files.
+install(PROGRAMS scripts/gicp_localizer_node scripts/gicp_localizer_node.py
   DESTINATION lib/${PROJECT_NAME}
-  RENAME gicp_localizer_node
 )
 install(FILES scripts/initialpose_scan_window.py scripts/localization_evidence.py
   DESTINATION lib/${PROJECT_NAME}

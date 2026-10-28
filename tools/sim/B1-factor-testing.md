@@ -21,6 +21,8 @@
 
 部署需重启 ROS 定位、RViz 与 Agent 以加载新代码和 topic remap，Isaac 不需要重启。**尚未重启的旧进程**可临时使用“MANUAL → 静止 → RViz 2D Pose Estimate 一次 → 等待参考验证 → AUTO”。新版事件与健康指标记录 `source_topic`/`initialpose_source`、`operator_alignment_authorized`、`manual_alignment_pending`；两种初值 topic 均加入 B1 记录。
 
+GICP 安装同步已修复：原 `install(PROGRAMS ... RENAME ...)` 在 Humble 中会退回复制，即使启用了 symlink-install。现保留同名 `gicp_localizer_node` 启动入口，通过 wrapper 加载相邻 Python 实现；开发环境入口、实现与辅助模块均链接到源码。以后使用 `colcon build --symlink-install --packages-select localization_pkg` 保持此安装方式。已经运行的 Python 进程仍需重启才能加载代码修改。
+
 ## 固定实验条件
 
 [候选参数](b1_factor_cases.yaml)列出 none、L、O、M、LO、LM、OM、LOM。配置是实验计划清单；下面的命令显式提供参数，日志中的实际配置为最终依据。正式配对冻结相同参数、种子、地图哈希、home起点、waypoint列表、Nav2/速度桥/安全条件。TOR 使用相同 route 文件与 `--health-gate route`，关闭 Mission/Recovery，保留只读记录；不要混用曾额外启用的桥层定位门控条件。
