@@ -69,3 +69,37 @@ def test_committed_odom_window_does_not_follow_goal_cancellation_or_wall_delay()
     assert cor.elapsed('O',120) and tor.elapsed('O',120)
     with pytest.raises(ValueError):cor.start('O',130,20)
     with pytest.raises(ValueError):cor.elapsed('O',1)
+
+
+@pytest.mark.parametrize('lateral,yaw',[(.1,3),(.3,10),(.75,20)])
+def test_burst_exact_endpoint_and_residual(lateral,yaw):
+    from b1_fault_models import OdomBurst
+    m=OdomBurst(0,lateral,math.radians(yaw),1)
+    m.update((0,0,0),1);m.start()
+    pose,_=m.update((0,0,0),1.5)
+    assert pose==pytest.approx((0,lateral*.5,math.radians(yaw)*.5))
+    pose,_=m.update((0,0,0),2.1)
+    assert pose==pytest.approx((0,lateral,math.radians(yaw)))
+    assert not m.active
+    pose,_=m.update((1,0,0),3.1)
+    assert pose==pytest.approx((math.cos(math.radians(yaw)),lateral+math.sin(math.radians(yaw)),math.radians(yaw)))
+
+
+def test_burst_direction_stop_and_input_guard():
+    from b1_fault_models import OdomBurst
+    m=OdomBurst(0,-.3,-.2,1)
+    m.update((0,0,math.pi/2),1);m.start()
+    pose,_=m.update((0,0,math.pi/2),1.5)
+    assert pose[:2]==pytest.approx((.15,0))
+    m.active=False
+    assert m.update((0,0,math.pi/2),2)[0]==pytest.approx(pose)
+    with pytest.raises(ValueError):m.update((0,0,math.pi/2),1)
+    m.start()
+    pose2,_=m.update((0,0,math.pi/2),3)
+    assert pose2[2]==pytest.approx(pose[2]-.2)
+
+
+@pytest.mark.parametrize('duration',[0,-1,float('nan')])
+def test_burst_invalid_duration(duration):
+    from b1_fault_models import OdomBurst
+    with pytest.raises(ValueError):OdomBurst(0,.1,.1,duration)

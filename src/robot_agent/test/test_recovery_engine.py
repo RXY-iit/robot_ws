@@ -163,6 +163,37 @@ def test_healthy_snapshot_stops_at_stage0():
     assert engine.incidents == {}
 
 
+def test_warn_playbooks_run_read_only_checks_without_recovery_execution():
+    from robot_agent.health_response import annotate_domains
+    engine = make_engine()
+    state = make_state({"gicp_score": "WARN", "lidar_temperature_trend": "WARN"})
+    annotate_domains(state["domains"])
+    for t in (0.0, 4.0):
+        engine.on_snapshot(HealthSnapshot.from_state(state, received_at=t))
+    selected = {incident.diagnosis.playbook_id: incident for incident in engine.incidents.values()}
+    assert "PB-LOC-WARN" in selected
+    assert "PB-LIDAR-TEMP-WARN" in selected
+    assert "Temperature is rising" in selected["PB-LIDAR-TEMP-WARN"].diagnosis.reason
+    for incident in selected.values():
+        assert incident.status == "WARNING"
+        assert incident.diagnosis.steps
+        assert incident.diagnosis.plan is None
+    assert not engine.executor.active
+
+
+def test_sim_lidar_thermal_bad_creates_navigation_constraint_without_automatic_cooling():
+    from robot_agent.health_response import annotate_domains
+    engine = make_engine()
+    state = make_state({"lidar_temperature_trend": "ERROR"})
+    annotate_domains(state["domains"])
+    for t in (0.0, 4.0):
+        engine.on_snapshot(HealthSnapshot.from_state(state, received_at=t))
+    incident = engine.incidents["lidar_temperature_trend"]
+    assert incident.diagnosis.playbook_id == "PB-LIDAR-TEMP-BAD"
+    assert incident.diagnosis.plan["steps"][0]["type"] == "operator_request"
+    assert any("auto_navigation" in item["capabilities"] for item in engine.state()["task_supervision"]["constraints"])
+
+
 def test_dead_drive_node_is_one_incident_confirmed_as_proc_down():
     graph = FakeGraph(nodes=ALL_SIM_NODES - {"/sim_omni_drive_command_node"})
     engine = make_engine(graph=graph)

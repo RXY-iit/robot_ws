@@ -86,6 +86,10 @@ class Playbook:
         return "blocking" if self.layer == "safety" else "degraded"
 
     @property
+    def warning_probe_only(self) -> bool:
+        return bool(self.raw.get("warning_probe_only", False))
+
+    @property
     def max_action_risk(self) -> str:
         """Highest risk among software actions (operator steps excluded): actuator lock."""
         risks = [str(step.get("risk", "A0")) for step in self.recovery if step.get("type") == "action"]
@@ -237,6 +241,10 @@ def build_playbook(raw: dict[str, Any], env: EnvProfile, registry: PrimitiveRegi
     verify = list(data.get("verify") or [])
     for spec in verify:
         _check_probe_ref(pb_id, "verify", spec, registry)
+    if raw.get("warning_probe_only") and (recovery or verify or preconditions or mission_trigger):
+        raise PlaybookError(f"{pb_id}: warning_probe_only must contain diagnosis only, never actions or mission triggers")
+    if raw.get("warning_probe_only") and data.get("severity") != "advisory":
+        raise PlaybookError(f"{pb_id}: warning_probe_only must be advisory and cannot constrain a capability")
 
     return Playbook(
         id=pb_id,

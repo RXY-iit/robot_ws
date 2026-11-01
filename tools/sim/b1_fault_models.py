@@ -33,6 +33,41 @@ class OdomError:
         return self.pose,(bx/dt,by/dt,injected_da/dt)
 
 
+class OdomBurst(OdomError):
+    """Finite-duration estimated-pose disturbance; no physical teleport.
+
+    Translation is in the estimated body frame frozen at start. Residual pose
+    and heading remain after the ramp and propagate subsequent increments.
+    """
+    def __init__(self, forward, lateral, yaw_rad, duration):
+        super().__init__()
+        if not all(math.isfinite(v) for v in (forward,lateral,yaw_rad,duration)) or duration<=0:
+            raise ValueError('Finite burst parameters and positive duration required')
+        self.target=(forward,lateral,yaw_rad);self.duration=duration
+        self.start_stamp=None;self.fraction=0.;self.vector=(0.,0.)
+
+    def start(self):
+        if self.previous is None or self.active:raise ValueError('Initialized inactive odometry required')
+        self.start_stamp=self.previous[1];self.fraction=0.;self.active=True
+        c,s=math.cos(self.pose[2]),math.sin(self.pose[2]);x,y,_=self.target
+        self.vector=(c*x-s*y,s*x+c*y)
+
+    def update(self, raw, stamp):
+        previous=self.pose;at=self.previous[1] if self.previous else None
+        pose,twist=super().update(raw,stamp)
+        if not self.active:return pose,twist
+        u=max(0.,min(1.,(stamp-self.start_stamp)/self.duration))
+        fraction=u*u*(3-2*u);increment=fraction-self.fraction
+        self.pose=(pose[0]+self.vector[0]*increment,pose[1]+self.vector[1]*increment,
+                   wrap(pose[2]+self.target[2]*increment))
+        self.fraction=fraction
+        if u>=1:self.active=False
+        # Twist matches the perturbed pose increments, including the burst.
+        dt=stamp-at;c,s=math.cos(previous[2]),math.sin(previous[2])
+        dx,dy=self.pose[0]-previous[0],self.pose[1]-previous[1]
+        return self.pose,((c*dx+s*dy)/dt,(-s*dx+c*dy)/dt,wrap(self.pose[2]-previous[2])/dt)
+
+
 class StableSegment:
     """Only arm after success at A and acceptance of the goal at B."""
     def __init__(self, start_xy, end_xy, stable_sec=2., distance=.3):

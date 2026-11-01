@@ -90,3 +90,42 @@ def test_bad_score_after_operator_alignment_does_not_qualify(monkeypatch):
     s, _ = deliver(True)
     samples(s, clock, [1., 2., 3., 4., 5.], score=.21)
     assert not s._reference.verified and not s.localization_is_healthy()
+
+
+@pytest.mark.parametrize('mode',['MANUAL','AUTO'])
+def test_reset_health_automatically_updates_with_current_epoch_evidence(mode,monkeypatch):
+    clock=[100.]
+    monkeypatch.setattr('robot_skills.executors.system.time.monotonic',lambda:clock[0])
+    s=SystemSkills(None,'sim');s.update_robot_mode(mode)
+    s.invalidate_localization_anchor()
+    samples(s,clock,[1.,2.,3.,4.,5.])
+    assert not s.localization_is_healthy()
+    assert s.localization_metrics()['localization_warning']=='RECOVERY_REFERENCE_UNVERIFIED'
+    samples(s,clock,[6.])
+    assert s.localization_is_healthy()
+    assert s.localization_metrics()['localization_warning']=='OK'
+    assert s.last_trusted_pose()==(5.,0.,0.)
+    assert s.localization_metrics()['reference_qualification_kind']=='automatic_current_epoch'
+
+
+@pytest.mark.parametrize('mode',['MANUAL','AUTO'])
+def test_stationary_disagreement_requalifies_without_mode_toggle(mode,monkeypatch):
+    clock=[100.]
+    monkeypatch.setattr('robot_skills.executors.system.time.monotonic',lambda:clock[0])
+    s=SystemSkills(None,'sim');s.update_robot_mode(mode)
+    samples(s,clock,[1.,2.,3.,4.])
+    assert s.localization_is_healthy()
+    s._reference.disturb('fault')
+    for t in range(5,16):
+        clock[0]=120.+t;s.update_cmd_vel(0.,0.,0.)
+        s.update_wheel_odom_pose(0.,0.,0.,stamp=t);s.update_gicp_score(.12)
+        s.update_odom_pose(6.,0.,0.,stamp=t,odom_anchor=(0.,0.,0.))
+    assert not s.localization_is_healthy()
+    assert s._reference.anchor is None
+    for t in range(16,22):
+        clock[0]=120.+t;s.update_cmd_vel(0.,0.,0.)
+        s.update_wheel_odom_pose(0.,0.,0.,stamp=t);s.update_gicp_score(.12)
+        s.update_odom_pose(6.,0.,0.,stamp=t,odom_anchor=(0.,0.,0.))
+    assert s.localization_is_healthy()
+    assert s._reference.verified
+    assert s.last_trusted_pose()==(6.,0.,0.)

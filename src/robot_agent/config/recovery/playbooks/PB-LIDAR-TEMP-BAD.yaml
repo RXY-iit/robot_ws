@@ -1,0 +1,38 @@
+id: PB-LIDAR-TEMP-BAD
+number: 44
+severity: blocking
+title: Simulated LiDAR overtemperature
+version: 1
+handling_class: known_recovery
+domain: H4
+layer: ros_delivery
+affects_capabilities: [auto_navigation]
+envs:
+  sim:
+    status: supported
+    verified: false
+    note: Simulation only. No physical cooling actuator is inferred.
+  real: {status: n/a, verified: false}
+trigger:
+  any:
+    - {item: lidar_temperature_trend, status_in: [ERROR], for_sec: 1}
+diagnosis:
+  - id: stream_state
+    probe: health_item
+    args: {item: lidar_device_status}
+    informational: true
+  - id: localization_state
+    probe: health_item
+    args: {item: gicp_score}
+    informational: true
+recovery:
+  - type: operator_request
+    template: inspect_sim_lidar_thermal_cooling
+    done_when:
+      - {probe: health_item, args: {item: lidar_temperature_trend}}
+verify:
+  - {probe: health_item, args: {item: lidar_temperature_trend}, within_sec: 15}
+policy: {retry_budget: 0, cooldown_sec: 30}
+operator_text:
+  en: "Sim thermal model crossed experimental BAD. Stop dependent navigation, inspect the thermal log and apply the explicit cool command only if the scenario permits. Verify fresh temperature and LiDAR delivery before resuming."
+  ja: "シミュレーションの温度モデルが BAD になりました。依存するナビゲーションを停止し、ログと LiDAR 入力を確認してから回復を検証してください。"

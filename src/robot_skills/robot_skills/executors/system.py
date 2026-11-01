@@ -201,14 +201,23 @@ class SystemSkills:
         self._last_localization_pose_time = now_time
         strict_reference = self.mode == "sim" and stamp is not None
         if strict_reference:
+            # Mode-independent: recent zero command evidence plus stable map
+            # AND wheel poses are required by the reference window below.
+            stationary_reference = (
+                self._last_cmd_speed <= .02
+                and self._last_cmd_receipt_time > 0
+                and now_time-self._last_cmd_receipt_time <= 1.
+                and not (self._last_nav2_cmd_speed > .02
+                         and now_time-self._last_nav2_cmd_vel_time <= 1.))
             was_frozen = self._reference.frozen
             self._reference_observation_verified = self._reference.observe(
                 (x, y, yaw), odom_anchor, stamp, now_time,
                 self._gicp_score if self._gicp_score is not None else float('inf'),
-                self.initialpose_is_settling())
+                self.initialpose_is_settling(), stationary=stationary_reference)
             if was_frozen and self._reference_observation_verified:
-                # Stable clean evidence agrees with the pre-fault propagated
-                # reference: only now rebuild the stationary comparison origin.
+                # Stable evidence either agrees with the old propagated anchor
+                # or qualifies a new epoch after that anchor was invalidated.
+                # Only now rebuild the stationary comparison origin.
                 self._stationary_pose = None
                 self._localization_warning = "OK"
             if self._reference_observation_verified:

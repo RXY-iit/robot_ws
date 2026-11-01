@@ -17,6 +17,7 @@ def main():
     from nav2_msgs.action._navigate_to_pose import NavigateToPose_FeedbackMessage
     rclpy.init();n=rclpy.create_node('b1_trial_observer');sim=[None];last={};counts={};wheel={}
     output=Path(a.output);output.parent.mkdir(parents=True,exist_ok=True);f=output.open('x',buffering=1)
+    status_pub=n.create_publisher(String,'/b1/capture_status',10)
     def record(event,data,source=None):
         f.write(json.dumps(dict(event=event,wall_unix_sec=time.time(),wall_monotonic_sec=time.monotonic(),sim_sec=sim[0],source_stamp_sec=source,data=data),ensure_ascii=False)+'\n');counts[event]=counts.get(event,0)+1
     def receive(topic,m):
@@ -32,9 +33,11 @@ def main():
             except ValueError:data={'raw':m.data}
         h=getattr(m,'header',None);stamp=h.stamp.sec+h.stamp.nanosec/1e9 if h else None
         record(topic,data,stamp)
-    def clock(m):sim[0]=m.clock.sec+m.clock.nanosec/1e9;last['/clock']=time.monotonic()
+    def clock(m):
+        sim[0]=m.clock.sec+m.clock.nanosec/1e9;last['/clock']=time.monotonic()
+        counts['/clock']=counts.get('/clock',0)+1
     n.create_subscription(Clock,'/clock',clock,qos_profile_sensor_data)
-    for topic in ['/b1/waypoint_events','/b1/odom_injection_status','/b1/odom_injection_command','/gicp_loc/match_evidence','/robot_mode','/motion_policy/status','/safety_status','/agent/health_state','/b1/readonly_health_state','/agent/health_dashboard_state','/agent/recovery_state','/agent/mission_state','/agent/mission_events','/agent/recovery_events','/agent/recovery_response','/gicp_loc/accepted_state','/gicp_loc/recovery_status','/b1/lidar_injection_status','/b1/lidar_injection_command']:
+    for topic in ['/b1/waypoint_events','/b1/odom_injection_status','/b1/odom_injection_command','/gicp_loc/match_evidence','/robot_mode','/motion_policy/status','/safety_status','/agent/health_state','/b1/readonly_health_state','/agent/health_dashboard_state','/agent/recovery_state','/agent/mission_state','/agent/mission_events','/agent/recovery_events','/agent/recovery_response','/gicp_loc/accepted_state','/gicp_loc/recovery_status','/b1/lidar_injection_status','/b1/lidar_injection_command','/b1/sim_lidar_thermal_state','/b1/lidar_thermal_command','/livox/device_health']:
         n.create_subscription(String,topic,lambda m,t=topic:receive(t,m),100)
     for topic,cls in [('/b1/ground_truth_odom',Odometry),('/b1/physics_odom',Odometry),('/wheel_odom',Odometry),('/fast_lio/odometry',Odometry),('/cmd_vel',Twist),('/cmd_vel_raw',Twist),('/nav2/cmd_vel',Twist),('/gicp_loc/score',Float32),('/initialpose',PoseWithCovarianceStamped),('/operator/initialpose',PoseWithCovarianceStamped),('/navigate_to_pose/_action/status',GoalStatusArray),('/navigate_to_pose/_action/feedback',NavigateToPose_FeedbackMessage),('/behavior_tree_log',BehaviorTreeLog),('/plan',NavPath)]:
         n.create_subscription(cls,topic,lambda m,t=topic:receive(t,m),qos_profile_sensor_data)
@@ -59,15 +62,17 @@ def main():
         record('/b1/local_costmap_proximity',d,m.header.stamp.sec+m.header.stamp.nanosec/1e9)
     n.create_subscription(OccupancyGrid,'/local_costmap/costmap',costmap,qos_profile_sensor_data)
     record('capture_started',{'recorder_sha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),'duration_wall_sec':a.duration,'fast_lio_max_hz':10,'wheel_odom_max_hz':10,'nav_feedback_max_hz':2,'plan_max_hz':1,'bt_and_health_unthrottled':True,'truth_note':'wheel_odom is not independently calibrated map truth'})
+    print('Recording:',output.resolve(),flush=True)
     for kind,path in [('map_manifest',a.map_manifest),('truth_calibration',a.truth_calibration)]:
         if path:record(kind,{'path':str(path),'sha256':hashlib.sha256(path.read_bytes()).hexdigest(),'value':json.loads(path.read_text())})
     started=time.monotonic();tick=started
     try:
         while rclpy.ok() and time.monotonic()-started<a.duration:
             rclpy.spin_once(n,timeout_sec=.1)
-            if time.monotonic()-tick>=5:
-                tick=time.monotonic();state={'wall_unix_sec':time.time(),'sim_sec':sim[0],'counts':counts,'ages':{k:tick-v for k,v in last.items()}}
+            if time.monotonic()-tick>=1:
+                tick=time.monotonic();state={'wall_unix_sec':time.time(),'sim_sec':sim[0],'output':str(output.resolve()),'recording':True,'counts':dict(counts),'ages':{k:tick-v for k,v in last.items()}}
                 output.with_suffix('.status.json').write_text(json.dumps(state));record('capture_heartbeat',state)
+                status_pub.publish(String(data=json.dumps(state)))
     except KeyboardInterrupt:pass
     finally:
         record('capture_finished',{'counts':counts});f.close();n.destroy_node()

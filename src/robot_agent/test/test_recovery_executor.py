@@ -40,8 +40,11 @@ class FakeBackend:
         return FakeHandle(self.results.get(primitive, (DONE, "ok")))
 
 
-def make(graph=None, backend=None, profile=None, ack_store=None, approval=None, restart_confirmation=False):
+def make(graph=None, backend=None, profile=None, ack_store=None, approval=None, restart_confirmation=False, self_recovery_wait=0):
     env = load_env_profile(CONFIG_DIR, "sim")
+    # Existing tests isolate post-observation action policy; dedicated cases
+    # below exercise the production bounded observation phase.
+    env.actions["localization_self_recovery_observe_sec"] = self_recovery_wait
     # Legacy policy tests explicitly exercise auto execution. Production sim
     # requires confirmation; approval tests opt in with restart_confirmation.
     env.actions["restart_requires_approval"] = restart_confirmation
@@ -599,3 +602,40 @@ def test_localization_low_score_without_reference_verification_cannot_resume():
     for t in (8,20,35):feed(engine,t,values=unverified)
     assert "auto_navigation" not in engine.state()["task_supervision"]["verified_capabilities"]
     assert not any(ex.state=="SUCCEEDED" for ex in engine.executor.finished)
+
+
+def test_localizer_self_recovery_skips_seed_after_verified_evidence():
+    engine,backend=make(profile='nav2',self_recovery_wait=45)
+    feed(engine,0,{'localization_consistency':'ERROR'})
+    feed(engine,6,{'localization_consistency':'ERROR'})
+    assert [c[0] for c in backend.calls]==['cancel_motion']
+    feed(engine,20,{'localization_consistency':'ERROR'})
+    assert len(backend.calls)==1  # good score alone is insufficient
+    feed(engine,25)
+    feed(engine,26)
+    assert [c[0] for c in backend.calls]==['cancel_motion']
+    assert engine.executor.finished[-1].state=='SUCCEEDED'
+
+
+def test_localizer_observation_timeout_retains_guarded_seed_path():
+    engine,backend=make(profile='nav2',self_recovery_wait=45)
+    feed(engine,0,{'gicp_score':'DEGRADED'})
+    feed(engine,6,{'gicp_score':'DEGRADED'})
+    feed(engine,50,{'gicp_score':'DEGRADED'})
+    assert [c[0] for c in backend.calls]==['cancel_motion']
+    feed(engine,52,{'gicp_score':'DEGRADED'})
+    assert [c[0] for c in backend.calls]==['cancel_motion','publish_initialpose']
+
+
+def test_localizer_rechecks_healthy_evidence_while_seed_approval_pending():
+    engine,backend=make(profile='nav2',self_recovery_wait=45,approval={'A1':'confirm'})
+    feed(engine,0,{'localization_consistency':'ERROR'})
+    feed(engine,6,{'localization_consistency':'ERROR'})
+    feed(engine,52,{'localization_consistency':'ERROR'})
+    ex=engine.executor.active['gicp']
+    assert ex.state=='WAITING_CONFIRM'
+    ex.request.reply='approve'
+    feed(engine,53)
+    feed(engine,54)
+    assert [c[0] for c in backend.calls]==['cancel_motion']
+    assert engine.executor.finished[-1].state=='SUCCEEDED'

@@ -804,13 +804,29 @@ class RecoveryEngine:
         return cand.max_abnormal_age is not None and cand.max_abnormal_age >= self.env.debounce_sec
 
     def _match_playbook(self, cand: RootCandidate, ctx: ProbeContext, *, ignore_for_sec: bool) -> Diagnosis:
-        if all((ctx.snapshot.item(item) or {}).get("warning_kind") == "low_rate" for item in cand.root_items):
-            return Diagnosis(cand, WARNING, reason="Low simulation sensor rate; warning only, no automatic recovery")
-        if all((ctx.snapshot.item(item) or {}).get('response_policy', {}).get('level') == 'WARN'
-               for item in cand.root_items):
+        if all(
+            (ctx.snapshot.item(item) or {}).get('response_policy', {}).get('level') == 'WARN'
+            for item in cand.root_items
+        ):
+            for pb in sorted((pb for pb in self.library.active() if pb.warning_probe_only),
+                             key=lambda pb: (int(pb.raw.get("match_priority", 50)), pb.id)):
+                item = self._triggered_item(pb, cand, ctx.snapshot, ignore_for_sec)
+                if item is None:
+                    continue
+                variables = {"root_item": item, "producer": self.env.producer_of(item) or ""}
+                outcome, _, steps, reason, uncertain = self._run_diagnosis(pb, ctx, [pb.id], variables)
+                if outcome != "REJECTED":
+                    guidance = pb.operator_text.get("en", "")
+                    return Diagnosis(cand, WARNING, pb.id, steps,
+                                     f"Read-only WARN PB inspection: {reason}; {guidance}", uncertain,
+                                     variables=variables)
+            if all((ctx.snapshot.item(item) or {}).get("warning_kind") == "low_rate" for item in cand.root_items):
+                return Diagnosis(cand, WARNING, reason="Low simulation sensor rate; warning only, no automatic recovery")
             return Diagnosis(cand, WARNING, reason='Robot WARN: inspect item response_policy checks; notify human; no automatic disruptive PB')
         matching: list[tuple[Playbook, str]] = []
         for pb in self.library.active():
+            if pb.warning_probe_only:
+                continue  # Never pass a read-only WARN PB to the recovery executor.
             item = self._triggered_item(pb, cand, ctx.snapshot, ignore_for_sec)
             if item is not None:
                 matching.append((pb, item))
@@ -822,6 +838,8 @@ class RecoveryEngine:
         waiting = []
         if not ignore_for_sec:
             for pb in self.library.active():
+                if pb.warning_probe_only:
+                    continue
                 if pb.id in matched_ids:
                     continue
                 item = self._triggered_item(pb, cand, ctx.snapshot, True)

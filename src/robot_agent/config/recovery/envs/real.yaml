@@ -166,6 +166,7 @@ items:
 
   # --- sensors
   lidar_device_status: {layer: power_device, producer: livox}
+  lidar_temperature_trend: {layer: power_device, producer: livox, depends_on: [lidar_device_status]}
   camera_color_diagnostics: {layer: power_device, producer: realsense}
   camera_depth_diagnostics: {layer: power_device, producer: realsense}
   delivery_camera_color_diagnostics: {layer: ros_delivery, depends_on: [camera_color_diagnostics]}

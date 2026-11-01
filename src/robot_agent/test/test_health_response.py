@@ -37,7 +37,9 @@ def test_warn_routes_to_checks_bad_routes_to_pb():
         annotate_domains(state['domains'])
         engine.on_snapshot(HealthSnapshot.from_state(state, t))
     assert engine.incidents['gicp'].status == 'WARNING'
-    assert engine.incidents['gicp'].diagnosis.playbook_id is None
+    assert engine.incidents['gicp'].diagnosis.playbook_id == 'PB-LOC-WARN'
+    assert engine.incidents['gicp'].diagnosis.steps
+    assert not engine.executor.active
     engine.handle_command({'type':'ignore', 'incident_key':'gicp'}, 6.)
     assert engine.state()['robot_health_summary']['level'] == 'OK'
     for t in [7., 14.]:

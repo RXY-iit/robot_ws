@@ -30,13 +30,22 @@ def deform(points, roi, normal, spacing, fraction, voxel, seed):
 
 def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--source',type=Path,required=True);p.add_argument('--output',type=Path,required=True)
-    p.add_argument('--roi',type=float,nargs=6,required=True,metavar=('X0','Y0','Z0','X1','Y1','Z1'))
-    p.add_argument('--normal',type=float,nargs=3,required=True);p.add_argument('--spacing',type=float,default=.15)
+    region=p.add_mutually_exclusive_group(required=True)
+    region.add_argument('--roi',type=float,nargs=6,metavar=('X0','Y0','Z0','X1','Y1','Z1'))
+    region.add_argument('--whole-map',action='store_true',help='Whole-map coarsening only; requires --fraction 0 --spacing 0 --voxel > 0')
+    p.add_argument('--normal',type=float,nargs=3);p.add_argument('--spacing',type=float,default=.15)
     p.add_argument('--fraction',type=float,default=.5);p.add_argument('--voxel',type=float,default=0);p.add_argument('--seed',type=int,default=20261028);a=p.parse_args()
     manifest=a.output.with_suffix('.manifest.json')
     if a.output.exists() or manifest.exists() or a.output.resolve()==a.source.resolve():p.error('New output/manifest paths required; source never overwritten')
     import open3d as o3d
-    cloud=o3d.io.read_point_cloud(str(a.source));result,details=deform(np.asarray(cloud.points),a.roi,a.normal,a.spacing,a.fraction,a.voxel,a.seed)
+    if a.whole_map and (a.fraction!=0 or a.spacing!=0 or not math.isfinite(a.voxel) or a.voxel<=0):
+        p.error('--whole-map only supports explicit pure coarsening')
+    if a.roi and a.normal is None:p.error('--roi requires --normal')
+    cloud=o3d.io.read_point_cloud(str(a.source));points=np.asarray(cloud.points)
+    if len(points)==0:p.error('Source map is empty or unreadable')
+    roi=a.roi if a.roi else [*(points.min(axis=0)-1e-6),*(points.max(axis=0)+1e-6)]
+    result,details=deform(points,roi,a.normal or [1,0,0],a.spacing,a.fraction,a.voxel,a.seed)
+    details['defect_type']='whole_map_coarsening' if a.whole_map else 'roi_double_surface_or_coarsening'
     generated=o3d.geometry.PointCloud();generated.points=o3d.utility.Vector3dVector(result)
     a.output.parent.mkdir(parents=True,exist_ok=True)
     if not o3d.io.write_point_cloud(str(a.output),generated):raise RuntimeError('PLY write failed')

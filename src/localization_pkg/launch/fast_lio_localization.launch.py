@@ -124,17 +124,21 @@ def generate_launch_description():
         executable="gicp_localizer_node",
         name="gicp_localizer",
         output="screen",
+        # The documented GICP backends are installed with pip --user. Sim
+        # launchers disable user-site for other ROS nodes; override only here
+        # so terminal and Quick Start launches resolve the same backend.
         additional_env={"OMP_NUM_THREADS": os.environ.get("GICP_OMP_THREADS", "2"),
-                        "OPENBLAS_NUM_THREADS": "1"},
+                        "OPENBLAS_NUM_THREADS": "1",
+                        "PYTHONNOUSERSITE": ""},
         parameters=[
             default_gicp_params,
             {
                 "map_path": LaunchConfiguration("pcd_map"),
-                "initial_x": LaunchConfiguration("initial_x"),
-                "initial_y": LaunchConfiguration("initial_y"),
-                "initial_yaw": LaunchConfiguration("initial_yaw"),
-                "scan_min_height": LaunchConfiguration("scan_min_height"),
-                "scan_max_height": LaunchConfiguration("scan_max_height"),
+                "initial_x": ParameterValue(LaunchConfiguration("initial_x"), value_type=float),
+                "initial_y": ParameterValue(LaunchConfiguration("initial_y"), value_type=float),
+                "initial_yaw": ParameterValue(LaunchConfiguration("initial_yaw"), value_type=float),
+                "scan_min_height": ParameterValue(LaunchConfiguration("scan_min_height"), value_type=float),
+                "scan_max_height": ParameterValue(LaunchConfiguration("scan_max_height"), value_type=float),
                 "use_fast_lio_hint": effective_hint,
                 "use_sim_time": LaunchConfiguration("use_sim_time"),
             },

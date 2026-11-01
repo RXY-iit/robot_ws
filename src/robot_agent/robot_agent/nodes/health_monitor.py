@@ -31,6 +31,7 @@ from robot_agent.sim_health import SimClockEvidence, sensor_timing
 from robot_agent.session import session_dir
 from robot_agent.readiness import ReadinessTracker
 from robot_agent.health_response import ScoreBand, annotate_domains, robot_summary
+from robot_agent.lidar_thermal import LidarThermalEvidence
 
 
 BAD_ITEM_STATES = {"BLOCKED", "ERROR", "STALE"}
@@ -209,6 +210,7 @@ class HealthMonitor(Node):
         self.declare_parameter("gicp_score_threshold", 0.25)
         self.declare_parameter("sim_gicp_warn_threshold", 0.16)
         self.declare_parameter("sim_gicp_bad_threshold", 0.20)
+        self.declare_parameter("real_lidar_temp_warn_c", 0.0)  # disabled until measured on this device
         self.declare_parameter("lifecycle_request_timeout_sec", 2.0)
         self.declare_parameter("mode", "real")
         self.declare_parameter("sim_time_nodes", ["gicp_localizer", "controller_server", "planner_server", "bt_navigator"])
@@ -233,6 +235,11 @@ class HealthMonitor(Node):
         self._host_metrics: dict[str, Any] = {}
         self._last_mark_monotonic: dict[str, float] = {}
         self._mode = str(self.get_parameter("mode").value).strip().lower()
+        self._lidar_thermal = LidarThermalEvidence(
+            real_warn_c=float(self.get_parameter("real_lidar_temp_warn_c").value)
+        )
+        self._lidar_thermal_seen = 0
+        self._lidar_thermal_payload_valid = False
         self._sim_clock = SimClockEvidence()
         self._sim_time_clients = {}
         self._sim_time_pending = {}
@@ -311,6 +318,7 @@ class HealthMonitor(Node):
                     "sim_base_joint_targets": ("/sim/target_joint_states", "ISAAC_SIM_BRIDGE"),
                     "sim_arm_joint_targets": ("/sim/arm_joint_states", "ISAAC_SIM_BRIDGE"),
                     "sim_lidar_pc2": ("/livox/lidar_pc2_from_sim or /point_cloud", "ISAAC_SENSOR_STREAM"),
+                    "sim_lidar_thermal": ("/b1/sim_lidar_thermal_state", "SIM_INJECTED_THERMAL_MODEL"),
                     "sim_lidar_imu": ("/livox/imu", "ISAAC_SENSOR_STREAM"),
                     "sim_camera_color": ("/camera/camera/color/image_raw", "ISAAC_SENSOR_STREAM"),
                     "sim_camera_depth": ("/camera/camera/aligned_depth_to_color/image_raw", "ISAAC_SENSOR_STREAM"),
@@ -387,6 +395,11 @@ class HealthMonitor(Node):
             self._json_or_text_cb("lidar_device_health", "/livox/device_health"),
             10,
         )
+        if self._sim_mode():
+            self.create_subscription(
+                String, "/b1/sim_lidar_thermal_state",
+                self._json_or_text_cb("sim_lidar_thermal", "/b1/sim_lidar_thermal_state"), 10,
+            )
         self.create_subscription(
             DiagnosticArray, "/diagnostics", self._diagnostics_cb, 10
         )
@@ -1351,6 +1364,54 @@ class HealthMonitor(Node):
             "source_clock_fresh": source_clock_fresh,
             "source_age_sec": source_age if source_clock_fresh else None,
         }
+
+    def _lidar_thermal_item(self) -> dict[str, Any]:
+        """Optional temperature evidence; no invented real-device threshold."""
+        sim = self._sim_mode()
+        key = "sim_lidar_thermal" if sim else "lidar_device_health"
+        with self._signals_lock:
+            signal = self.signals.get(key)
+            count = signal.count if signal is not None else 0
+            if signal is not None and count != self._lidar_thermal_seen:
+                payload = signal.value
+                source_sec = (payload.get("sim_sec") if isinstance(payload, dict) else None) if sim else signal.last_receive_monotonic
+                self._lidar_thermal_payload_valid = bool(self._lidar_thermal.temperatures(payload, sim=sim))
+                self._lidar_thermal.observe(payload, source_sec=source_sec, sim=sim)
+                self._lidar_thermal_seen = count
+        if not count:
+            return self._fixed_item(
+                "lidar_temperature_trend", "LiDAR core temperature trend", "NOT_INSTRUMENTED",
+                "No simulated thermal model is active" if sim else "Native core_temp not yet observed",
+                "/b1/sim_lidar_thermal_state" if sim else "/livox/device_health",
+                "SIM_INJECTED_THERMAL_MODEL" if sim else "DIRECT_DEVICE_DIAGNOSTIC",
+                standard="Optional thermal evidence; absent data is not a temperature fault",
+            )
+        item = self._signal_item(
+            key, "LiDAR core temperature trend", item_id="lidar_temperature_trend",
+            stale_sec=3.0 if sim else 4.0, stale_status="UNKNOWN", critical=False,
+            standard=("Sim-only experimental thresholds: WARN 65 C or rising forecast, BAD 78 C"
+                      if sim else "Report core_temp trend; native Livox diagnostic owns BAD severity; "
+                                  "real warning threshold disabled unless calibrated and configured"),
+        )
+        if item["status"] == "OBSERVED":
+            if not self._lidar_thermal_payload_valid:
+                item.update(status="UNKNOWN", summary="Latest LiDAR thermal payload has no valid core temperature", value=None)
+                return item
+            status, summary, details = self._lidar_thermal.assess(sim=sim)
+            item.update(status=status, summary=summary, value=details)
+            if sim and isinstance(details, dict):
+                with self._signals_lock:
+                    signal = self.signals.get(key)
+                    payload = signal.value if signal is not None else None
+                clock = self.signals.get("sim_clock")
+                current_sim = (clock.value or {}).get("sim_time_sec") if clock else None
+                reported_sim = payload.get("sim_sec") if isinstance(payload, dict) else None
+                current_sim = finite_or_none(current_sim)
+                reported_sim = finite_or_none(reported_sim)
+                if (current_sim is None or reported_sim is None or
+                        abs(current_sim - reported_sim) > 3.0):
+                    item.update(status="UNKNOWN", summary="Thermal model source time is not aligned with Isaac /clock")
+        return item
 
     @staticmethod
     def _fixed_item(
@@ -2711,6 +2772,7 @@ class HealthMonitor(Node):
                     validator=self._sim_sensor_payload_validator("camera_info"),
                 ),
                 lidar_item,
+                self._lidar_thermal_item(),
                 self._signal_item("sim_lidar_imu", "Isaac LiDAR IMU", stale_sec=2.5, standard="Isaac/Livox IMU stream freshness", validator=self._sim_sensor_payload_validator("imu")),
                 self._perception_runtime_item(),
             ],
@@ -3229,6 +3291,7 @@ class HealthMonitor(Node):
                     validator=self._livox_device_health_validator,
                     unobserved_summary="No /livox/device_health message has reached this monitor",
                 ),
+                self._lidar_thermal_item(),
                 self._perception_runtime_item(),
             ],
         )
@@ -3446,6 +3509,10 @@ class HealthMonitor(Node):
         annotate_domains(domains)
         readiness = self._readiness_tracker.update(domains, sim=self._sim_mode(), now=utc_now())
         by_id = {domain["id"]: domain for domain in domains}
+        thermal_bad = any(
+            item.get("id") == "lidar_temperature_trend" and item.get("status") == "ERROR"
+            for item in by_id["H4"]["items"]
+        )
         summaries = [
             self._summary_group("A1", "Device & Data Acquisition", [by_id["H1"], by_id["H4"]]),
             self._summary_group("A2", "ROS & Platform Delivery", [by_id["H2"]]),
@@ -3480,6 +3547,7 @@ class HealthMonitor(Node):
                     "steer_feedback",
                     "safety",
                     "camera_depth_diagnostics",
+                    *(["lidar_temperature_trend"] if thermal_bad else []),
                     "gicp_score",
                     "gicp_pose",
                     "localization_consistency",

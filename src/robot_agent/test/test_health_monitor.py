@@ -31,6 +31,31 @@ from robot_agent.nodes.health_monitor import (
     diagnostic_level_number,
     json_safe,
 )
+from robot_agent.lidar_thermal import LidarThermalEvidence
+
+
+def test_optional_sim_lidar_thermal_item_is_warn_only_with_fresh_aligned_model():
+    from time import monotonic
+    signal = SignalObservation("/b1/sim_lidar_thermal_state", "SIM_INJECTED_THERMAL_MODEL")
+    clock = SignalObservation("/clock", "ISAAC_SIM_CLOCK")
+    clock.update({"sim_time_sec": 20}, now_monotonic=monotonic())
+    signal.update({"sim_sec": 20, "core_temp_c": 50}, now_monotonic=monotonic())
+    tracker = LidarThermalEvidence()
+    for t in (0, 10):
+        tracker.observe({"core_temp_c": 40 + t * .5}, source_sec=t, sim=True)
+    monitor = SimpleNamespace(
+        _mode="sim", _signals_lock=threading.RLock(),
+        signals={"sim_lidar_thermal": signal, "sim_clock": clock},
+        _lidar_thermal=tracker, _lidar_thermal_seen=0, _lidar_thermal_payload_valid=False,
+        get_clock=lambda: SimpleNamespace(now=lambda: SimpleNamespace(nanoseconds=20_000_000_000)),
+        _sim_mode=lambda: True, _fixed_item=HealthMonitor._fixed_item,
+    )
+    monitor._signal_item = lambda *args, **kwargs: HealthMonitor._signal_item(monitor, *args, **kwargs)
+    item = HealthMonitor._lidar_thermal_item(monitor)
+    assert item["status"] == "WARN"
+    assert item["id"] == "lidar_temperature_trend"
+    assert item["critical"] is False
+    assert item["value"]["threshold_basis"] == "sim_experiment"
 
 
 @pytest.mark.parametrize("completed,code,expected", [(True, "NEEDS_HUMAN", "REPORTED"),

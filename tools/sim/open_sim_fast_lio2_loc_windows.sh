@@ -28,6 +28,8 @@ INITIAL_X="${INITIAL_X:-0.0}"
 INITIAL_Y="${INITIAL_Y:-0.0}"
 INITIAL_YAW="${INITIAL_YAW:-0.0}"
 SCAN_MIN_HEIGHT="${SCAN_MIN_HEIGHT:--0.8}"
+GICP_SCAN_MIN_HEIGHT="${GICP_SCAN_MIN_HEIGHT:--1000000000.0}"
+GICP_SCAN_MAX_HEIGHT="${GICP_SCAN_MAX_HEIGHT:-1000000000.0}"
 SCAN_MAX_HEIGHT="${SCAN_MAX_HEIGHT:--0.3}"
 
 usage() {
@@ -220,8 +222,8 @@ ros2 launch localization_pkg fast_lio_localization.launch.py \
   with_fast_lio:=true \
   use_fast_lio_hint:=true \
   use_sim_time:=true \
-  scan_min_height:="'"$SCAN_MIN_HEIGHT"'" \
-  scan_max_height:="'"$SCAN_MAX_HEIGHT"'"'
+  scan_min_height:="'"$GICP_SCAN_MIN_HEIGHT"'" \
+  scan_max_height:="'"$GICP_SCAN_MAX_HEIGHT"'"'
 
 sleep 1
 

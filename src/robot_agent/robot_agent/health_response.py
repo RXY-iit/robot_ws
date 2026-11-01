@@ -19,6 +19,7 @@ ITEM_CHECKS = {
     'sim_rtf': ['clock is advancing', 'source-time rate versus wall-time delivery', 'human: reduce rendering/sensor workload; low RTF alone is advisory'],
     'sim_sync:rgb_depth': ['nearest timestamp skew and frame/model', 'check whether current capability requires depth pairing'],
     'lidar_device_status': ['native device diagnostics and delivery age', 'check clock/input adapter before driver restart'],
+    'lidar_temperature_trend': ['core temperature, 30s rise rate and source-time freshness', 'compare native diagnostics and LiDAR output before any mitigation'],
     'fast_lio_odom': ['source versus receive age', 'FAST-LIO timing reset latch and input delivery'],
 }
 
@@ -27,7 +28,7 @@ def response_policy(item, domain):
     if status in {'ERROR', 'BLOCKED', 'STALE'}:
         level, action = 'BAD', 'diagnose_playbook_or_escalate'
     elif status in {'WARN', 'DEGRADED', 'UNKNOWN', 'NOT_OBSERVED'}:
-        level, action = 'WARN', 'check_and_notify'
+        level, action = 'WARN', 'investigate_read_only_pb_and_notify'
     else:
         level, action = 'OK', 'skip'
     return dict(level=level, action=action, checks=ITEM_CHECKS.get(item.get('id'), DOMAIN_CHECKS.get(domain, ['inspect source evidence'])),

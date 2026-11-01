@@ -23,9 +23,21 @@ def trusted_seed(metrics: dict, config: dict, report_age: float) -> tuple[float,
     if not math.isfinite(report_age) or report_age < 0 or report_age > float(config.get("max_report_age_sec", 4)):
         raise ValueError("Localization health report is stale")
     if config.get("require_qualified_reference", False):
-        if metrics.get("reference_policy_version") != 1 or metrics.get("reference_qualified") is not True:
+        # v2 adds current-epoch requalification; the qualified anchor and
+        # bounded odometry propagation contract remain compatible with v1.
+        # Do not require reference_verified here: a fault deliberately freezes
+        # verification while retaining the healthy pre-fault recovery anchor.
+        version = metrics.get("reference_policy_version")
+        if type(version) is not int or version not in (1, 2):
+            raise ValueError("Unsupported localization reference policy version")
+        if metrics.get("reference_qualified") is not True:
             raise ValueError("No quality-qualified pre-fault reference; manual alignment required")
-        if metrics.get("reference_epoch") != metrics.get("trusted_reference_epoch"):
+        if version == 2 and metrics.get("reference_reset_required") is not False:
+            raise ValueError("Localization reference requires current-epoch requalification")
+        epoch = metrics.get("reference_epoch")
+        trusted_epoch = metrics.get("trusted_reference_epoch")
+        if (type(epoch) is not int or type(trusted_epoch) is not int
+                or epoch < 0 or epoch != trusted_epoch):
             raise ValueError("Odometry epoch changed since trusted reference")
         for key, limit in [("reference_path_m", float(config.get("max_odom_path_m", 3))),
                            ("reference_turn_rad", float(config.get("max_odom_turn_rad", 1)))]:

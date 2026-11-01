@@ -1,0 +1,33 @@
+id: PB-LOC-WARN
+number: 64
+severity: advisory
+title: Localization quality warning (investigation only)
+version: 1
+warning_probe_only: true
+handling_class: known_recovery
+domain: H5
+layer: function
+affects_capabilities: [auto_navigation]
+envs:
+  sim: {status: supported, verified: false}
+  real: {status: supported, verified: false}
+trigger:
+  any:
+    - {item: gicp_score, status_in: [WARN, DEGRADED], for_sec: 3}
+diagnosis:
+  - id: lidar_delivery
+    probe: health_item
+    args: {item: lidar_device_status}
+    informational: true
+  - id: accepted_pose
+    probe: health_item
+    args: {item: gicp_pose}
+    informational: true
+  - id: matching_score
+    probe: health_item
+    args: {item: gicp_score}
+    informational: true
+policy: {cooldown_sec: 30}
+operator_text:
+  en: "GICP quality is degraded but not BAD. Review LiDAR delivery, accepted-pose age and score trend before deciding whether any speed restriction is justified. No motion action is automatic in this PB."
+  ja: "GICP の品質低下を LiDAR 入力、採用位置の鮮度、スコアの推移と併せて調べます。この PB は自動的に走行を変更しません。"

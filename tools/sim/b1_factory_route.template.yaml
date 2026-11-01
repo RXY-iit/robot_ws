@@ -1,0 +1,4 @@
+# Copy and fill with the frozen route used by COR. No example motion is enabled.
+frame_id: map
+waypoints: []
+# Each waypoint: {x: <meters>, y: <meters>, yaw: <radians>}

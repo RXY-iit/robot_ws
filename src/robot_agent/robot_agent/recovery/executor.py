@@ -126,6 +126,8 @@ class Execution:
     operator_skipped: bool = False
     evidence_after: float | None = None
     checked_at: float = 0.0
+    localization_observe_since: float | None = None
+    localization_observe_expired: bool = False
 
     @property
     def terminal(self) -> bool:
@@ -446,6 +448,30 @@ class RecoveryExecutor:
             return
         step = pb.recovery[ex.step_index]
         step_type = step["type"]
+
+        # Observe the localizer before replacing its estimate. Run this again
+        # after operator approval: a queued seed may have become unnecessary.
+        observe_sec = float(self.env.actions.get("localization_self_recovery_observe_sec", 0))
+        if (pb.id == "PB-LOC-LOST" and self.env.kind == "sim" and observe_sec > 0
+                and step.get("primitive") == "publish_initialpose"
+                and ex.state not in {RUNNING_ACTION, WAITING_SUCCESS, WAITING_OPERATOR}):
+            if ex.localization_observe_since is None:
+                ex.localization_observe_since = now
+                ex.evidence_after = now
+                self._log(ex, "localization_observation_started", f"Bounded self-recovery verification: {observe_sec}s wall")
+            checks = self._check(pb.verify, ex, ctx)
+            stopped = not self._action_blockers(ex, step, ctx, now)
+            if stopped and checks and all(c["outcome"] == PASS for c in checks):
+                self._log(ex, "localization_seed_skipped", "Fresh localization and reference verified before seed")
+                self._finish(ex, SUCCEEDED, "Localizer self-recovery verified; no initialpose published", now)
+                return
+            elapsed = now-ex.localization_observe_since
+            if elapsed < observe_sec:
+                ex.message = f"Observing localizer self-recovery ({elapsed:.1f}/{observe_sec:.1f}s wall): " + _failed_text(checks)
+                return
+            if not ex.localization_observe_expired:
+                ex.localization_observe_expired = True
+                self._log(ex, "localization_observation_timeout", _failed_text(checks))
 
         if ex.state == WAITING_CONFIRM:
             reply = ex.request.reply if ex.request else None

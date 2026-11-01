@@ -1,0 +1,65 @@
+id: PB-LIDAR-TEMP-WARN
+number: 43
+severity: advisory
+title: LiDAR temperature rising (investigation only)
+version: 1
+warning_probe_only: true
+handling_class: known_recovery
+domain: H4
+layer: ros_delivery
+affects_capabilities: [auto_navigation]
+envs:
+  sim:
+    status: supported
+    verified: false
+    note: Experimental thermal model; simulated thresholds are not MID-360 limits.
+    diagnosis:
+      - id: temperature_trend
+        probe: health_item
+        args: {item: lidar_temperature_trend}
+        informational: true
+      - id: pointcloud_delivery
+        probe: health_item
+        args: {item: lidar_device_status}
+        informational: true
+      - id: adapter_delivery
+        probe: health_item
+        args: {item: sim_lidar_adapter_cloud}
+        informational: true
+      - id: localization_input
+        probe: health_item
+        args: {item: localization_input_cloud}
+        informational: true
+      - id: host_resources
+        probe: health_item
+        args: {item: host_resources}
+        informational: true
+      - id: localization_quality
+        probe: health_item
+        args: {item: gicp_score}
+        informational: true
+  real:
+    status: supported
+    verified: false
+    note: Real severity still comes from native MID-360 diagnostic; temperature trend is evidence only.
+    diagnosis:
+      - id: native_device_state
+        probe: health_item
+        args: {item: lidar_device_status}
+        informational: true
+      - id: localization_quality
+        probe: health_item
+        args: {item: gicp_score}
+        informational: true
+      - id: host_resources
+        probe: health_item
+        args: {item: host_resources}
+        informational: true
+trigger:
+  any:
+    - {item: lidar_temperature_trend, status_in: [WARN], for_sec: 3}
+diagnosis: []
+policy: {cooldown_sec: 30}
+operator_text:
+  en: "Temperature is rising. Inspect source freshness, native diagnostics, LiDAR delivery and whether the next task depends on LiDAR. This read-only WARN PB never restarts, parks or reseeds the robot. Apply cooling only through a verified separate action or operator."
+  ja: "LiDAR 温度が上昇中です。診断、点群と次のタスクへの依存を調べます。WARN の調査 PB はロボットを停止・再起動・再初期化しません。"

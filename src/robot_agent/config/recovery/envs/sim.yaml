@@ -306,6 +306,9 @@ component_aliases:
 # Commands mirror Quick Start; launch_binding applies its whitelisted snapshot
 # (including motion_policy). Arbitrary custom launch overrides are not replayed.
 actions:
+  # Fixed wall-clock cap includes GICP rejection/relocalization and reference
+  # verification (~15 sim seconds at observed RTF .45 needs ~33 wall seconds).
+  localization_self_recovery_observe_sec: 45
   restart_in_terminal: true
   # Keep detecting while ROS is manually closed; do not silently resurrect nodes.
   restart_requires_approval: true
@@ -416,6 +419,7 @@ items:
 
   # --- sensors (Isaac streams)
   lidar_device_status: {layer: ros_delivery, producer: isaac_lidar, depends_on: [sim_clock]}
+  lidar_temperature_trend: {layer: ros_delivery, depends_on: [sim_clock]}
   sim_lidar_imu: {layer: ros_delivery, producer: isaac_lidar, depends_on: [sim_clock]}
   sim_lidar_adapter_cloud: {layer: ros_delivery, producer: sim_lidar_adapter, depends_on: [lidar_device_status, sim_clock]}
   localization_input_cloud: {layer: ros_delivery, producer: livox_converter, depends_on: [sim_lidar_adapter_cloud]}

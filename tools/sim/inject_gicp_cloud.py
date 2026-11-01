@@ -15,6 +15,9 @@ import numpy as np
 
 # Exploratory calibration profiles, not validated severity labels.
 PROFILES = {
+    # Experimental overheated-device proxy: progressive missing frames only.
+    # Use --scope upstream to exercise the whole LiDAR consumer chain.
+    "thermal": dict(noise=0., bias=0., yaw=0., sector=0., dropout=1.),
     "shelf_drift_noisy": dict(noise=1., bias=0., yaw=0., sector=0., dropout=0., map_bias_y=1.5),
     "shelf_drift": dict(noise=.05, bias=0., yaw=0., sector=0., dropout=0., map_bias_y=1.5),
     "mild": dict(noise=.3, bias=0., yaw=0., sector=0., dropout=0.),

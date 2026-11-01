@@ -21,10 +21,44 @@ class LocalizationReference:
         self.history = deque(maxlen=5000)
         self.anchor = None; self.candidate = None; self.verified = False
         self.reset_required = False
+        self.last_invalidation_reason = None
+        self.qualification_kind = None
+        # A new odom epoch needs a longer, internally consistent window than
+        # routine refresh. Drive mode is deliberately not an input.
+        self.reset_stable_sec = 5.
+        self.reset_min_samples = 5
         self.frozen = False; self.reason = 'no_qualified_reference'
+        self.requalification = None
+        self.requalification_stable_sec = 5.
+        self.requalification_min_samples = 10
+
+    def _stationary_requalification(self, pose, odom, stamp, allowed):
+        """Replace an unusable reference only after a bounded stationary window.
+
+        This certifies internal consistency, not absolute map correctness.
+        The old anchor is never used as a seed after invalidation.
+        """
+        if not allowed:
+            self.requalification = None
+            return
+        c = self.requalification
+        if c and (stamp <= c['last'] or stamp-c['last'] > 2
+                  or math.dist(pose[:2],c['pose'][:2]) > .05
+                  or abs(angle(pose[2]-c['pose'][2])) > .05
+                  or math.dist(odom[:2],c['odom'][:2]) > .03
+                  or abs(angle(odom[2]-c['odom'][2])) > .03):
+            c = None
+        if c is None:
+            c = self.requalification = dict(pose=tuple(pose),odom=tuple(odom),start=stamp,last=stamp,count=0)
+        c['last']=stamp;c['count']+=1
+        if c['count']>=self.requalification_min_samples and stamp-c['start']>=self.requalification_stable_sec:
+            self.invalidate('stationary_consistent_requalification')
 
     def invalidate(self, reason):
+        self.requalification = None
         self.reset_required = True
+        self.last_invalidation_reason = reason
+        self.qualification_kind = None
         self.history.clear()
         self.epoch += 1; self.anchor = None; self.candidate = None
         self.verified = False; self.frozen = True; self.reason = reason
@@ -43,6 +77,7 @@ class LocalizationReference:
         self.history.append((stamp, self.path, self.turn))
 
     def disturb(self, reason):
+        self.requalification = None
         self.frozen = True; self.verified = False; self.candidate = None; self.reason = reason
 
     def prediction(self, pose, wall_now):
@@ -52,7 +87,7 @@ class LocalizationReference:
         if self.path-a['path'] > self.max_path or self.turn-a['turn'] > self.max_turn:return None
         return propagate(a['pose'], a['odom'], pose)
 
-    def observe(self, pose, odom, stamp, wall_now, score, settling=False):
+    def observe(self, pose, odom, stamp, wall_now, score, settling=False, stationary=False):
         if (odom is None or not all(math.isfinite(v) for v in (*pose, *odom, stamp, score))
                 or not 0 <= score < self.score_limit or settling):
             self.disturb('input_not_qualified'); return False
@@ -69,12 +104,17 @@ class LocalizationReference:
         turn_at_scan = before[2]+ratio*(after[2]-before[2])
         # A candidate during recovery must agree with the OLD qualified anchor.
         # Never refresh that anchor first and then validate against itself.
-        if self.frozen and (self.anchor is not None or self.reset_required):
+        if self.frozen and self.anchor is not None:
             predicted = self.prediction(odom, wall_now)
             if predicted is None:
-                self.reason = 'reference_unavailable_manual_alignment_required'; return False
+                self.reason = 'reference_unavailable_manual_alignment_required'
+                self._stationary_requalification(pose,odom,stamp,stationary)
+                return False
             if math.dist(predicted[:2], pose[:2]) > .15 or abs(angle(predicted[2]-pose[2])) > .20:
-                self.candidate = None; self.reason = 'reference_disagreement'; return False
+                self.candidate = None; self.reason = 'reference_disagreement'
+                self._stationary_requalification(pose,odom,stamp,stationary)
+                return False
+        self.requalification = None
         c = self.candidate
         if c:
             expected = propagate(c['pose'], c['odom'], odom)
@@ -83,16 +123,34 @@ class LocalizationReference:
         if c is None:
             c = self.candidate = dict(pose=pose, odom=odom, start=stamp, last=stamp, count=0)
         c['last'] = stamp; c['count'] += 1
-        if c['count'] < 3 or stamp-c['start'] < self.stable_sec:
-            self.reason = 'collecting_stable_reference'; return False
+        rebuilding = self.reset_required
+        required_samples = self.reset_min_samples if rebuilding else 3
+        required_span = max(self.stable_sec, self.reset_stable_sec) if rebuilding else self.stable_sec
+        if c['count'] < required_samples or stamp-c['start'] < required_span:
+            self.reason = 'collecting_current_epoch_reference' if rebuilding else 'collecting_stable_reference'
+            return False
         self.anchor = dict(pose=tuple(pose), odom=tuple(odom), stamp=stamp, wall=wall_now,
                            epoch=self.epoch, path=path_at_scan, turn=turn_at_scan, score=score)
+        self.qualification_kind = 'automatic_current_epoch' if rebuilding else 'continuous_reference'
+        self.reset_required = False
         self.verified = True; self.frozen = False; self.reason = 'verified'
         return True
 
     def metrics(self, wall_now):
         a = self.anchor
-        return dict(reference_policy_version=1, reference_qualified=a is not None,
+        c = self.candidate
+        return dict(reference_policy_version=2, reference_qualified=a is not None,
+                    reference_requalification_required_span_sec=self.requalification_stable_sec,
+                    reference_requalification_required_samples=self.requalification_min_samples,
+                    reference_requalification_samples=self.requalification['count'] if self.requalification else 0,
+                    reference_requalification_span_sec=self.requalification['last']-self.requalification['start'] if self.requalification else 0.,
+                    reference_reset_required=self.reset_required,
+                    reference_last_invalidation_reason=self.last_invalidation_reason,
+                    reference_qualification_kind=self.qualification_kind,
+                    reference_candidate_samples=c['count'] if c else 0,
+                    reference_candidate_span_sec=c['last']-c['start'] if c else 0.,
+                    reference_required_samples=self.reset_min_samples if self.reset_required else 3,
+                    reference_required_span_sec=max(self.stable_sec,self.reset_stable_sec) if self.reset_required else self.stable_sec,
                     reference_verified=self.verified, reference_reason=self.reason,
                     reference_epoch=self.epoch, trusted_reference_epoch=a['epoch'] if a else None,
                     reference_score=a['score'] if a else None,
