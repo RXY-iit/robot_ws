@@ -141,7 +141,11 @@ def main():
             self.sim=None;self.clock_at=0.;self.advance_at=0.;self.start=None;self.start_stamp=None;self.run=0;self.count=0;self.last_input=0.;self.last_sigma=0.;self.last_metrics={};self.profile="noise";self.fault=dict(noise=a.max_noise_m,bias=0.,yaw=0.,sector=0.,dropout=0.)
             folder=a.log_dir or Path('debug-output')/('b1-cloud-inject-'+time.strftime('%Y%m%dT%H%M%S'))
             folder.mkdir(parents=True,exist_ok=True);self.log=(folder/'injection.jsonl').open('x',buffering=1)
-            self.pub=self.create_publisher(PointCloud2,a.output,qos_profile_sensor_data)
+            # The upstream adapter requests RELIABLE (depth 10), while the
+            # GICP input uses sensor-data QoS. A BEST_EFFORT upstream publisher
+            # is discovered but never delivers clouds to that adapter.
+            output_qos=10 if a.scope=='upstream' else qos_profile_sensor_data
+            self.pub=self.create_publisher(PointCloud2,a.output,output_qos)
             self.status=self.create_publisher(String,'/b1/lidar_injection_status',10)
             self.create_subscription(Clock,'/clock',self.clock,10)
             self.create_subscription(PointCloud2,a.input,self.cloud,qos_profile_sensor_data)

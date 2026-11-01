@@ -9,7 +9,26 @@ domain: H5
 layer: function
 affects_capabilities: [auto_navigation]
 envs:
-  sim: {status: supported, verified: false}
+  sim:
+    status: supported
+    verified: false
+    diagnosis:
+      - id: lidar_delivery
+        probe: health_item
+        args: {item: lidar_device_status}
+        informational: true
+      - id: accepted_pose
+        probe: health_item
+        args: {item: gicp_pose}
+        informational: true
+      - id: matching_score
+        probe: health_item
+        args: {item: gicp_score}
+        informational: true
+      - id: independent_motion_comparison
+        probe: health_item
+        args: {item: wheel_lio_motion_difference}
+        informational: true
   real: {status: supported, verified: false}
 trigger:
   any:
@@ -29,5 +48,5 @@ diagnosis:
     informational: true
 policy: {cooldown_sec: 30}
 operator_text:
-  en: "GICP quality is degraded but not BAD. Review LiDAR delivery, accepted-pose age and score trend before deciding whether any speed restriction is justified. No motion action is automatic in this PB."
+  en: "GICP quality is degraded but not BAD. Review LiDAR delivery, accepted-pose age, score trend and the source-time-aligned wheel/LIO motion comparison. This comparison is not a calibrated slip detector; ask for ground evidence before recommending a speed restriction. No motion action is automatic in this PB."
   ja: "GICP の品質低下を LiDAR 入力、採用位置の鮮度、スコアの推移と併せて調べます。この PB は自動的に走行を変更しません。"

@@ -32,6 +32,7 @@ from robot_agent.session import session_dir
 from robot_agent.readiness import ReadinessTracker
 from robot_agent.health_response import ScoreBand, annotate_domains, robot_summary
 from robot_agent.lidar_thermal import LidarThermalEvidence
+from robot_agent.motion_pair import MotionPairWindow
 
 
 BAD_ITEM_STATES = {"BLOCKED", "ERROR", "STALE"}
@@ -240,6 +241,8 @@ class HealthMonitor(Node):
         )
         self._lidar_thermal_seen = 0
         self._lidar_thermal_payload_valid = False
+        self._motion_pair = MotionPairWindow()
+        self._motion_pair_lock = threading.RLock()
         self._sim_clock = SimClockEvidence()
         self._sim_time_clients = {}
         self._sim_time_pending = {}
@@ -409,6 +412,10 @@ class HealthMonitor(Node):
         self.create_subscription(
             Odometry, "/fast_lio/odometry", self._fast_lio_cb, qos_profile_sensor_data
         )
+        if self._sim_mode():
+            self.create_subscription(
+                Odometry, "/wheel_odom", self._wheel_motion_cb, qos_profile_sensor_data
+            )
         if self._sim_mode():
             self.create_subscription(String, "/fast_lio/timing",
                                      self._json_or_text_cb("fast_lio_timing", "/fast_lio/timing"), 10)
@@ -945,6 +952,8 @@ class HealthMonitor(Node):
         )
 
     def _fast_lio_cb(self, msg: Odometry) -> None:
+        if self._sim_mode():
+            self._observe_motion("lio", msg)
         self._mark(
             "fast_lio_odom",
             "/fast_lio/odometry",
@@ -957,6 +966,50 @@ class HealthMonitor(Node):
             },
             source_stamp_sec=self._header_stamp(msg),
             min_interval_sec=self._input_sample_interval_sec,
+        )
+
+    def _wheel_motion_cb(self, msg: Odometry) -> None:
+        self._observe_motion("wheel", msg)
+
+    def _observe_motion(self, source: str, msg: Odometry) -> None:
+        stamp = self._header_stamp(msg)
+        if stamp is None:
+            return
+        pose = msg.pose.pose
+        q = pose.orientation
+        yaw = math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z))
+        with self._motion_pair_lock:
+            self._motion_pair.observe(source, stamp,
+                                      pose.position.x, pose.position.y, yaw)
+
+    def _wheel_lio_motion_item(self) -> dict[str, Any]:
+        with self._motion_pair_lock:
+            result = self._motion_pair.assess()
+        with self._signals_lock:
+            clock = self.signals.get("sim_clock")
+            clock_sec = (clock.value or {}).get("sim_time_sec") if clock else None
+        clock_sec = finite_or_none(clock_sec)
+        if result is not None and (clock_sec is None or
+                                   clock_sec - result["end_source_sec"] > 2.0 or
+                                   result["end_source_sec"] - clock_sec > 1.0):
+            result = None
+        if result is None:
+            status, summary = "UNKNOWN", "No aligned 2 s wheel/FAST-LIO motion window"
+        elif result["motion_observed"]:
+            status = "OBSERVED"
+            summary = (f"Wheel/LIO path difference {result['path_difference_m']:+.3f} m "
+                       f"over {result['window_source_sec']:.1f} source s")
+        elif result["lio_motion_while_wheel_stationary"]:
+            status = "OBSERVED"
+            summary = (f"Wheel stationary; LIO moved {result['lio_path_m']:.3f} m. "
+                       "Check LIO restart/drift; no slip inference")
+        else:
+            status, summary = "OBSERVED", "Aligned window is stationary; no slip inference"
+        return self._fixed_item(
+            "wheel_lio_motion_difference", "Wheel versus FAST-LIO motion (investigation only)",
+            status, summary, "/wheel_odom + /fast_lio/odometry", "DERIVED_PAIRWISE_MOTION",
+            standard="Source-time-aligned path/turn differences; no calibrated slip threshold or motion action",
+            value=result,
         )
 
     def _plan_cb(self, msg: NavPath) -> None:
@@ -2791,6 +2844,7 @@ class HealthMonitor(Node):
                 self._signal_item("gicp_score", "GICP attempt self-score", stale_sec=3.0, standard=f"gicp_localizer.yaml fitness_score_threshold={score_threshold}", critical=True, validator=self._gicp_validator),
                 self._signal_item("gicp_pose", "Last accepted GICP pose", stale_sec=3.0, standard="Pose is only published after an accepted correction; receive age is acceptance age", critical=True),
                 self._signal_item("fast_lio_odom", "FAST-LIO odometry (optional mode)", stale_sec=1.0, standard="Optional: absent in default GICP-only launch"),
+                self._wheel_lio_motion_item(),
                 self._signal_item("fast_lio_timing", "FAST-LIO source-time guard", stale_sec=3.0,
                                   standard="Explicit requires_restart flag; not inferred from odometry silence",
                                   validator=self._fast_lio_timing_validator),
